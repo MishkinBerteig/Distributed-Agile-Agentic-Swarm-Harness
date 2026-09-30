@@ -37,6 +37,21 @@ services:
     ports:
       - "6379:6379"
 
+  dashboard:
+    image: node:26-alpine
+    working_dir: /app
+    environment:
+      - VITE_API_PROXY_TARGET=http://coordinator:8000
+    volumes:
+      - ./dashboard:/app
+      - dashboard-node-modules:/app/node_modules
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    ports:
+      - "5173:5173"
+    depends_on:
+      - coordinator
+
 volumes:
   pg-data:
   daash-data:
+  dashboard-node-modules:

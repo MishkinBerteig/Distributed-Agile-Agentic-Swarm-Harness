@@ -1,4 +1,6 @@
 from logging.config import fileConfig
+import os
+
 from sqlalchemy import engine_from_config
 from sqlalchemy import pool
 
@@ -8,6 +10,13 @@ from alembic import context
 from app.orm import Base
 
 config = context.config
+
+# Environment wins over alembic.ini so containers can point at the compose DB.
+env_url = os.environ.get("DAASH_ALEMBIC_DATABASE_URL") or os.environ.get("DAASH_DATABASE_URL")
+if env_url:
+    if env_url.startswith("postgresql://"):
+        env_url = "postgresql+psycopg://" + env_url[len("postgresql://"):]
+    config.set_main_option("sqlalchemy.url", env_url)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

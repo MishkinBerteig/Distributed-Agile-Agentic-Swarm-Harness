@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+from pathlib import Path
 from typing import AsyncGenerator
 
 import asyncpg
+import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
@@ -11,6 +16,21 @@ from app.db import Database
 from app.repo import TaskRepository
 
 TEST_DB_URL = "postgresql://daash:daash@localhost/daash_test"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(scope="session", autouse=True)
+def migrated_schema() -> None:
+    """Build the test schema with `alembic upgrade head` so tests exercise the migration."""
+    subprocess.run(
+        ["psql", TEST_DB_URL, "-q", "-c", "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"],
+        check=True,
+    )
+    env = {**os.environ, "DAASH_ALEMBIC_DATABASE_URL": "postgresql+psycopg://daash:daash@localhost/daash_test"}
+    subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=REPO_ROOT, check=True, env=env, capture_output=True,
+    )
 
 
 @pytest_asyncio.fixture
@@ -22,32 +42,8 @@ async def pool() -> AsyncGenerator[asyncpg.Pool, None]:
 
 @pytest_asyncio.fixture
 async def task_repo(pool: asyncpg.Pool) -> AsyncGenerator[TaskRepository, None]:
-    # Clean slate and ensure schema matches the latest models (name instead of title)
-    await pool.execute("DROP TABLE IF EXISTS transcripts CASCADE")
-    await pool.execute("DROP TABLE IF EXISTS memory_entries CASCADE")
-    await pool.execute("DROP TABLE IF EXISTS tasks CASCADE")
-    await pool.execute("DROP TABLE IF EXISTS teams CASCADE")
-    await pool.execute("""
-        CREATE TABLE teams (
-            id TEXT PRIMARY KEY, name TEXT NOT NULL,
-            vision_statement TEXT NOT NULL,
-            mission_statement TEXT NOT NULL DEFAULT '',
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        );
-        CREATE TABLE tasks (
-            id TEXT PRIMARY KEY,
-            team_id TEXT NOT NULL REFERENCES teams(id),
-            parent_id TEXT REFERENCES tasks(id),
-            name TEXT NOT NULL,
-            description TEXT NOT NULL DEFAULT '',
-            acceptance_criteria TEXT NOT NULL DEFAULT '',
-            status TEXT NOT NULL DEFAULT 'Pending',
-            rejection_reason TEXT,
-            keywords TEXT,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        );
-    """)
+    # Clean data between repo tests; schema comes from the session migration.
+    await pool.execute("TRUNCATE transcripts, memory_entries, tasks, teams CASCADE")
     repo = TaskRepository(pool)
     yield repo
 

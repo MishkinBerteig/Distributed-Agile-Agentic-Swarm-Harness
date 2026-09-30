@@ -96,6 +96,22 @@ tokens.
 3. Building classifiers to allocate work to the least-time|token-expensive
 agent/LLM combination required to get that work done.
 
+## Running the stack + DAASHboard
+
+```bash
+docker compose up --build -d   # db, coordinator (:8000), redis, dashboard (:5173)
+```
+
+- API: http://localhost:8000 (docs at /docs) — includes GET /teams and POST /swarms.
+- DAASHboard (React): http://localhost:5173 — list/create swarms, inspect a swarm's
+  task tree with statuses; the "Add task" form exercises server-side embedding on creation.
+
+Task embeddings use `Alibaba-NLP/gte-base-en-v1.5` (768-dim). The model is resolved
+lazily on first embed: set `DAASH_EMBEDDING_USE_MODEL=true` and install the
+`embeddings` extra (`pip install -e ".[embeddings]"`, CPU torch via
+`pip install torch --index-url https://download.pytorch.org/whl/cpu`) to use it; until then a
+deterministic hash-based fallback keeps the embedding column populated.
+
 ## Configuration
 
 A swarm has an allowed list of agent harnesses, LLM providers and LLM models
