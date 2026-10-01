@@ -11,11 +11,13 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+from app.bus import DecisionBus
 from app.config import Settings
 from app.db import Database
 from app.repo import TaskRepository
 
 TEST_DB_URL = "postgresql://daash:daash@localhost/daash_test"
+TEST_REDIS_URL = os.environ.get("DAASH_TEST_REDIS_URL", "redis://localhost:6379/15")
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -58,10 +60,28 @@ async def test_db(pool: asyncpg.Pool) -> AsyncGenerator[Database, None]:
 
 
 @pytest_asyncio.fixture
-async def client(test_db: Database) -> AsyncGenerator[AsyncClient, None]:
+async def bus() -> AsyncGenerator[DecisionBus, None]:
+    """Decision bus on a dedicated Redis DB (15), flushed before/after use."""
+    import redis.asyncio as aioredis
+
+    admin = aioredis.from_url(TEST_REDIS_URL, decode_responses=True)
+    await admin.flushdb()
+    b = DecisionBus(TEST_REDIS_URL, ttl_seconds=60)
+    yield b
+    await admin.flushdb()
+    await admin.aclose()
+    await b.close()
+
+
+@pytest_asyncio.fixture
+async def client(test_db: Database, bus: DecisionBus) -> AsyncGenerator[AsyncClient, None]:
     import app.main as main_module
     main_module.db = test_db
+    original_bus = main_module.bus
+    main_module.bus = bus
 
     transport = ASGITransport(app=main_module.app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
+
+    main_module.bus = original_bus

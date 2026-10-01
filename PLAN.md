@@ -66,8 +66,9 @@ No feature is considered complete until it meets the following testing rigor:
 
 - [x] **Slice 1: Durable Task State** $\rightarrow$ SQLAlchemy models (Tasks/Teams) with pgvector + Alembic migrations + Volume persistence + Unit tests for hierarchical task CRUD.
   - *Status 2026-09-28: Complete — Alembic initial migration is the sole schema path; resilience E2E verified. DAASHboard tracked under Slice 1.5.*
-- [ ] **Slice 1.5: Simple web-based UI in React "DAASHboard"** to allow a human to inspect current state of tasks and teams and "create" a swarm (minimal in this slice) + embedding column.
-- [ ] **Slice 2: The Decision Bus** $\rightarrow$ Redis integration + voting logic tests + E2E "consensus" test + updated DAASHboard.
+- [x] **Slice 1.5: Simple web-based UI in React "DAASHboard"** to allow a human to inspect current state of tasks and teams and "create" a swarm (minimal in this slice) + embedding column.
+- [x] **Slice 2: The Decision Bus** $\rightarrow$ Redis integration + voting logic tests + E2E "consensus" test + updated DAASHboard.
+  - *Status 2026-09-30: Complete — ephemeral signal feed + atomic quorum voting over Redis, consensus verified live; user smoke-tested.*
 - [ ] **Slice 3: Harness Adapters** $\rightarrow$ Adapter interface + implementation for the first harness (e.g., OpenClaude) + E2E integration test + updated DAASHboard.
 - [ ] **Slice 4: Alignment Hierarchy** $\rightarrow$ Vision/Mission prompt injection + Mission Judgement logic tests.
 - [ ] **Slice 5: Quality Gates** $\rightarrow$ DoD/DoR validation logic + E2E "Task Rejection" flow + updated DAASHboard.
@@ -92,7 +93,7 @@ No feature is considered complete until it meets the following testing rigor:
 - [x] Volume persistence/resilience E2E: stop container → start → data intact.
 - [x] Hierarchical tasks (parent/child) exercised end-to-end via API.
 - [x] Embedding column populate at task creation. *(pulled earlier from Slice 6 and tracked in Slice 1.5)*
-- [x] Initial DAASHboard. *(tracked in Slice 1.5 — pending user smoke test)*
+- [x] Initial DAASHboard. *(tracked in Slice 1.5)*
 
 ### 2026-09-28 — Increment 2: Slice 1 complete
 
@@ -108,7 +109,7 @@ No feature is considered complete until it meets the following testing rigor:
 
 **Next:** Slice 1.5 DAASHboard & embedding column.
 
-### 2026-09-28 — Increment 3: Slice 1.5 (embedding at creation + initial DAASHboard) — awaiting smoke test
+### 2026-09-28 — Increment 3: Slice 1.5 (embedding at creation + initial DAASHboard)
 
 **Added/changed:**
 - **Embeddings** (`app/embeddings.py`): primary model `Alibaba-NLP/gte-base-en-v1.5` (768-dim, matches existing `Vector(768)` columns; user directive), selected via `DAASH_EMBEDDING_MODEL`. Lazy resolution on first embed so startup never blocks on a ~400MB download; if sentence-transformers or the model is unavailable it falls back to a deterministic L2-normalized feature-hashing embedder (also 768-dim) and logs — embedding rows are always populated. `EMBEDDING_USE_MODEL` (default **false**) gates real-model use; `sentence-transformers` added as optional extra `[embeddings]`. **Deviation:** the real model is not exercised in this environment yet (no torch install); plumbing + fallback are fully tested, flipping the flag exercises gte-base later without schema/API change.
@@ -119,4 +120,15 @@ No feature is considered complete until it meets the following testing rigor:
 
 **E2E verified on live containers:** POST /swarms → swarm row; POST /tasks → `vector_dims(embedding)=768` in DB; browser (playwright) at :5173: created "E2E Swarm" via form, selected it, added task via form, task renders nested with badge and its row has a 768-dim vector; `/api` proxy works through Vite.
 
-**Next:** user smoke test of DAASHboard; then Slice 2 (Decision Bus).
+**Next:** Slice 2 (Decision Bus).
+
+### 2026-09-30 — Increment 4: Slice 2 (Decision Bus — Redis)
+
+**Current state:**
+- **Decision Bus** (`app/bus.py`): Redis-backed ephemeral signal feed + quorum voting. Signals pushed via `lpush` with `ltrim` cap (`BUS_SIGNALS_MAX`, default 200); every key TTL'd (`BUS_TTL_SECONDS`, default 3600s), so the bus self-heals and PostgreSQL remains the source of record. Proposals stored as Redis hashes under `daash:proposal:*`; approve/reject voter tallies are SETs in a separate `daash:votes:*` namespace (also TTL'd); proposal listing tolerates any non-hash keys it scans. **Atomic voting** via Lua script — duplicate voters and post-decision votes refused; first side to reach quorum resolves exactly once under parallel load. Lifecycle `pending → approved | rejected`.
+- **API endpoints**: `POST /decisions`, `GET /decisions`, `POST /proposals`, `GET /proposals?team_id=`, `GET /proposals/{id}`, `POST /proposals/{id}/votes` (404 unknown proposal, 409 duplicate/already-decided). Vote resolution auto-publishes `proposal_vote` + `proposal_approved`/`proposal_rejected` signals to the feed.
+- **Tests**: `tests/test_bus.py` — **19 tests** covering signal ordering + cap; voting logic (quorum approve/reject, quorum-1, duplicate voter, post-decision vote, unknown proposal); listing with existing votes, legacy stray keys, and tally TTLs; parallel-consensus races (concurrent approves, split approve/reject race, racing same voter); TTL ephemerality; full E2E consensus over the HTTP API + error-code mapping. Redis fixture uses DB 15, flushed per test, isolated from the live dev bus.
+- **DAASHboard**: stacked tab nav under the header — "Overview" (swarms/tasks) and "Decision Bus". The Decision Bus tab shows a live signal feed with status-colored badges, a proposals list (counts + quorum, click to open), a create-proposal form, and a voting booth (Voter ID + Approve/Reject). Every error banner includes a plain-language explanation of the cause and remedy.
+- Verified: full suite **51 passed**; consensus flow verified live over HTTP on `docker compose` containers; dashboard production build clean.
+
+**Next:** Slice 3 (Harness Adapters — adapter interface + first harness + E2E integration test + DAASHboard).

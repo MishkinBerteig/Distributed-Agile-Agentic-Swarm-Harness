@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from app.bus import DecisionBus, ProposalError
 from app.config import Settings
 from app.db import Database
 from app.embeddings import build_embedder
@@ -18,6 +19,13 @@ from app.repo import TaskRepository, TeamRepository
 
 settings = Settings()
 db = Database(settings)
+# Decision bus (Slice 2): ephemeral Redis signals + quorum voting. Holds no
+# durable state — PostgreSQL remains the source of record.
+bus = DecisionBus(
+    settings.REDIS_URL,
+    ttl_seconds=settings.BUS_TTL_SECONDS,
+    signals_max=settings.BUS_SIGNALS_MAX,
+)
 app = FastAPI(title="DAASH")
 log = logging.getLogger(__name__)
 
@@ -43,6 +51,7 @@ async def _startup() -> None:
 @app.on_event("shutdown")
 async def _shutdown() -> None:
     await db.disconnect()
+    await bus.close()
 
 
 @app.get("/health")
@@ -71,6 +80,25 @@ class SwarmCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     vision_statement: str = ""
     mission_statement: str = ""
+
+
+class SignalPublishRequest(BaseModel):
+    kind: str = Field(..., min_length=1, max_length=100)
+    team_id: str | None = None
+    task_id: str | None = None
+    payload: dict = Field(default_factory=dict)
+
+
+class ProposalCreateRequest(BaseModel):
+    team_id: str = Field(..., min_length=1)
+    question: str = Field(..., min_length=1)
+    quorum: int = Field(1, ge=1)
+    task_id: str | None = None
+
+
+class VoteRequest(BaseModel):
+    voter: str = Field(..., min_length=1)
+    approve: bool
 
 
 # --- Swarm / Team endpoints ---
@@ -154,3 +182,63 @@ async def delete_task(task_id: str) -> None:
     ok = await repo.delete(task_id)
     if not ok:
         raise HTTPException(404, "task not found")
+
+
+# --- Decision Bus endpoints (Slice 2) ---
+
+@app.post("/decisions", status_code=201)
+async def publish_decision(req: SignalPublishRequest) -> dict:
+    signal = await bus.publish(
+        req.kind, team_id=req.team_id, task_id=req.task_id, payload=req.payload
+    )
+    return signal.model_dump()
+
+
+@app.get("/decisions")
+async def list_decisions(limit: int = 50) -> dict:
+    signals = await bus.recent_signals(limit=limit)
+    return {"signals": [s.model_dump() for s in signals]}
+
+
+@app.post("/proposals", status_code=201)
+async def create_proposal(req: ProposalCreateRequest) -> dict:
+    proposal = await bus.create_proposal(
+        req.team_id, req.question, quorum=req.quorum, task_id=req.task_id
+    )
+    return proposal.model_dump()
+
+
+@app.get("/proposals")
+async def list_proposals(team_id: str | None = None) -> dict:
+    proposals = await bus.list_proposals(team_id=team_id)
+    return {"proposals": [p.model_dump() for p in proposals]}
+
+
+@app.get("/proposals/{proposal_id}")
+async def get_proposal(proposal_id: str) -> dict:
+    proposal = await bus.get_proposal(proposal_id)
+    if proposal is None:
+        raise HTTPException(404, "proposal not found")
+    return proposal.model_dump()
+
+
+@app.post("/proposals/{proposal_id}/votes")
+async def cast_vote(proposal_id: str, req: VoteRequest) -> dict:
+    try:
+        proposal = await bus.cast_vote(proposal_id, voter=req.voter, approve=req.approve)
+    except ProposalError as exc:
+        status = {"notfound": 404, "resolved": 409, "duplicate": 409}[exc.code]
+        raise HTTPException(status, str(exc))
+    signal_kind = f"proposal_{proposal.status}" if proposal.status != "pending" else "proposal_vote"
+    await bus.publish(
+        signal_kind,
+        team_id=proposal.team_id,
+        task_id=proposal.task_id,
+        payload={
+            "proposal_id": proposal.id,
+            "voter": req.voter,
+            "vote": "approve" if req.approve else "reject",
+            "status": proposal.status,
+        },
+    )
+    return proposal.model_dump()

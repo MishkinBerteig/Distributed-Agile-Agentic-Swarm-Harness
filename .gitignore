@@ -7,3 +7,6 @@ __pycache__/
 
 # Environment
 .env
+
+# Playwright CLI session artifacts
+.playwright-cli/

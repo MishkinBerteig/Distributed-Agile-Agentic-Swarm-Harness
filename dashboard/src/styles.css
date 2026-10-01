@@ -99,6 +99,20 @@ main { display: flex; gap: 16px; margin-top: 24px; align-items: flex-start; }
 
 .empty { color: var(--muted); font-style: italic; }
 
+.tabs { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin-top: 24px; }
+.tabs button {
+  background: var(--panel);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 18px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 14px;
+}
+.tabs button:hover { background: rgba(255, 255, 255, 0.05); }
+.tabs button.active { background: rgba(88, 166, 255, 0.15); color: var(--accent); border-color: var(--accent); }
+
 .error {
   margin-top: 16px;
   background: rgba(248, 81, 73, 0.12);
