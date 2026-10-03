@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 
 import asyncpg
-from app.models import Task, TaskCreate, TaskStatus, TaskUpdate, Team
+from app.models import Task, TaskCreate, TaskStatus, TaskUpdate, Team, SwarmStatus
 
 
 def _uid() -> str:
@@ -108,7 +108,7 @@ class TaskRepository:
         if not fields:
             existing = await self.get(task_id)
             if existing is None:
-                return None
+                return existing
             return existing
 
         fields.append("updated_at = now()")
@@ -154,27 +154,136 @@ class TeamRepository:
 
     async def create(self, name: str, vision_statement: str, mission_statement: str = "") -> Team:
         row = await self._pool.fetchrow(
-            "INSERT INTO teams (id, name, vision_statement, mission_statement) "
-            "VALUES ($1, $2, $3, $4) RETURNING id, name, vision_statement, mission_statement, created_at",
+            "INSERT INTO teams (id, name, vision_statement, mission_statement, lifecycle_state) "
+            "VALUES ($1, $2, $3, $4, 'CREATED') RETURNING id, name, vision_statement, mission_statement, lifecycle_state, created_at",
             _uid(), name, vision_statement, mission_statement,
         )
         return self._row_to_team(row)
 
     async def list(self) -> list[Team]:
         rows = await self._pool.fetch(
-            "SELECT id, name, vision_statement, mission_statement, created_at "
+            "SELECT id, name, vision_statement, mission_statement, lifecycle_state, created_at "
             "FROM teams ORDER BY created_at"
         )
         return [self._row_to_team(r) for r in rows]
 
     async def get(self, team_id: str) -> Team | None:
         row = await self._pool.fetchrow(
-            "SELECT id, name, vision_statement, mission_statement, created_at FROM teams WHERE id = $1",
+            "SELECT id, name, vision_statement, mission_statement, lifecycle_state, created_at "
+            "FROM teams WHERE id = $1",
             team_id,
         )
         if row is None:
             return None
         return self._row_to_team(row)
+
+    async def get_by_id(self, team_id: str) -> Team | None:
+        """Alias for :meth:`get` — used by some endpoints."""
+        return await self.get(team_id)
+
+    async def upsert(self, data: dict) -> Team:
+        """Insert or update a team. Returns the upserted row."""
+        row = await self._pool.fetchrow(
+            "INSERT INTO teams (id, name, vision_statement, mission_statement, lifecycle_state) "
+            "VALUES ($1, $2, $3, $4, $5) "
+            "ON CONFLICT (id) DO UPDATE SET "
+            "    name = EXCLUDED.name, "
+            "    vision_statement = EXCLUDED.vision_statement, "
+            "    mission_statement = EXCLUDED.mission_statement, "
+            "    lifecycle_state = EXCLUDED.lifecycle_state "
+            "RETURNING id, name, vision_statement, mission_statement, lifecycle_state, created_at",
+            data["id"],
+            data["name"],
+            data["vision_statement"],
+            data.get("mission_statement", ""),
+            data.get("lifecycle_state", "CREATED"),
+        )
+        return self._row_to_team(row)
+
+    async def get_active(self) -> Team | None:
+        """Return the single live swarm (any non-terminal state). None if none exists."""
+        terminal = SwarmStatus.terminal()
+        placeholders = ",".join(f"'{s}'" for s in terminal)
+        row = await self._pool.fetchrow(
+            f"SELECT id, name, vision_statement, mission_statement, lifecycle_state, created_at "
+            f"FROM teams WHERE lifecycle_state NOT IN ({placeholders}) "
+            f"ORDER BY created_at LIMIT 1"
+        )
+        if row is None:
+            return None
+        return self._row_to_team(row)
+
+    async def transition(self, team_id: str, action: str) -> Team:
+        """Transition a swarm by action verb. Returns updated Team or raises ValueError.
+
+        Actions:
+            start  -> CREATED→ACTIVE
+            pause  -> ACTIVE→PAUSED, USER_FEEDBACK→PAUSED
+            resume -> PAUSED→ACTIVE
+            feedback -> PAUSED→USER_FEEDBACK
+            verify -> ACTIVE→VERIFICATION, PAUSED→VERIFICATION
+            learn  -> VERIFICATION→LEARNING
+            archive -> VERIFICATION→ARCHIVED, LEARNING→ARCHIVED
+            delete -> CREATED→DELETED, VERIFICATION→DELETED
+        """
+        # Get current row to read lifecycle_state
+        row = await self._pool.fetchrow(
+            "SELECT id, lifecycle_state FROM teams WHERE id = $1", team_id
+        )
+        if row is None:
+            raise ValueError(f"Swarm {team_id} not found")
+
+        current = row["lifecycle_state"]
+        action_map = {
+            "start":      {"CREATED": "ACTIVE"},
+            "pause":      {"ACTIVE": "PAUSED", "USER_FEEDBACK": "PAUSED"},
+            "resume":     {"PAUSED": "ACTIVE", "USER_FEEDBACK": "ACTIVE"},
+            "feedback":   {"PAUSED": "USER_FEEDBACK"},
+            "verify":     {"ACTIVE": "VERIFICATION", "PAUSED": "VERIFICATION"},
+            "learn":      {"VERIFICATION": "LEARNING"},
+            "archive":    {"VERIFICATION": "ARCHIVED", "LEARNING": "ARCHIVED"},
+            "delete":     {"CREATED": "DELETED", "VERIFICATION": "DELETED"},
+        }
+        allowed = action_map.get(action, {})
+        if current not in allowed:
+            raise ValueError(
+                f"Cannot {action} from state {current}: allowed from {sorted(allowed)}"
+            )
+        target = allowed[current]
+
+        row = await self._pool.fetchrow(
+            "UPDATE teams SET lifecycle_state = $1 WHERE id = $2 "
+            "RETURNING id, name, vision_statement, mission_statement, lifecycle_state, created_at",
+            target, team_id,
+        )
+        if row is None:
+            raise ValueError(f"Swarm {team_id} not found during transition")
+        return self._row_to_team(row)
+
+    async def hard_delete(self, team_id: str) -> None:
+        """Hard-delete a swarm and all its children in a transaction.
+
+        FK constraints have no ondelete, so we cascade manually.
+        """
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "DELETE FROM memory_entries WHERE task_id IN (SELECT id FROM tasks WHERE team_id = $1)",
+                    team_id,
+                )
+                await conn.execute(
+                    "DELETE FROM transcripts WHERE team_id = $1",
+                    team_id,
+                )
+                await conn.execute(
+                    "DELETE FROM tasks WHERE team_id = $1",
+                    team_id,
+                )
+                result = await conn.execute(
+                    "DELETE FROM teams WHERE id = $1", team_id
+                )
+                if result != "DELETE 1":
+                    raise ValueError(f"Swarm {team_id} not found for deletion")
 
     @staticmethod
     def _row_to_team(row: asyncpg.Record) -> Team:
@@ -183,5 +292,6 @@ class TeamRepository:
             name=row["name"],
             vision_statement=row["vision_statement"],
             mission_statement=row["mission_statement"],
+            lifecycle_state=row["lifecycle_state"],
             created_at=row["created_at"],
         )

@@ -6,7 +6,6 @@ from typing import List, Optional
 from sqlalchemy import (
     Column,
     DateTime,
-    Enum as SQLEnum,
     ForeignKey,
     String,
     Text,
@@ -29,6 +28,7 @@ class TeamORM(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     vision_statement: Mapped[str] = mapped_column(Text, nullable=False)
     mission_statement: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    lifecycle_state: Mapped[str] = mapped_column(String(32), nullable=False, default="CREATED")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     tasks: Mapped[List["TaskORM"]] = relationship("TaskORM", back_populates="team", cascade="all, delete-orphan")
@@ -44,7 +44,7 @@ class TaskORM(Base):
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
     acceptance_criteria: Mapped[str] = mapped_column(Text, nullable=False, default="")
     status: Mapped[str] = mapped_column(String, nullable=False, default="Pending")
-    keywords: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # space-separated for now; migrate to JSONB later
+    keywords: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     rejection_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -61,7 +61,7 @@ class MemoryEntryORM(Base):
     task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     embedding: Mapped[Optional[Vector]] = mapped_column(Vector(768), nullable=True)
-    memory_metadata: Mapped[dict] = mapped_column(Text, nullable=False, default={}) # renamed from metadata
+    memory_metadata: Mapped[dict] = mapped_column(Text, nullable=False, default={})
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

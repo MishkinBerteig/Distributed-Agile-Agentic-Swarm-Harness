@@ -7,6 +7,46 @@ function shortId(id) {
   return id ? id.slice(0, 8) : ''
 }
 
+// -- Lifecycle helpers --
+
+const LIFECYCLE_COLORS = {
+  CREATED:     '#f0ad4e',
+  ACTIVE:      '#5cb85c',
+  PAUSED:      '#d3d3d3',
+  USER_FEEDBACK: '#5bc0de',
+  VERIFICATION: '#9b59b6',
+  LEARNING:    '#1abc9c',
+  ARCHIVED:    '#bdc3c7',
+  DELETED:     '#95a5a6',
+}
+
+const ALLOWED_ACTIONS = {
+  CREATED:     [{ action: 'start',     label: '▶ Start' }],
+  ACTIVE:      [{ action: 'pause',     label: '⏸ Pause' },
+                 { action: 'verify',    label: '✓ Verify' }],
+  PAUSED:      [{ action: 'resume',    label: '▶ Resume' },
+                 { action: 'feedback',  label: '💬 Feedback' },
+                 { action: 'verify',    label: '✓ Verify' }],
+  USER_FEEDBACK: [{ action: 'resume',  label: '▶ Resume' }],
+  VERIFICATION:[{ action: 'learn',     label: '📚 Learn' },
+                 { action: 'archive',   label: '📦 Archive' },
+                 { action: 'delete',    label: '🗑 Delete' }],
+  LEARNING:    [{ action: 'archive',   label: '📦 Archive' }],
+  ARCHIVED:    [],
+  DELETED:     [],
+}
+
+function LifecycleBadge({ state }) {
+  const bg = LIFECYCLE_COLORS[state] || '#999'
+  return (
+    <span className="chip" style={{background: bg, color: '#fff'}}>
+      {state}
+    </span>
+  )
+}
+
+// -- Swarm form --
+
 function SwarmForm({ onCreated, onError }) {
   const [name, setName] = useState('')
   const [vision, setVision] = useState('')
@@ -48,6 +88,133 @@ function SwarmForm({ onCreated, onError }) {
   )
 }
 
+// -- Swarm detail --
+
+function SwarmDetail({ swarm, onRefresh, onError }) {
+  const [tasks, setTasks] = useState([])
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    if (!swarm) return
+    api.listTasks(swarm.id).then(res => {
+      const tasks = Array.isArray(res) ? res : (res.tasks || [])
+      setTasks(tasks)
+    }).catch(() => onError('Fetching tasks'))
+  }, [swarm, onError])
+
+  if (!swarm) return null
+
+  const actions = ALLOWED_ACTIONS[swarm.lifecycle_state] || []
+  const status = STATUSES.includes(swarm.lifecycle_state) ? swarm.lifecycle_state : 'In-Progress'
+
+  async function doAction(action) {
+    try {
+      await api.transition(swarm.id, action)
+      onRefresh()
+    } catch (err) {
+      onError(explain(`Transition ${action}`, err))
+    }
+  }
+
+  async function handleDelete() {
+    if (!window.confirm(`Hard-delete swarm "${swarm.name}"? All tasks will be lost.`)) return
+    try {
+      await api.deleteSwarm(swarm.id)
+      onRefresh()
+    } catch (err) {
+      onError(explain('Deleting swarm', err))
+    }
+  }
+
+  return (
+    <div>
+      <div className="card">
+        <div className="section-header">
+          <div>
+            <h2 style={{margin: 0}}>{swarm.name}</h2>
+            <div style={{display: 'flex', gap: 8, marginTop: 6, flexWrap: 'wrap'}}>
+              <LifecycleBadge state={swarm.lifecycle_state} />
+              <span className="chip">{status}</span>
+              <span className="chip">ID: {shortId(swarm.id)}</span>
+            </div>
+          </div>
+        </div>
+        <div style={{marginTop: 12, color: '#666', fontSize: 14}}>
+          <p><strong>Vision:</strong> {swarm.vision_statement}</p>
+          {swarm.mission_statement && <p><strong>Mission:</strong> {swarm.mission_statement}</p>}
+        </div>
+        <div style={{display: 'flex', gap: 8, marginTop: 16, flexWrap: 'wrap'}}>
+          {actions.map(a => (
+            <button key={a.action} onClick={() => doAction(a.action)}>{a.label}</button>
+          ))}
+          {actions.some(a => a.action === 'delete') && (
+            <button onClick={handleDelete} style={{background: '#d9534f', color: '#fff'}}>🗑 Hard Delete</button>
+          )}
+        </div>
+      </div>
+
+      <div style={{marginBottom: 24}}>
+        <TaskForm teamId={swarm.id} onCreated={(t) => setTasks(prev => [t, ...prev])} onError={onError} />
+
+        <h3>Task Board</h3>
+        <div className="board">
+          {STATUSES.map(s => (
+            <div key={s} className="column">
+              <h4>{s} ({tasks.filter(t => t.status === s).length})</h4>
+              {tasks.filter(t => t.status === s).map(task => (
+                <TaskItem key={task.id} task={task} onUpdated={(t) => setTasks(prev => prev.map(x => x.id === t.id ? t : x))} onError={onError} />
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// -- Archived list --
+
+function ArchivedSwarmList({ onRestore }) {
+  const [swarms, setSwarms] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    api.listTeams()
+      .then(res => {
+        const teams = Array.isArray(res) ? res : (res.teams || [])
+        const archived = teams.filter(t => t.lifecycle_state === 'ARCHIVED')
+        setSwarms(archived)
+        setLoading(false)
+      })
+      .catch(() => setLoading(false))
+  }, [])
+
+  if (loading || swarms.length === 0) return null
+
+  return (
+    <div className="card">
+      <h2>Archived swarms</h2>
+      {swarms.length === 0 ? (
+        <p>No archived swarms.</p>
+      ) : (
+        <ul className="list-group">
+          {swarms.map(s => (
+            <li key={s.id} className="list-group-item" style={{display: 'flex', justifyContent: 'space-between'}}>
+              <div>
+                <strong>{s.name}</strong>
+                <div style={{fontSize: 12, color: '#666'}}>{shortId(s.id)}</div>
+              </div>
+              <LifecycleBadge state={s.lifecycle_state} />
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+// -- Task components --
+
 function TaskForm({ teamId, onCreated, onError }) {
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
@@ -59,8 +226,7 @@ function TaskForm({ teamId, onCreated, onError }) {
     if (!name.trim()) return
     setBusy(true)
     try {
-      // Embeddings are computed server-side (gte-base-en-v1.5) on creation.
-      await api.createTask({ team_id: teamId, name: name.trim(), description, acceptance_criteria: criteria })
+      await api.createTask({ team_id: teamId, name, description, acceptance_criteria: criteria })
       setName(''); setDescription(''); setCriteria('')
       onCreated()
     } catch (err) {
@@ -72,335 +238,181 @@ function TaskForm({ teamId, onCreated, onError }) {
 
   return (
     <form className="card form" onSubmit={submit}>
-      <h2>Add task</h2>
+      <h3>New task</h3>
       <label>
         Name
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Implement retry logic" required />
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Implement feature X" required />
       </label>
       <label>
         Description
-        <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={2} />
+        <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Step-by-step instructions…" rows={3} />
       </label>
       <label>
         Acceptance criteria
-        <textarea value={criteria} onChange={(e) => setCriteria(e.target.value)} rows={2} />
+        <input value={criteria} onChange={(e) => setCriteria(e.target.value)} placeholder="Given… When… Then…" />
       </label>
       <button type="submit" disabled={busy || !name.trim()}>{busy ? 'Creating…' : 'Add task'}</button>
     </form>
   )
 }
 
-function TaskTree({ tasks }) {
-  const byParent = useMemo(() => {
-    const map = new Map()
-    for (const t of tasks) {
-      const key = t.parent_id ?? ''
-      if (!map.has(key)) map.set(key, [])
-      map.get(key).push(t)
+function TaskItem({ task, onUpdated, onError }) {
+  const [showReject, setShowReject] = useState(false)
+  const [rejectionReason, setRejectionReason] = useState('')
+
+  async function advance() {
+    const map = { 'Pending': 'Ready', 'Ready': 'In-Progress', 'In-Progress': 'Done' }
+    const next = map[task.status]
+    if (!next) return
+    try {
+      await api.updateTask(task.id, { status: next })
+      onUpdated({ ...task, status: next })
+    } catch (err) {
+      onError(explain('Updating task status', err))
     }
-    return map
-  }, [tasks])
-
-  function renderNode(task, depth) {
-    const children = byParent.get(task.id) ?? []
-    return (
-      <li key={task.id}>
-        <div className="task-row" style={{ marginLeft: depth * 20 }}>
-          <span className={`badge ${task.status.toLowerCase()}`}>{task.status}</span>
-          <span className="task-name">{task.name}</span>
-          <span className="task-id" title={task.id}>{shortId(task.id)}</span>
-        </div>
-        {task.description && <div className="task-desc" style={{ marginLeft: depth * 20 + 24 }}>{task.description}</div>}
-        {!!task.acceptance_criteria && (
-          <div className="task-criteria" style={{ marginLeft: depth * 20 + 24 }}>✓ {task.acceptance_criteria}</div>
-        )}
-        {children.length > 0 && <ul>{children.map((c) => renderNode(c, depth + 1))}</ul>}
-      </li>
-    )
   }
 
-  const roots = byParent.get('') ?? []
-  if (tasks.length === 0) return <p className="empty">No tasks yet in this swarm.</p>
-  return <ul className="task-tree">{roots.map((t) => renderNode(t, 0))}</ul>
-}
-
-function DecisionBus({ signals, proposals, proposalDetail, proposalForm, voterId, onCreateProposal, onVote, onOpenProposal, onSetVoterId, onSetProposalForm, onError, refreshSignals, refreshProposals }) {
-  const statusColor = (s) => {
-    if (s === 'approved') return '#22c55e'
-    if (s === 'rejected') return '#ef4444'
-    if (s === 'pending') return '#f59e0b'
-    return '#6b7280'
+  async function reject() {
+    if (!rejectionReason.trim()) return
+    try {
+      await api.updateTask(task.id, { status: 'Ready', rejection_reason: rejectionReason.trim() })
+      onUpdated({ ...task, status: 'Ready', rejection_reason: rejectionReason.trim() })
+      setShowReject(false)
+      setRejectionReason('')
+    } catch (err) {
+      onError(explain('Rejecting task', err))
+    }
   }
+
+  async function handleDelete() {
+    try {
+      await api.deleteTask(task.id)
+      onUpdated({ ...task, status: 'GONE' })
+    } catch (err) {
+      onError(explain('Deleting task', err))
+    }
+  }
+
+  if (task.status === 'GONE') return null
 
   return (
-    <div>
-      <div style={{ display: 'flex', gap: 16, marginBottom: 16, flexWrap: 'wrap' }}>
-        {/* Signal Feed */}
-        <div className="card" style={{ flex: 1, minWidth: 280 }}>
-          <h2>Signal Feed <button onClick={refreshSignals} style={{ float: 'right', fontSize: 12, cursor: 'pointer' }}>↻</button></h2>
-          {signals.length === 0 && <p className="empty">No signals yet.</p>}
-          <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-            {signals.map((s) => (
-              <li key={s.id} style={{ padding: '8px 0', borderBottom: '1px solid #eee' }}>
-                <span className="badge" style={{ backgroundColor: statusColor(s.kind === 'proposal_approved' ? 'approved' : s.kind === 'proposal_rejected' ? 'rejected' : 'pending'), marginRight: 8 }}>{s.kind.replace('proposal_', '')}</span>
-                <span>{s.payload?.reason || s.kind}</span>
-                {s.team_id && <span className="task-id" style={{ marginLeft: 8 }} title={s.team_id}>{shortId(s.team_id)}</span>}
-                <div style={{ fontSize: 11, color: '#999', marginTop: 2 }}>{new Date(s.created_at).toLocaleString()}</div>
-              </li>
-            ))}
-          </ul>
+    <div className="task-item" style={{border: '1px solid #ccc', borderRadius: 8, padding: 12, marginBottom: 8, background: task.status === 'Done' ? '#f0f0f0' : '#fff'}}>
+      <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start'}}>
+        <div style={{flex: 1}}>
+          <strong>{task.name}</strong>
+          <div style={{fontSize: 12, color: '#666'}}>{shortId(task.id)}</div>
+          {task.description && <p style={{margin: '4px 0'}}>{task.description}</p>}
+          {task.acceptance_criteria && <p style={{margin: '4px 0', fontSize: 13, color: '#444'}}><strong>AC:</strong> {task.acceptance_criteria}</p>}
+          {task.rejection_reason && <p style={{margin: '4px 0', fontSize: 13, color: '#d9534f'}}><strong>Rejected:</strong> {task.rejection_reason}</p>}
         </div>
-
-        {/* Proposals List */}
-        <div className="card" style={{ flex: 1, minWidth: 280 }}>
-          <h2>Proposals <button onClick={refreshProposals} style={{ float: 'right', fontSize: 12, cursor: 'pointer' }}>↻</button></h2>
-          {proposals.length === 0 && <p className="empty">No proposals yet.</p>}
-          <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-            {proposals.map((p) => (
-              <li key={p.id} style={{ padding: '8px 0', borderBottom: '1px solid #eee' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span className="badge" style={{ backgroundColor: statusColor(p.status), marginRight: 8 }}>{p.status}</span>
-                  <strong style={{ cursor: 'pointer', color: '#1d4ed8' }} onClick={() => onOpenProposal(p.id)}>{p.question}</strong>
-                </div>
-                <div style={{ fontSize: 12, marginTop: 4 }}>
-                  {p.approve_count} approve · {p.reject_count} reject · quorum: {p.quorum}
-                  {p.task_id && <span className="task-id" style={{ marginLeft: 8 }} title={p.task_id}>{shortId(p.task_id)}</span>}
-                </div>
-                {p.status !== 'pending' && p.decided_at && (
-                  <div style={{ fontSize: 11, color: '#999', marginTop: 2 }}>Decided {new Date(p.decided_at).toLocaleString()}</div>
-                )}
-              </li>
-            ))}
-          </ul>
-        </div>
-      </div>
-
-      {/* Create Proposal + Voting */}
-      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-        <div className="card form" style={{ flex: 1, minWidth: 280 }}>
-          <h2>Create Proposal</h2>
-          <form onSubmit={onCreateProposal}>
-            <label>
-              Team ID
-              <input value={proposalForm.team_id} onChange={(e) => onSetProposalForm({ team_id: e.target.value })} placeholder="team-id" required />
-            </label>
-            <label>
-              Question
-              <input value={proposalForm.question} onChange={(e) => onSetProposalForm({ question: e.target.value })} placeholder="Approve the release?" required />
-            </label>
-            <label>
-              Quorum
-              <input type="number" min="1" value={proposalForm.quorum} onChange={(e) => onSetProposalForm({ quorum: parseInt(e.target.value) || 1 })} />
-            </label>
-            <button type="submit">Create</button>
-          </form>
-        </div>
-
-        <div className="card" style={{ flex: 1, minWidth: 280 }}>
-          <h2>Voting Booth</h2>
-          <label>
-            Voter ID
-            <input value={voterId} onChange={(e) => onSetVoterId(e.target.value)} placeholder="user-1" />
-          </label>
-          {proposalDetail ? (
-            <div>
-              <p><strong>{proposalDetail.question}</strong></p>
-              <p>Result: <span className="badge" style={{ backgroundColor: statusColor(proposalDetail.status) }}>{proposalDetail.status}</span> ({proposalDetail.approve_count} approve / {proposalDetail.reject_count} reject)</p>
-              {proposalDetail.status === 'pending' && (
-                <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-                  <button onClick={() => onVote(proposalDetail.id, true)} style={{ backgroundColor: '#22c55e', color: '#fff', border: 'none', padding: '8px 16px', borderRadius: 4, cursor: 'pointer' }}>Approve</button>
-                  <button onClick={() => onVote(proposalDetail.id, false)} style={{ backgroundColor: '#ef4444', color: '#fff', border: 'none', padding: '8px 16px', borderRadius: 4, cursor: 'pointer' }}>Reject</button>
-                </div>
+        <div style={{display: 'flex', gap: 4, flexShrink: 0, marginLeft: 8}}>
+          {task.status !== 'Done' && (
+            <>
+              <button onClick={advance} style={{background: '#5cb85c', color: '#fff'}}>→</button>
+              {task.status === 'Ready' && (
+                <button onClick={() => setShowReject(true)} style={{background: '#d9534f', color: '#fff'}}>✎</button>
               )}
-            </div>
-          ) : (
-            <p className="empty">Create or open a proposal to vote.</p>
+            </>
           )}
+          <button onClick={handleDelete} style={{background: '#f0ad4e', color: '#fff'}}>🗑</button>
         </div>
       </div>
+      {showReject && (
+        <div style={{marginTop: 8, display: 'flex', gap: 4}}>
+          <input
+            value={rejectionReason}
+            onChange={(e) => setRejectionReason(e.target.value)}
+            placeholder="Rejection reason"
+            autoFocus
+            style={{flex: 1, padding: 4}}
+          />
+          <button onClick={reject} style={{background: '#d9534f', color: '#fff', padding: '4px 8px'}}>Reject</button>
+          <button onClick={() => setShowReject(false)} style={{padding: '4px 8px'}}>Cancel</button>
+        </div>
+      )}
     </div>
   )
 }
 
-// Turn a failed API call into a plain-language message with an explanation
-// of what likely went wrong and what to do about it.
+// -- Helpers --
+
 function explain(action, err) {
-  const detail = err?.message ?? String(err)
-  let why = 'The coordinator rejected the request.'
-  if (/Failed to fetch|NetworkError/i.test(detail)) {
-    why = 'The board could not reach the coordinator — is `docker compose up` running and healthy?'
-  } else if (/\b404\b|not found/i.test(detail)) {
-    why = 'It no longer exists on the coordinator — proposal state lives in Redis and expires, so refresh the list.'
-  } else if (/already decided/i.test(detail)) {
-    why = 'This proposal already reached quorum, so further votes are refused. Refresh to see the outcome.'
-  } else if (/already voted|duplicate/i.test(detail)) {
-    why = "That voter has already cast a ballot on this proposal — each voter may vote once. Try a different Voter ID."
-  } else if (/\b422\b|validation/i.test(detail)) {
-    why = 'The request was missing or had invalid fields — check the form values.'
-  }
-  return `${action} failed: ${detail}. ${why}`
+  return typeof err === 'string'
+    ? `${action}: ${err}`
+    : err?.detail
+      ? `${action}: ${err.detail}`
+      : `${action} failed`
 }
 
+// -- Main App --
+
 export default function App() {
-  const [teams, setTeams] = useState([])
-  const [selectedId, setSelectedId] = useState(null)
-  const [tasks, setTasks] = useState([])
-  const [statusFilter, setStatusFilter] = useState('')
-  const [error, setError] = useState(null)
+  const [swarm, setSwarm] = useState(null)       // single live swarm
+  const [swarms, setSwarms] = useState([])        // full history
+  const [errorMsg, setErrorMsg] = useState('')
+  const [tab, setTab] = useState('active')        // active | archived
 
-  // Decision Bus state (Slice 2)
-  const [activeTab, setActiveTab] = useState('overview')
-  const [signals, setSignals] = useState([])
-  const [proposals, setProposals] = useState([])
-  const [proposalDetail, setProposalDetail] = useState(null)
-  const [proposalForm, setProposalForm] = useState({
-    team_id: '',
-    question: '',
-    quorum: 1,
-  })
-  const [voterId, setVoterId] = useState('user-1')
-
-  const refreshTeams = useCallback(async () => {
-    try {
-      const list = await api.listTeams()
-      setTeams(list)
-      setSelectedId((cur) => cur ?? (list[0]?.id ?? null))
-    } catch (err) {
-      setError(explain('Loading swarms', err))
-    }
+  // Load active swarm + full history on mount (and refreshes)
+  useEffect(() => {
+    api.getActiveSwarm()
+      .then(s => setSwarm(s))
+      .catch(() => setSwarm(null))
+    api.listTeams()
+      .then(res => setSwarms(Array.isArray(res) ? res : (res.teams || [])))
+      .catch(() => setSwarms([]))
   }, [])
 
-  const refreshTasks = useCallback(async () => {
-    if (!selectedId) { setTasks([]); return }
-    try {
-      setTasks(await api.listTasks(selectedId, statusFilter))
-    } catch (err) {
-      setError(explain('Loading tasks', err))
-    }
-  }, [selectedId, statusFilter])
-
-  useEffect(() => { refreshTeams() }, [refreshTeams])
-  useEffect(() => { refreshTasks() }, [refreshTasks])
-
-  // Decision Bus (Slice 2)
-  const refreshSignals = useCallback(async () => {
-    try { setSignals(await api.listDecisions()) } catch (err) { setError(explain('Loading decision signals', err)) }
-  }, [])
-  const refreshProposals = useCallback(async () => {
-    try { setProposals(await api.listProposals()) } catch (err) { setError(explain('Loading proposals', err)) }
-  }, [])
-  useEffect(() => { refreshSignals() }, [refreshSignals])
-  useEffect(() => { refreshProposals() }, [refreshProposals])
-
-  const handleCreateProposal = useCallback(async (e) => {
-    e.preventDefault()
-    try {
-      const p = await api.createProposal(proposalForm)
-      setProposals((prev) => [p, ...prev])
-      setProposalForm({ team_id: '', question: '', quorum: 1 })
-      refreshProposals()
-    } catch (err) { setError(explain('Creating proposal', err)) }
-  }, [proposalForm, refreshProposals])
-
-  const handleVote = useCallback(async (proposalId, approve) => {
-    try {
-      const p = await api.castVote(proposalId, { voter: voterId, approve })
-      setProposalDetail(p)
-      refreshProposals()
-      refreshSignals()
-    } catch (err) { setError(explain(`Voting as "${voterId}"`, err)) }
-  }, [voterId, refreshProposals, refreshSignals])
-
-  const handleOpenProposal = useCallback(async (id) => {
-    try {
-      const p = await api.getProposal(id)
-      setProposalDetail(p)
-    } catch (err) { setError(explain('Opening proposal', err)) }
-  }, [])
-
-  const selected = teams.find((t) => t.id === selectedId) ?? null
+  function refresh() {
+    api.getActiveSwarm()
+      .then(s => setSwarm(s))
+      .catch(() => setSwarm(null))
+    api.listTeams()
+      .then(res => setSwarms(Array.isArray(res) ? res : (res.teams || [])))
+      .catch(() => setSwarms([]))
+  }
 
   return (
-    <div className="layout">
-      <header>
-        <h1>DAASHboard</h1>
-        <span className="sub">Distributed Agile Agentic Swarm Harness</span>
-      </header>
-      <nav className="tabs">
-        <button className={activeTab === 'overview' ? 'active' : ''} onClick={() => setActiveTab('overview')}>Overview</button>
-        <button className={activeTab === 'decisions' ? 'active' : ''} onClick={() => { setActiveTab('decisions'); refreshSignals(); refreshProposals() }}>Decision Bus</button>
-      </nav>
-      {error && (
-        <div className="error" role="alert">
-          {error} <button onClick={() => setError(null)}>✕</button>
-        </div>
-      )}
-      <main>
-        {activeTab === 'overview' && (
-        <section className="col">
-          <div className="card">
-            <h2>Swarms</h2>
-            {teams.length === 0 && <p className="empty">No swarms yet — create one below.</p>}
-            <ul className="swarm-list">
-              {teams.map((t) => (
-                <li key={t.id}>
-                  <button
-                    className={`swarm-item ${t.id === selectedId ? 'active' : ''}`}
-                    onClick={() => setSelectedId(t.id)}
-                  >
-                    <span className="swarm-name">{t.name}</span>
-                    <span className="task-id" title={t.id}>{shortId(t.id)}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </div>
-          <SwarmForm onCreated={refreshTeams} onError={setError} />
-        </section>
-        )}
-
-        {activeTab === 'overview' && (
-        <section className="col wide">
-          {selected ? (
-            <>
-              <div className="card">
-                <div className="team-header">
-                  <h2>{selected.name}</h2>
-                  <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
-                    <option value="">All statuses</option>
-                    {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
-                  </select>
+    <div className="container">
+      <h1>DAASH</h1>
+      {errorMsg && <div className="alert">{errorMsg}<button onClick={() => setErrorMsg('')}>×</button></div>}
+      <div className="sidebar">
+        <nav>
+          <ul>
+            <li><strong>Single Swarm Orchestrator</strong></li>
+            {swarm && (
+              <li>
+                <div className="swarm-status">
+                  <strong>{swarm.name}</strong>
+                  <LifecycleBadge state={swarm.lifecycle_state} />
                 </div>
-                {selected.vision_statement && <p className="vision">Vision: {selected.vision_statement}</p>}
-                {selected.mission_statement && <p className="vision">Mission: {selected.mission_statement}</p>}
-                <TaskTree tasks={tasks} />
+              </li>
+            )}
+            <li style={{borderTop: '1px solid #eee', paddingTop: 8}}>
+              <button onClick={() => setTab('active')} style={{fontWeight: tab === 'active' ? 'bold' : 'normal'}}>
+                {swarm ? 'Active Swarm' : 'No Active Swarm'}
+              </button>
+            </li>
+            <li>
+              <button onClick={() => setTab('archived')} style={{fontWeight: tab === 'archived' ? 'bold' : 'normal'}}>
+                Archived ({swarms.filter(t => t.lifecycle_state === 'ARCHIVED').length})
+              </button>
+            </li>
+          </ul>
+        </nav>
+      </div>
+
+      <main>
+        {tab === 'active' && (
+          swarm
+            ? <SwarmDetail swarm={swarm} onRefresh={refresh} onError={setErrorMsg} />
+            : <div>
+                <p>No active swarm. Create one below.</p>
+                <SwarmForm onCreated={refresh} onError={setErrorMsg} />
               </div>
-              <TaskForm teamId={selected.id} onCreated={refreshTasks} onError={setError} />
-            </>
-          ) : (
-            <div className="card"><p className="empty">Select or create a swarm to inspect its tasks.</p></div>
-          )}
-        </section>
         )}
 
-        {activeTab === 'decisions' && (
-        <section className="col wide">
-          <DecisionBus
-            signals={signals}
-            proposals={proposals}
-            proposalDetail={proposalDetail}
-            proposalForm={proposalForm}
-            voterId={voterId}
-            onCreateProposal={handleCreateProposal}
-            onVote={handleVote}
-            onOpenProposal={handleOpenProposal}
-            onSetVoterId={(v) => setVoterId(v)}
-            onSetProposalForm={(fn) => setProposalForm((f) => ({ ...f, ...fn(typeof fn === 'function' ? fn(proposalForm) : fn) }))}
-            onError={setError}
-            refreshSignals={refreshSignals}
-            refreshProposals={refreshProposals}
-          />
-        </section>
+        {tab === 'archived' && (
+          <ArchivedSwarmList />
         )}
       </main>
     </div>

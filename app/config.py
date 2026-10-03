@@ -17,4 +17,9 @@ class Settings(BaseSettings):
     # deterministic hash-based embedder is used instead of downloading the model.
     EMBEDDING_USE_MODEL: bool = False
 
+    # LLM harness (Slice 3: Harness Adapters). Defaults to local LMStudio.
+    LLM_ENDPOINT: str = "http://127.0.0.1:12345"
+    LLM_MODEL: str = "qwen3.8-27b-mlx"
+    LLM_API_KEY: str = ""  # LMStudio by default requires no key
+
     model_config = {"env_prefix": "DAASH_"}

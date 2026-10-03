@@ -14,6 +14,34 @@ class TaskStatus(str, Enum):
     DONE = "Done"
 
 
+class SwarmStatus(str, Enum):
+    CREATED = "CREATED"
+    ACTIVE = "ACTIVE"
+    PAUSED = "PAUSED"
+    USER_FEEDBACK = "USER_FEEDBACK"
+    VERIFICATION = "VERIFICATION"
+    LEARNING = "LEARNING"
+    ARCHIVED = "ARCHIVED"
+    DELETED = "DELETED"
+
+    @staticmethod
+    def terminal() -> tuple[str, ...]:
+        return ("ARCHIVED", "DELETED")
+
+    @staticmethod
+    def allowed(next_state: str) -> dict[str, set[str]]:
+        return {
+            "CREATED":         {"ACTIVE", "DELETED"},
+            "ACTIVE":          {"PAUSED", "VERIFICATION"},
+            "PAUSED":          {"ACTIVE", "USER_FEEDBACK", "VERIFICATION"},
+            "USER_FEEDBACK":   {"ACTIVE"},
+            "VERIFICATION":    {"LEARNING", "ARCHIVED", "DELETED"},
+            "LEARNING":        {"ARCHIVED"},
+            "ARCHIVED":        set(),
+            "DELETED":         set(),
+        }
+
+
 # --- Task ---
 
 class TaskBase(BaseModel):
@@ -47,6 +75,17 @@ class Task(TaskBase):
     updated_at: datetime
 
 
+# --- Alignment & Judgement ---
+
+from pydantic import BaseModel
+
+
+class MissionJudgementRequest(BaseModel):
+    """Payload for the Mission Judgement endpoint."""
+    team_id: str
+    task_text: str
+
+
 # --- Team ---
 
 class TeamBase(BaseModel):
@@ -61,6 +100,7 @@ class TeamCreate(TeamBase):
 
 class Team(TeamBase):
     id: str
+    lifecycle_state: str = SwarmStatus.CREATED.value
     created_at: datetime
 
 

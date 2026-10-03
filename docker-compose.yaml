@@ -8,6 +8,9 @@ services:
       - DAASH_ALEMBIC_DATABASE_URL=postgresql+psycopg://daash:daash@db:5432/daash
       - DAASH_REDIS_URL=redis://redis:6379/0
       - DAASH_DATABASE_HOST=db
+      - DAASH_LLM_ENDPOINT=http://host.docker.internal:12345
+    extra_hosts:
+      - host.docker.internal:host-gateway
     depends_on:
       db:
         condition: service_healthy

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
 import sys
@@ -40,6 +41,21 @@ async def pool() -> AsyncGenerator[asyncpg.Pool, None]:
     p = await asyncpg.create_pool(TEST_DB_URL)
     yield p
     await p.close()
+
+
+async def _clear_data(pool: asyncpg.Pool) -> None:
+    """Best-effort truncate all tables."""
+    try:
+        await pool.execute("TRUNCATE teams, tasks, memory_entries, transcripts CASCADE")
+    except Exception:
+        pass
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _clear_test_data(pool: asyncpg.Pool):
+    """Truncate all tables before each test to prevent isolation leaks."""
+    await _clear_data(pool)
+    yield
 
 
 @pytest_asyncio.fixture
@@ -85,3 +101,6 @@ async def client(test_db: Database, bus: DecisionBus) -> AsyncGenerator[AsyncCli
         yield ac
 
     main_module.bus = original_bus
+    await ac.aclose()
+    # Clear teams so the single-live-swarm invariant doesn't leak between tests.
+    await test_db.pool.execute("TRUNCATE teams, tasks, memory_entries, transcripts CASCADE")

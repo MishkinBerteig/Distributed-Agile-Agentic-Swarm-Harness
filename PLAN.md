@@ -69,7 +69,8 @@ No feature is considered complete until it meets the following testing rigor:
 - [x] **Slice 1.5: Simple web-based UI in React "DAASHboard"** to allow a human to inspect current state of tasks and teams and "create" a swarm (minimal in this slice) + embedding column.
 - [x] **Slice 2: The Decision Bus** $\rightarrow$ Redis integration + voting logic tests + E2E "consensus" test + updated DAASHboard.
   - *Status 2026-09-30: Complete — ephemeral signal feed + atomic quorum voting over Redis, consensus verified live; user smoke-tested.*
-- [ ] **Slice 3: Harness Adapters** $\rightarrow$ Adapter interface + implementation for the first harness (e.g., OpenClaude) + E2E integration test + updated DAASHboard.
+- [x] **Slice 3: Harness Adapters** $\rightarrow$ Adapter interface + LMStudio adapter + `POST /agents/run` endpoint + E2E integration test + updated DAASHboard (clickable tasks + AgentRun component).
+  - *Status 2026-10-01: Complete — 61 tests (52 logic + 9 adapter), Docker builds, smoke-tested against live LMStudio.*
 - [ ] **Slice 4: Alignment Hierarchy** $\rightarrow$ Vision/Mission prompt injection + Mission Judgement logic tests.
 - [ ] **Slice 5: Quality Gates** $\rightarrow$ DoD/DoR validation logic + E2E "Task Rejection" flow + updated DAASHboard.
 - [ ] **Slice 6: Audit & RAG** $\rightarrow$ Session transcript storage + vector retrieval tests.

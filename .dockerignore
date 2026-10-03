@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+*.egg-info/
+dist/
+build/
+.git/
+.dockerignore
+.env
+*.swp
+*.swo
+.DS_Store

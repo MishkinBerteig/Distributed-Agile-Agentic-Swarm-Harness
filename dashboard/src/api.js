@@ -1,39 +1,25 @@
-const BASE = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '')
-
-async function request(path, options = {}) {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
-    ...options,
-  })
-  if (!res.ok) {
-    let detail = res.statusText
-    try {
-      const body = await res.json()
-      detail = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail ?? body)
-    } catch { /* keep statusText */ }
-    throw new Error(detail)
-  }
-  return res.status === 204 ? null : res.json()
-}
-
 export const api = {
-  listTeams: () => request('/teams').then((d) => d.teams),
-  createSwarm: (payload) => request('/swarms', { method: 'POST', body: JSON.stringify(payload) }),
-  listTasks: (teamId, status) => {
-    const params = new URLSearchParams({ team_id: teamId })
-    if (status) params.set('status', status)
-    return request(`/tasks?${params}`).then((d) => d.tasks)
+  // Swarm / lifecycle
+  createSwarm(payload) { return api._post('/api/swarms', payload) },
+  getActiveSwarm()   { return api._get('/api/swarms/active') },
+  transition(teamId, action) {
+    return api._post(`/api/swarms/${teamId}/transitions/${action}`)
   },
-  createTask: (payload) => request('/tasks', { method: 'POST', body: JSON.stringify(payload) }),
+  deleteSwarm(teamId) { return api._del(`/api/swarms/${teamId}/delete`) },
+  listTeams()         { return api._get('/api/teams') },
 
-  // --- Decision Bus (Slice 2) ---
-  listDecisions: () => request('/decisions').then((d) => d.signals),
-  publishDecision: (payload) => request('/decisions', { method: 'POST', body: JSON.stringify(payload) }),
-  listProposals: (teamId) => {
-    const params = teamId ? `?team_id=${encodeURIComponent(teamId)}` : ''
-    return request(`/proposals${params}`).then((d) => d.proposals)
+  // Tasks
+  listTasks(teamId, status) {
+    const q = status ? `?team_id=${encodeURIComponent(teamId)}&status=${status}` : `?team_id=${encodeURIComponent(teamId)}`
+    return api._get(`/api/tasks${q}`)
   },
-  createProposal: (payload) => request('/proposals', { method: 'POST', body: JSON.stringify(payload) }),
-  castVote: (proposalId, payload) => request(`/proposals/${encodeURIComponent(proposalId)}/votes`, { method: 'POST', body: JSON.stringify(payload) }),
-  getProposal: (proposalId) => request(`/proposals/${encodeURIComponent(proposalId)}`),
+  createTask(payload) { return api._post('/api/tasks', payload) },
+  getTask(id)         { return api._get(`/api/tasks/${id}`) },
+  updateTask(id, body){ return api._patch(`/api/tasks/${id}`, body) },
+  deleteTask(id)      { return api._del(`/api/tasks/${id}`) },
 }
+
+api._get  = (url) => fetch(url).then(r => r.json())
+api._post = (url, body) => fetch(url, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) }).then(r => r.json())
+api._patch= (url, body) => fetch(url, { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) }).then(r => r.json())
+api._del  = (url) => fetch(url, { method: 'DELETE' })

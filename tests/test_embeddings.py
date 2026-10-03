@@ -53,7 +53,7 @@ def test_lazy_embedder_falls_back_when_model_unavailable(monkeypatch):
 async def test_repo_persists_embedding(task_repo, pool):
     team_id = "team-emb"
     await pool.execute(
-        "INSERT INTO teams (id, name, vision_statement, mission_statement) VALUES ($1, $1, 'v', '')",
+        "INSERT INTO teams (id, name, vision_statement, mission_statement, lifecycle_state) VALUES ($1, $1, 'v', '', 'ACTIVE')",
         team_id,
     )
     task = await task_repo.create(
@@ -72,7 +72,7 @@ async def test_repo_persists_embedding(task_repo, pool):
 async def test_repo_embedding_null_when_omitted(task_repo, pool):
     team_id = "team-emb-null"
     await pool.execute(
-        "INSERT INTO teams (id, name, vision_statement, mission_statement) VALUES ($1, $1, 'v', '')",
+        "INSERT INTO teams (id, name, vision_statement, mission_statement, lifecycle_state) VALUES ($1, $1, 'v', '', 'ACTIVE')",
         team_id,
     )
     task = await task_repo.create(

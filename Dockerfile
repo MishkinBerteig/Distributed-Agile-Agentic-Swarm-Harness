@@ -12,7 +12,8 @@ RUN pip install --no-cache-dir \
     "redis[hiredis]>=5.0.0" \
     "pydantic>=2.0.0" \
     "pydantic-settings>=2.0.0" \
-    "psycopg[binary]>=3.2.0"
+    "psycopg[binary]>=3.2.0" \
+    "httpx"
 
 COPY pyproject.toml /opt/daash/pyproject.toml
 COPY app /opt/daash/app

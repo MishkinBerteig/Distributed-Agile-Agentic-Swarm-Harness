@@ -5,7 +5,7 @@ import logging
 import threading
 
 import asyncpg
-from fastapi import FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -14,7 +14,8 @@ from app.config import Settings
 from app.db import Database
 from app.embeddings import build_embedder
 from app.models import TaskCreate as TaskCreateModel, TaskUpdate as TaskUpdateModel
-from app.models import TaskStatus
+from app.models import TaskStatus, SwarmStatus
+from app.prompts import composeMissionPrompt
 from app.repo import TaskRepository, TeamRepository
 
 settings = Settings()
@@ -101,7 +102,57 @@ class VoteRequest(BaseModel):
     approve: bool
 
 
+class MissionJudgementRequest(BaseModel):
+    """Payload for the Mission Judgement endpoint."""
+    team_id: str
+    task_text: str
+
+
 # --- Swarm / Team endpoints ---
+
+@app.get("/swarms/active")
+async def get_active_swarm():
+    repo = TeamRepository(db.pool)
+    swarm = await repo.get_active()
+    if swarm is None:
+        return None
+    return swarm.model_dump(mode="json")
+
+
+@app.post("/swarms", status_code=201)
+async def create_swarm(req: SwarmCreateRequest) -> dict:
+    repo = TeamRepository(db.pool)
+    # Enforce: at most one live (non-ARCHIVED) swarm at any time.
+    existing = await repo.get_active()
+    if existing is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Swarm {existing.id} is already live ({existing.lifecycle_state}). "
+                   f"Archive or delete it before creating a new one.",
+        )
+    team = await repo.create(req.name, req.vision_statement, req.mission_statement)
+    return team.model_dump(mode="json")
+
+
+@app.delete("/swarms/{team_id}/delete")
+async def delete_swarm(team_id: str) -> dict:
+    repo = TeamRepository(db.pool)
+    try:
+        await repo.hard_delete(team_id)
+        return {"deleted": team_id}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.post("/swarms/{team_id}/transitions/{action}")
+async def transition_swarm(team_id: str, action: str) -> dict:
+    repo = TeamRepository(db.pool)
+    try:
+        swarm = await repo.transition(team_id, action)
+        return swarm.model_dump(mode="json")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
 
 @app.get("/teams")
 async def list_teams() -> dict:
@@ -110,11 +161,13 @@ async def list_teams() -> dict:
     return {"teams": [t.model_dump(mode="json") for t in teams]}
 
 
-@app.post("/swarms", status_code=201)
-async def create_swarm(req: SwarmCreateRequest) -> dict:
+@app.get("/teams/{team_id}")
+async def get_team(team_id: str) -> dict:
     repo = TeamRepository(db.pool)
-    team = await repo.create(req.name, req.vision_statement, req.mission_statement)
-    return team.model_dump(mode="json")
+    swarm = await repo.get(team_id)
+    if swarm is None:
+        raise HTTPException(status_code=404, detail="Swarm not found")
+    return swarm.model_dump(mode="json")
 
 
 # --- Task endpoints ---
@@ -137,7 +190,7 @@ async def create_task(req: TaskCreateRequest) -> dict:
     except asyncpg.ForeignKeyViolationError as e:
         if "team_id_fkey" in str(e):
             await db.pool.execute(
-                "INSERT INTO teams (id, name, vision_statement, mission_statement) VALUES ($1, $1, 'Auto-created', '') ON CONFLICT DO NOTHING",
+                "INSERT INTO teams (id, name, vision_statement, mission_statement, lifecycle_state) VALUES ($1, $1, 'Auto-created', '', 'CREATED') ON CONFLICT (id) DO NOTHING",
                 req.team_id,
             )
             try:
@@ -149,6 +202,61 @@ async def create_task(req: TaskCreateRequest) -> dict:
         else:
             raise HTTPException(422, f"parent task {req.parent_id} not found")
     return task.model_dump()
+
+
+# --- alignment helpers ---
+
+ALIGNMENT_THRESHOLD: float = 0.7
+
+
+def _compute_alignment_score(task_text: str, mission_text: str) -> float:
+    """Cosine similarity between task and mission embeddings.
+
+    Returns a value in [0, 1].  Zero means no overlap; 1 means identical direction.
+    """
+    task_vec = embedder.embed(task_text)
+    mission_vec = embedder.embed(mission_text)
+
+    # Cosine similarity
+    dot = sum(a * b for a, b in zip(task_vec, mission_vec))
+    t_norm = sum(a * a for a in task_vec) ** 0.5
+    m_norm = sum(a * a for a in mission_vec) ** 0.5
+    if t_norm == 0.0 or m_norm == 0.0:
+        return 0.0
+    return dot / (t_norm * m_norm)
+
+
+@app.patch("/tasks/{task_id}/judgement")
+async def judgement_task(task_id: str, req: MissionJudgementRequest = Body(...)) -> dict:
+    """Mission Judgement: check if a task aligns with the team's Vision/Mission."""
+    repo = TeamRepository(db.pool)
+    team = await repo.get_by_id(req.team_id)
+    if not team:
+        raise HTTPException(404, "team not found")
+
+    # Build the mission text the agent will use
+    mission_text = f"{team.vision_statement}\n\n{team.mission_statement}"
+
+    # Compute alignment score via embedding cosine similarity
+    score = _compute_alignment_score(req.task_text, mission_text)
+
+    aligned = score >= ALIGNMENT_THRESHOLD
+
+    # Compose the Mission prompt for this context
+    system_prompt = composeMissionPrompt(
+        team_vision=team.vision_statement,
+        team_mission=team.mission_statement,
+        task_name=req.task_text,
+    )
+
+    return {
+        "task_id": task_id,
+        "team_id": req.team_id,
+        "aligned": aligned,
+        "score": round(score, 4),
+        "reason": "Aligned with mission" if aligned else "Below alignment threshold",
+        "system_prompt": system_prompt,
+    }
 
 
 @app.get("/tasks")
