@@ -1,150 +1,96 @@
 # Implementation Plan: Distributed Agile Agentic Swarm Harness (DAASH)
 
 ## 1. System Overview
-DAASH is a containerized harness for managing distributed swarms of AI Agents organized into teams. The system ensures alignment through a hierarchical prompt structure (Vision $\rightarrow$ Mission) and maintains strict quality/mission gates.
+DAASH is a containerized harness for managing distributed swarms of AI Agents organized into teams. It keeps agents aligned through a hierarchical prompt structure (Vision $\rightarrow$ Mission) and enforces quality and mission gates.
 
 ### Core Constraints
-- **Containerization**: Must support Docker and Podman.
-- **Persistence**: Full system state must be resilient to container shutdown/restart.
-- **Scale**: Designed for high token volume (10M+ context, 100M+ thinking tokens).
-- **Visibility**: Human-readable global task database with specific performance metrics (p90 cycle time, error rates).
+- **Containerization**: Docker and Podman.
+- **Persistence**: Full system state survives container shutdown/restart.
+- **Scale**: High token volume (10M+ context, 100M+ thinking tokens).
+- **Visibility**: Human-readable global task database with performance metrics (p90 cycle time, error rates).
 
-## 2. Proposed Technology Stack
-- **Language**: Python (FastAPI for coordination API, Pydantic for data validation).
-- **Database ORM**: SQLAlchemy 2.0 (Async) for structured data and migrations.
-- **Migrations**: Alembic.
-- **Vector Store**: pgvector (integrated via SQLAlchemy) for RAG and task searchability.
-- **Message Broker**: Redis (for inter-agent decision-making and high-frequency signals).
-- **Persistence**: Persistent Docker/Podman volumes mapping to the DB storage.
-- **Containerization**: Multi-stage Dockerfiles (compatible with Podman) and `docker-compose.yaml` / `podman-compose.yaml`.
-- **Supported Harnesses**: Adapters for OpenClaw, Hermes Agent, OpenClaude, Claude Code, Codex, and OpenWebUI.
+## 2. Technology Stack
+- **Language**: Python (FastAPI coordination API, Pydantic validation).
+- **Database**: PostgreSQL + pgvector, SQLAlchemy 2.0 (async), Alembic migrations.
+- **Message Broker**: Redis (inter-agent decisions and high-frequency signals).
+- **Frontend**: DAASHboard — Vite + React.
+- **Persistence**: Named Docker/Podman volumes.
+- **Containerization**: Multi-stage Dockerfile and `docker-compose.yaml`.
+- **Supported Harnesses**: Adapters for LMStudio (implemented), OpenClaw, Hermes Agent, OpenClaude, Claude Code, Codex, and OpenWebUI.
 
 ## 3. Architectural Components
-
-### A. Swarm Coordinator
-Top-level orchestrator managing the Vision Statement, team lifecycle, and resource budgets.
-
-### B. Team Structure
-Teams composed of Mission Judgement (Alignment), Quality Judgement (DoD Audit), and Mission Delivery Agents.
-
-### C. Task Coordination System (The "Ground Truth")
-Global database for:
-- **Task State**: Pending $\rightarrow$ Ready (per DoR) $\rightarrow$ In-Progress $\rightarrow$ Done.
-- **Communication**: The primary record for all non-decision communication and deliverables.
-- **Metrics**: p90 cycle time and failure rate tracking.
-
-### D. Communication & Memory
-- **Decision Bus (Redis)**: Rapid, ephemeral signals for coordination/voting.
-- **Persistent Memory**: RAG (vector store), Audit Trail (transcripts), and Task History.
+- **Swarm Coordinator**: Top-level orchestrator managing the Vision Statement, team lifecycle, and resource budgets.
+- **Team Structure**: Mission Judgement (alignment), Quality Judgement (DoD audit), and Mission Delivery Agents.
+- **Task Coordination System (Ground Truth)**: Global database holding task state (Pending $\rightarrow$ Ready per DoR $\rightarrow$ In-Progress $\rightarrow$ Done), all non-decision communication and deliverables, and p90 cycle time / failure rate metrics.
+- **Decision Bus (Redis)**: Ephemeral signals for coordination and voting.
+- **Persistent Memory**: RAG (vector store), audit trail (transcripts), and task history.
 
 ## 4. Extreme Programming (XP) Execution Model
+DAASH is built with XP: incremental delivery of small, testable slices under continuous integration.
 
-DAASH will be developed using a strict XP approach, abandoning phase-based milestones in favor of **Incremental Delivery** and **Continuous Integration**.
+### Definition of Done
+1. **Unit Testing (TDD)**: Every logic change starts with a failing test; high coverage of business logic, validators, and adapters.
+2. **E2E Testing**: Full container orchestration tests, including state resilience (`stop` $\rightarrow$ `start` $\rightarrow$ zero data loss).
+3. **Security Testing**: Input validation on all agent-submitted data; secure volume mounting and container isolation.
+4. **Performance Testing**: Task DB stress under concurrent agent updates; Redis vs. PostgreSQL latency.
 
-### A. Testing & Quality Requirements (The "Definition of Done")
-No feature is considered complete until it meets the following testing rigor:
-1.  **Unit Testing (TDD)**: 
-    - Every logic change starts with a failing test.
-    - High coverage of business logic, validators, and adapters.
-2.  **E2E Testing**: 
-    - Full container orchestration tests (Podman/Docker).
-    - Verification of state resilience: `container stop` $\rightarrow$ `container start` $\rightarrow$ verify zero data loss.
-3.  **Security Testing**: 
-    - Input validation for all agent-submitted data (preventing prompt injection into the coordinator).
-    - Secure volume mounting and container isolation checks.
-4.  **Performance Testing**: 
-    - Stress testing the Task DB under high concurrency of agent updates.
-    - Measuring latency of Redis decision bus vs. PostgreSQL task updates.
+### Design Principles
+- **Continuous Refactoring**: The architecture evolves with each story.
+- **Simple Design**: The simplest thing that works for the current test case.
+- **Small Releases**: Every completed story is deployed and verified in the harness.
 
-### B. Architectural Consequences
-- **Refactoring as a First-Class Citizen**: The architecture will evolve through continuous refactoring. If a design choice hinders the current story's implementation, it is refactored immediately.
-- **Simple Design**: Implement the simplest thing that works for the current test case; avoid speculative abstractions.
-- **Small Releases**: Every completed story (e.g., "Ability to persist a single task across restart") is deployed and verified in the harness immediately.
-
-## 5. Incremental Story Backlog (Prioritized)
-*Instead of phases, we execute these as independent, testable slices:*
-
-- [x] **Slice 1: Durable Task State** $\rightarrow$ SQLAlchemy models (Tasks/Teams) with pgvector + Alembic migrations + Volume persistence + Unit tests for hierarchical task CRUD.
-  - *Status 2026-09-28: Complete — Alembic initial migration is the sole schema path; resilience E2E verified. DAASHboard tracked under Slice 1.5.*
-- [x] **Slice 1.5: Simple web-based UI in React "DAASHboard"** to allow a human to inspect current state of tasks and teams and "create" a swarm (minimal in this slice) + embedding column.
-- [x] **Slice 2: The Decision Bus** $\rightarrow$ Redis integration + voting logic tests + E2E "consensus" test + updated DAASHboard.
-  - *Status 2026-09-30: Complete — ephemeral signal feed + atomic quorum voting over Redis, consensus verified live; user smoke-tested.*
-- [x] **Slice 3: Harness Adapters** $\rightarrow$ Adapter interface + LMStudio + CompositeAdapter + `build_adapter` factory + LMStudio adapter tests + E2E smoke test against live LMStudio.
-  - *Status 2026-10-01: Complete — 61 tests (52 logic + 9 adapter), Docker builds, smoke-tested against live LMStudio. DAASHboard includes lifecycle state machine with transitions, Kanban task board, archived swarm list.*
-- [x] **Slice 4: Alignment Hierarchy** $\rightarrow$ Vision/Mission prompt injection (`composeVisionPrompt`, `composeMissionPrompt`) + Mission Judgement endpoint (`PATCH /tasks/{id}/judgement`) + embedding-based cosine similarity alignment scoring + full test suite.
-  - *Status 2026-10-03: Complete — 7 alignment tests + 9 adapter tests (16 total across test_alignment.py, test_adapter.py). Vision and Mission statements are injected into agent system prompts via `composeMissionPrompt`; task alignment is measured via cosine similarity of embedding vectors.*
-- [ ] **Slice 5: Quality Gates** $\rightarrow$ DoD/DoR validation logic + E2E "Task Rejection" flow + updated DAASHboard.
-- [ ] **Slice 6: Audit & RAG** $\rightarrow$ Session transcript storage + vector retrieval tests.
-- [ ] **Slice 7: Observability** $\rightarrow$ Metrics engine + updated DAASHboard.
+## 5. Story Backlog (Prioritized)
+- [x] **Slice 1: Durable Task State** — SQLAlchemy models (Tasks/Teams) with pgvector, Alembic migrations, volume persistence, hierarchical task CRUD.
+- [x] **Slice 1.5: DAASHboard** — React UI to inspect tasks and teams and create a swarm; task embeddings populated at creation.
+- [x] **Slice 2: Decision Bus** — Redis signal feed, atomic quorum voting, E2E consensus test.
+- [x] **Slice 3: Harness Adapters** — Adapter interface, LMStudio adapter, `CompositeAdapter`, `build_adapter` factory; smoke-tested against live LMStudio. DAASHboard gains swarm lifecycle controls, Kanban task board, and archived swarm list.
+- [x] **Slice 4: Alignment Hierarchy** — Vision/Mission prompt composition (`composeVisionPrompt`, `composeMissionPrompt`) and Mission Judgement endpoint with embedding-based alignment scoring.
+- [ ] **Slice 5: Quality Gates** — DoD/DoR validation, E2E "Task Rejection" flow, updated DAASHboard.
+  - [ ] **5.0 Quality Judgement generates team DoR/DoD**: The Quality Judgement Agent for each team uses the Swarm Vision, the Team Mission, and any user guidance to create the team's Definition of Ready and Definition of Done (via the harness adapter).
+  - [ ] **5.1 Swarm DoR guidance CRUD + team DoR read-only**: As a user, I can CRUD Definition of Ready (Commitment Policy) guidance for the swarm and view the actual Definition of Ready for each Agent Team.
+  - [ ] **5.2 Swarm DoD guidance CRUD + team DoD read-only**: As a user, I can CRUD Definition of Done (Fit and Finish) guidance for the swarm and view the actual Definition of Done for each Agent Team.
+  - [ ] **5.3 Start a team and begin work**: As a Swarm Coordinator, I can give an Agent Team the Vision, Mission, DoR guidance and DoD guidance to start it, then tell it to start working on tasks.
+  - [ ] **5.4 DAASHboard quality-gate visualization**: The DAASHboard shows Agent Teams, Tasks and the team working on each task, each team's DoR and DoD, and Decision Bus activity.
+- [ ] **Slice 6: Audit & RAG** — Session transcript storage + vector retrieval tests.
+- [ ] **Slice 7: Observability** — Metrics engine + updated DAASHboard.
 
 ## 6. Risk Assessment
 - **Harness Compatibility**: High abstraction risk. Mitigated by TDD for each adapter.
-- **State Consistency**: Redis/Postgres divergence risk. Mitigated by making Postgres the definitive source for all state changes.
+- **State Consistency**: Redis/Postgres divergence. Mitigated by PostgreSQL as the source of record for all state changes.
 - **Volume I/O**: Podman performance bottlenecks. Mitigated by continuous performance testing in the E2E suite.
 
-## 7. Progress Log
+## 7. Current System State
 
-### 2026-09-28 — Increment 1 foundation functional (Slice 1 partially green)
+### Services (`docker compose`)
+- **coordinator** — FastAPI on 127.0.0.1:8000; runs `alembic upgrade head` on startup.
+- **db** — PostgreSQL 17 + pgvector, persisted in a named volume.
+- **redis** — Decision Bus.
+- **dashboard** — Vite dev server on 127.0.0.1:7173, proxying `/api` to the coordinator.
+- **test** — `test` profile; runs the suite against the `daash_test` database and Redis DB 15.
 
-**Current API surface (coordinator):** `GET /health`, `POST /tasks` (auto-creates referenced team), `GET /tasks/{id}`, `PATCH /tasks/{id}` (status enum: Pending | Ready | In-Progress | Done), `DELETE /tasks/{id}` → 204.
+Networks: `backend` (internal; db, redis, coordinator, test) and `frontend` (bridge; coordinator, dashboard, published ports, LMStudio egress via `host.docker.internal`).
 
-**Verified:** `.venv/bin/python -m pytest` → 12 passed; `docker compose up --build -d` bootstraps a fresh pgvector DB from ORM and serves traffic; full task create/read/update/delete smoke test passes against the live containers (user-confirmed).
+### API
+- `GET /health`
+- **Swarms**: `POST /swarms`, `GET /swarms/active`, `POST /swarms/{id}/transitions/{action}`, `DELETE /swarms/{id}/delete`. Lifecycle actions: start (CREATED → ACTIVE), pause (ACTIVE/USER_FEEDBACK → PAUSED), resume (PAUSED → ACTIVE), feedback (PAUSED → USER_FEEDBACK), verify (ACTIVE/PAUSED → VERIFICATION), learn (VERIFICATION → LEARNING), archive (VERIFICATION/LEARNING → ARCHIVED), delete (CREATED/VERIFICATION). A partial unique index guarantees a single live swarm.
+- **Teams**: `GET /teams`, `GET /teams/{id}`.
+- **Tasks**: `POST /tasks` (hierarchical via `parent_id`, embedded at creation), `GET /tasks?team_id=&status=`, `GET/PATCH/DELETE /tasks/{id}`, `PATCH /tasks/{id}/judgement` (cosine similarity of task text vs. team Vision + Mission embeddings; returns score, `aligned` at ≥ 0.7, and the composed Mission prompt).
+- **Decision Bus**: `POST/GET /decisions` (signal feed), `POST/GET /proposals`, `GET /proposals/{id}`, `POST /proposals/{id}/votes`. Votes resolve atomically via a Lua script; all bus keys carry a TTL.
 
-**Remaining for Slice 1 completion:**
-- [x] Alembic initial migration generated + applied in entrypoint (migration path, not just `db_setup` fallback).
-- [x] Volume persistence/resilience E2E: stop container → start → data intact.
-- [x] Hierarchical tasks (parent/child) exercised end-to-end via API.
-- [x] Embedding column populate at task creation. *(pulled earlier from Slice 6 and tracked in Slice 1.5)*
-- [x] Initial DAASHboard. *(tracked in Slice 1.5)*
+### Components
+- **Embeddings** (`app/embeddings.py`): `Alibaba-NLP/gte-base-en-v1.5` (768-dim) enabled by `EMBEDDING_USE_MODEL`; deterministic 768-dim feature-hashing embedder by default.
+- **Prompts** (`app/prompts.py`): `composeVisionPrompt`, `composeMissionPrompt` layer Vision → Mission → Task.
+- **Adapters** (`app/adapter.py`): `BaseAdapter`, `LMStudioAdapter` (streaming), `CompositeAdapter`, `build_adapter`, `get_active_adapter`.
+- **DAASHboard** (`dashboard/`): active swarm view with lifecycle action buttons, Kanban task board with status advancement, archived swarm list.
 
-### 2026-09-28 — Increment 2: Slice 1 complete
+### Tests
+78 tests: `test_task_crud.py` (20), `test_bus.py` (19), `test_swarms.py` (14), `test_embeddings.py` (9), `test_adapter.py` (9), `test_alignment.py` (7). The suite builds its schema via Alembic each session.
 
-**Added/changed:**
-- **Alembic initial migration** (`migrations/versions/9ce40a1bd3c6_initial_schema_teams_tasks_memory_.py`) — autogenerate shows zero drift vs `app/orm.py`; includes `CREATE EXTENSION vector`. `migrations/env.py` now honors `DAASH_ALEMBIC_DATABASE_URL`/`DAASH_DATABASE_URL`, so the old alembic.ini-rewrite hack and the `db_setup` fallback are gone (`app/db_setup.py` deleted; entrypoint runs `alembic upgrade head` as the only schema path).
-- **API**: `GET /tasks?team_id=&status=` implemented (was a stub); `PATCH` persists `acceptance_criteria` and rejects invalid statuses via the `TaskStatus` enum (422); `POST /tasks` accepts `parent_id`, returns 422 for unknown parents. Note: FK violation ordering is non-deterministic, so parent existence is checked up front rather than inferred from constraint names alone.
-- **Tests** (TDD, red→green): +7 tests → `.venv/bin/python -m pytest` = **19 passed**. `tests/conftest.py` now builds the test schema with `alembic upgrade head` (session fixture), so every test run exercises the migration; task rows truncate between tests.
-
-**E2E verified on live containers (`docker compose`, pgvector:pg17):**
-- Fresh bootstrap: `down -v && up --build` → empty volume bootstrapped purely via Alembic, `/health` OK.
-- Hierarchy via API: parent + child created over HTTP; list shows correct `parent_id` links; PATCH updated status/acceptance_criteria.
-- Resilience: `coordinator stop/start` with API confirmed down in between → data intact; full stack `down` (volumes kept) `&& up -d` → zero loss, migration idempotent (no re-run).
-
-**Next:** Slice 1.5 DAASHboard & embedding column.
-
-### 2026-09-28 — Increment 3: Slice 1.5 (embedding at creation + initial DAASHboard)
-
-**Added/changed:**
-- **Embeddings** (`app/embeddings.py`): primary model `Alibaba-NLP/gte-base-en-v1.5` (768-dim, matches existing `Vector(768)` columns; user directive), selected via `DAASH_EMBEDDING_MODEL`. Lazy resolution on first embed so startup never blocks on a ~400MB download; if sentence-transformers or the model is unavailable it falls back to a deterministic L2-normalized feature-hashing embedder (also 768-dim) and logs — embedding rows are always populated. `EMBEDDING_USE_MODEL` (default **false**) gates real-model use; `sentence-transformers` added as optional extra `[embeddings]`. **Deviation:** the real model is not exercised in this environment yet (no torch install); plumbing + fallback are fully tested, flipping the flag exercises gte-base later without schema/API change.
-- **Embed at task creation**: `POST /tasks` composes name+description+acceptance_criteria and embeds off-loop (`asyncio.to_thread`); `TaskRepository.create(embedding=...)` inserts `$n::vector`. Reads switched from `SELECT *` to an explicit column list so asyncpg (no vector codec registered) never fetches the column.
-- **API for the board**: `GET /teams`, `POST /swarms` ({name, vision_statement, mission_statement} → team row), CORS wide open for dev.
-- **DAASHboard** (`dashboard/`): Vite + React 18 — swarm list w/ selection, create-swarm form, per-swarm task tree (parent/child via `parent_id`), status badges + filter, add-task form (exercises embedding server-side). API base defaults to `/api`; dev proxy → coordinator. Compose service `dashboard` (node:26-alpine, port 7173 published on 127.0.0.1, named node_modules volume).
-- **Tests**: +13 → **32 passed** (`tests/test_embeddings.py`, `tests/test_swarms.py`).
-- **E2E verified on live containers:** POST /swarms → swarm row; POST /tasks → `vector_dims(embedding)=768` in DB; browser (playwright) at :5173: created "E2E Swarm" via form, selected it, added task via form, task renders nested with badge and its row has a 768-dim vector; `/api` proxy works through Vite.
-- **Slice 1.5 → Slice 4 evolution:** The initial DAASHboard (task tree + swarm CRUD) was later superseded by a full lifecycle state machine with transitions (Slice 4), a Kanban task board with in-app status advancement, and an archived swarm list. The "Decision Bus" tab built in Slice 2 was subsequently replaced by the lifecycle/archived tab nav. The current board enforces the "single live swarm" constraint.
-
-**Next:** Slice 2 (Decision Bus).
-
-### 2026-09-30 — Increment 4: Slice 2 (Decision Bus — Redis)
-
-**Current state:**
-- **Decision Bus** (`app/bus.py`): Redis-backed ephemeral signal feed + quorum voting. Signals pushed via `lpush` with `ltrim` cap (`BUS_SIGNALS_MAX`, default 200); every key TTL'd (`BUS_TTL_SECONDS`, default 3600s), so the bus self-heals and PostgreSQL remains the source of record. Proposals stored as Redis hashes under `daash:proposal:*`; approve/reject voter tallies are SETs in a separate `daash:votes:*` namespace (also TTL'd); proposal listing tolerates any non-hash keys it scans. **Atomic voting** via Lua script — duplicate voters and post-decision votes refused; first side to reach quorum resolves exactly once under parallel load. Lifecycle `pending → approved | rejected`.
-- **API endpoints**: `POST /decisions`, `GET /decisions`, `POST /proposals`, `GET /proposals?team_id=`, `GET /proposals/{id}`, `POST /proposals/{id}/votes` (404 unknown proposal, 409 duplicate/already-decided). Vote resolution auto-publishes `proposal_vote` + `proposal_approved`/`proposal_rejected` signals to the feed.
-- **Tests**: `tests/test_bus.py` — **19 tests** covering signal ordering + cap; voting logic (quorum approve/reject, quorum-1, duplicate voter, post-decision vote, unknown proposal); listing with existing votes, legacy stray keys, and tally TTLs; parallel-consensus races (concurrent approves, split approve/reject race, racing same voter); TTL ephemerality; full E2E consensus over the HTTP API + error-code mapping. Redis fixture uses DB 15, flushed per test, isolated from the live dev bus.
-- **DAASHboard** (Slice 2 era): stacked tab nav under the header — "Overview" (swarms/tasks) and "Decision Bus". The Decision Bus tab showed a live signal feed, proposals list, create-proposal form, and voting booth. Every error banner included a plain-language explanation of the cause and remedy.
-- Verified: full suite **51 passed**; consensus flow verified live over HTTP on `docker compose` containers; dashboard production build clean.
-
-**Post-Slice-2 DAASHboard evolution (Slices 3-4):** The Decision Bus tab was replaced by a "Active Swarm / Archived" tab nav. The active swarm view now includes a full lifecycle state machine with allowed-action buttons, Kanban task board with inline status advancement, and an archived swarm list with restore capability. The DAASHboard enforces the single-live-swarm constraint at the UI level.
-
-**Next:** Slice 3 (Harness Adapters — adapter interface + first harness + E2E integration test + DAASHboard).
-
-### 2026-10-03 — Increment 5: Slice 4 (Alignment Hierarchy)
-
-**Added/changed:**
-- **Prompt composition** (`app/prompts.py`): `composeVisionPrompt(team_vision)` returns a system prompt grounded in the Vision with behavioral guidance; `composeMissionPrompt(team_vision, team_mission, task_name?, task_description?, task_acceptance_criteria?)` layers Vision → Mission → Task into a structured system prompt with `# Vision`, `# Mission`, `# Assigned Task` sections. Both enforce that agents reject work conflicting with Vision/Mission.
-- **Mission Judgement endpoint** (`PATCH /tasks/{id}/judgement`): calculates alignment score via cosine similarity of task vs mission embedding vectors; sets `mission_judgement_status` to APPROVED (≥ threshold, default 0.7), REJECTED, or REVIEW (below threshold but above 0). Returns 422 for unknown tasks.
-- **Harness adapter** (`app/adapter.py`): `BaseAdapter.execute(turn) → AgentResponse` abstract + `LMStudioAdapter` (streaming SSE proxy) + `CompositeAdapter` registry for multi-harness support + `build_adapter` factory wired to settings.
-- **Tests**: `tests/test_alignment.py` — **7 tests** (vision prompt includes guidance; mission prompt layers vision+mission+task with task verification line; minimal mission prompt); `tests/test_adapter.py` — **9 tests** (LMStudioAdapter error handling, streaming parsing, fallback handler, composite registry, build_factory, get_active_adapter singleton). Total project test count: **78** (test_bus.py: 19, test_task_crud.py: 20, test_embeddings.py: 9, test_adapter.py: 9, test_alignment.py: 7, test_swarms.py: 14).
-- **Docker**: two compose networks. `backend` is `internal: true` and carries db, redis, coordinator and test; PostgreSQL and Redis publish no host ports and are reachable only from containers on it. `frontend` is a regular bridge carrying coordinator and dashboard: the published ports (127.0.0.1:8000 coordinator, 127.0.0.1:7173 dashboard), the Vite `/api` proxy, and the coordinator's egress to the LMStudio endpoint through `extra_hosts` host.docker.internal. Host access to the data stores goes through the containers: `docker compose exec db psql -U daash` and `docker compose exec redis redis-cli`. The suite runs in the compose `test` service (Dockerfile `test` stage, `test` profile): `docker compose --profile test run --rm --build test`; it uses the `daash_test` database (which must exist in the `pg-data` volume; conftest resets its schema and runs Alembic each session) and Redis DB 15.
-- **Single Swarm Orchestrator**: DB-level partial unique index (`teams_is_active_idx` on `teams(is_active = true)`) enforces at most one active swarm per lifecycle state, implemented in the `teams` table migration.
-
-**Full system state summary:** The complete DAASH system ships four services via `docker compose` (PostgreSQL + pgvector + Redis + FastAPI coordinator on 127.0.0.1:8000, Vite dev server on 127.0.0.1:7173; PostgreSQL and Redis only on the internal `backend` network), plus the `test` service under the `test` profile. The API surface includes `/health`, `/teams`, `/swarms` (CRUD + lifecycle transitions enforcing CREATED → ACTIVE → PAUSED → USER_FEEDBACK → VERIFICATION → LEARNING → ARCHIVED/DELETED), `/tasks` (hierarchical CRUD + embedding at creation + Mission Judgement), `/decisions` (status feed), `/proposals` (voting), and `/agents/run` (adapter dispatch, currently not wired to the dashboard). All persistence is durable via named volumes; the ORM maps to `teams` and `tasks` tables with a `teams_lifecycle_state` enum.
+## 8. Completed Increments
+- **2026-09-28 — Slice 1**: Alembic initial migration; hierarchical task CRUD API; resilience verified across container stop/start and full stack down/up.
+- **2026-09-28 — Slice 1.5**: Embedding at task creation; `GET /teams`, `POST /swarms`; initial DAASHboard.
+- **2026-09-30 — Slice 2**: Decision Bus with atomic quorum voting; consensus verified live over HTTP.
+- **2026-10-01 — Slice 3**: Harness adapters; swarm lifecycle state machine and single-live-swarm migration; DAASHboard lifecycle, Kanban, and archive views.
+- **2026-10-03 — Slice 4**: Vision/Mission prompt composition and Mission Judgement endpoint.
+- **2026-10-03 — Infrastructure**: Internal compose network for PostgreSQL and Redis; test suite runs in the compose `test` service.
+- **2026-10-03 — Slice 5 planning**: Quality Gates split into increments 5.0–5.4.
