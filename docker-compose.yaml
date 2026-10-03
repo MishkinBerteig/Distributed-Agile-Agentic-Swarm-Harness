@@ -1,8 +1,19 @@
+# Networks:
+#   backend  - internal (no egress, no published ports): db, redis, coordinator, test.
+#              PostgreSQL and Redis are reachable only from containers on this network.
+#   frontend - regular bridge: coordinator and dashboard. Carries the published ports,
+#              the dashboard's /api proxy to the coordinator, npm installs, and the
+#              coordinator's egress to the LLM endpoint on the host.
+# Published ports bind to 127.0.0.1 only:
+#   8000 - coordinator API (docs at /docs)
+#   7173 - DAASHboard (Vite dev server)
 services:
   coordinator:
-    build: .
+    build:
+      context: .
+      target: runtime
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
       - DAASH_DATABASE_URL=postgresql://daash:daash@db:5432/daash
       - DAASH_ALEMBIC_DATABASE_URL=postgresql+psycopg://daash:daash@db:5432/daash
@@ -18,6 +29,9 @@ services:
         condition: service_started
     volumes:
       - daash-data:/var/lib/postgresql/data
+    networks:
+      - backend
+      - frontend
 
   db:
     image: pgvector/pgvector:pg17
@@ -25,8 +39,6 @@ services:
       POSTGRES_USER: daash
       POSTGRES_PASSWORD: daash
       POSTGRES_DB: daash
-    ports:
-      - "5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U daash"]
       interval: 5s
@@ -34,11 +46,13 @@ services:
       retries: 5
     volumes:
       - pg-data:/var/lib/postgresql/data
+    networks:
+      - backend
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    networks:
+      - backend
 
   dashboard:
     image: node:26-alpine
@@ -50,9 +64,36 @@ services:
       - dashboard-node-modules:/app/node_modules
     command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
     ports:
-      - "5173:5173"
+      - "127.0.0.1:7173:7173"
     depends_on:
       - coordinator
+    networks:
+      - frontend
+
+  # Test suite: `docker compose --profile test run --rm --build test`.
+  # Runs against the daash_test database and Redis DB 15 on the internal network.
+  test:
+    profiles: ["test"]
+    build:
+      context: .
+      target: test
+    environment:
+      - DAASH_TEST_DATABASE_URL=postgresql://daash:daash@db:5432/daash_test
+      - DAASH_TEST_REDIS_URL=redis://redis:6379/15
+      - DAASH_DATABASE_URL=postgresql://daash:daash@db:5432/daash_test
+      - DAASH_REDIS_URL=redis://redis:6379/15
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - backend
+
+networks:
+  backend:
+    internal: true
+  frontend:
 
 volumes:
   pg-data:

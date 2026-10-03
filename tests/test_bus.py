@@ -6,6 +6,7 @@ import asyncio
 import pytest
 
 from app.bus import DecisionBus, ProposalError
+from tests.conftest import TEST_REDIS_URL
 
 pytestmark = pytest.mark.asyncio
 
@@ -24,7 +25,7 @@ async def test_publish_and_recent_signals_newest_first(bus: DecisionBus):
 
 
 async def test_signal_feed_is_capped(bus: DecisionBus):
-    capped = DecisionBus("redis://localhost:6379/15", ttl_seconds=60, signals_max=5)
+    capped = DecisionBus(TEST_REDIS_URL, ttl_seconds=60, signals_max=5)
     try:
         for i in range(12):
             await capped.publish(f"signal-{i}")
@@ -206,7 +207,7 @@ async def test_bus_state_carries_ttl(bus: DecisionBus):
 
 
 async def test_bus_state_disappears_when_ttl_expires():
-    short_lived = DecisionBus("redis://localhost:6379/15", ttl_seconds=1)
+    short_lived = DecisionBus(TEST_REDIS_URL, ttl_seconds=1)
     try:
         p = await short_lived.create_proposal("team-a", "expire me")
         await short_lived.publish("fading")

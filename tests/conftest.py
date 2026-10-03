@@ -17,8 +17,10 @@ from app.config import Settings
 from app.db import Database
 from app.repo import TaskRepository
 
-TEST_DB_URL = "postgresql://daash:daash@localhost/daash_test"
-TEST_REDIS_URL = os.environ.get("DAASH_TEST_REDIS_URL", "redis://localhost:6379/15")
+# Defaults name the compose services on the internal `backend` network; the suite
+# runs in the compose `test` service (`docker compose --profile test run --rm --build test`).
+TEST_DB_URL = os.environ.get("DAASH_TEST_DATABASE_URL", "postgresql://daash:daash@db:5432/daash_test")
+TEST_REDIS_URL = os.environ.get("DAASH_TEST_REDIS_URL", "redis://redis:6379/15")
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -29,7 +31,8 @@ def migrated_schema() -> None:
         ["psql", TEST_DB_URL, "-q", "-c", "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"],
         check=True,
     )
-    env = {**os.environ, "DAASH_ALEMBIC_DATABASE_URL": "postgresql+psycopg://daash:daash@localhost/daash_test"}
+    # migrations/env.py rewrites postgresql:// to the psycopg driver URL.
+    env = {**os.environ, "DAASH_ALEMBIC_DATABASE_URL": TEST_DB_URL}
     subprocess.run(
         [sys.executable, "-m", "alembic", "upgrade", "head"],
         cwd=REPO_ROOT, check=True, env=env, capture_output=True,

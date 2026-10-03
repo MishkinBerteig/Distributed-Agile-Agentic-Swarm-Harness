@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.11-slim AS runtime
 
 RUN apt-get update && apt-get install -y postgresql-client && rm -rf /var/lib/apt/lists/*
 
@@ -24,3 +24,13 @@ COPY entrypoint.sh /opt/daash/entrypoint.sh
 RUN chmod +x /opt/daash/entrypoint.sh
 WORKDIR /opt/daash
 ENTRYPOINT ["/opt/daash/entrypoint.sh"]
+
+# Test image: runtime plus pytest and the test suite (compose service `test`).
+FROM runtime AS test
+
+RUN pip install --no-cache-dir "pytest>=8.0.0" "pytest-asyncio>=0.24.0"
+
+COPY tests /opt/daash/tests
+
+ENTRYPOINT []
+CMD ["python", "-m", "pytest"]
