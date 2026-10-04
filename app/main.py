@@ -9,13 +9,20 @@ from fastapi import Body, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from app.adapter import (
+    AgentMessage,
+    AgentTurn,
+    HarnessAdapterError,
+    build_adapter,
+    get_active_adapter,
+)
 from app.bus import DecisionBus, ProposalError
 from app.config import Settings
 from app.db import Database
 from app.embeddings import build_embedder
 from app.models import TaskCreate as TaskCreateModel, TaskUpdate as TaskUpdateModel
 from app.models import TaskStatus, SwarmStatus
-from app.prompts import composeMissionPrompt
+from app.prompts import composeMissionPrompt, composeQualityPrompt, extract_quality_json
 from app.repo import TaskRepository, TeamRepository
 
 settings = Settings()
@@ -34,6 +41,12 @@ log = logging.getLogger(__name__)
 # lazily on first use; falls back to a deterministic embedder when the model
 # or sentence-transformers is unavailable so task creation never blocks.
 embedder = build_embedder(settings.EMBEDDING_MODEL, settings.EMBEDDING_USE_MODEL)
+
+# Harness adapter (Slice 5): the composite adapter that Quality Judgement runs
+# through. Building it only constructs objects (no I/O), so we do it at import
+# time — ASGI lifespan events don't fire under ASGITransport in tests, and the
+# adapter must be ready before the first /teams/{id}/quality request either way.
+adapter = build_adapter(settings)
 
 app.add_middleware(
     CORSMiddleware,
@@ -108,6 +121,12 @@ class MissionJudgementRequest(BaseModel):
     task_text: str
 
 
+class QualityGenerateRequest(BaseModel):
+    """Optional user guidance for the Quality Judgement generation prompt."""
+    dor_guidance: str = ""
+    dod_guidance: str = ""
+
+
 # --- Swarm / Team endpoints ---
 
 @app.get("/swarms/active")
@@ -168,6 +187,83 @@ async def get_team(team_id: str) -> dict:
     if swarm is None:
         raise HTTPException(status_code=404, detail="Swarm not found")
     return swarm.model_dump(mode="json")
+
+
+# --- Quality Judgement endpoints (Slice 5.0) ---
+
+@app.post("/teams/{team_id}/quality", status_code=201)
+async def generate_team_quality(team_id: str, req: QualityGenerateRequest | None = Body(default=None)) -> dict:
+    """Quality Judgement: derive the team's Definition of Ready / Done via the harness.
+
+    Runs the LMStudio harness adapter with a prompt built from the team's
+    Vision/Mission plus optional user guidance, parses strict JSON back out, and
+    persists both standards on the team row (regenerating overwrites cleanly).
+    """
+    repo = TeamRepository(db.pool)
+    team = await repo.get(team_id)
+    if team is None:
+        raise HTTPException(status_code=404, detail="Swarm not found")
+
+    system_prompt = composeQualityPrompt(
+        team_vision=team.vision_statement or "",
+        team_mission=team.mission_statement or "",
+        dor_guidance=(req.dor_guidance if req else "") or None,
+        dod_guidance=(req.dod_guidance if req else "") or None,
+    )
+    turn = AgentTurn(
+        system_prompt=system_prompt,
+        messages=[AgentMessage(role="user", content="Generate the team quality standards now.")],
+        temperature=0.2,
+        metadata={"role": "quality_judge", "team_id": team.id},
+    )
+
+    try:
+        response = await get_active_adapter().execute(turn)
+    except HarnessAdapterError as exc:
+        status = 409 if exc.code == "busy" else 502
+        raise HTTPException(status, f"Harness error during quality generation: {exc.message}")
+    except Exception as exc:  # transport/timeout errors surface here too
+        log.warning("Quality generation failed for team %s: %r", team_id, exc)
+        raise HTTPException(502, "Harness adapter unreachable — is LMStudio running?")
+
+    try:
+        standards = extract_quality_json(response.text)
+    except ValueError as exc:
+        log.warning("Unparseable quality JSON from harness (team %s): %r", team_id, response.text[:400])
+        raise HTTPException(502, f"Harness returned unparseable quality JSON: {exc}")
+
+    persisted = await repo.update_quality_standards(
+        team.id, standards["definition_of_ready"], standards["definition_of_done"]
+    )
+    if persisted is None:  # team vanished between get and update
+        raise HTTPException(status_code=404, detail="Swarm not found")
+
+    # Best-effort decision-bus signal so the swarm sees quality evolution.
+    try:
+        await bus.publish(
+            "quality.generated",
+            team_id=team.id,
+            payload={"definition_of_ready": standards["definition_of_ready"][:200],
+                     "definition_of_done": standards["definition_of_done"][:200]},
+        )
+    except Exception as exc:
+        log.warning("Failed to publish quality.generated signal: %r", exc)
+
+    return {
+        **persisted,
+        "model": response.model,
+        "usage": response.usage,
+    }
+
+
+@app.get("/teams/{team_id}/quality")
+async def get_team_quality(team_id: str) -> dict:
+    """Return the team's stored Definition of Ready / Done (None until generated)."""
+    repo = TeamRepository(db.pool)
+    standards = await repo.get_quality_standards(team_id)
+    if standards is None:
+        raise HTTPException(status_code=404, detail="Swarm not found")
+    return standards
 
 
 # --- Task endpoints ---

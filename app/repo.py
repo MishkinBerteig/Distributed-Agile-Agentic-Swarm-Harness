@@ -200,6 +200,40 @@ class TeamRepository:
         )
         return self._row_to_team(row)
 
+    async def get_quality_standards(self, team_id: str) -> dict | None:
+        """Return the team's Definition of Ready/Done, or None if no such team.
+
+        Values are None until quality generation has run for this team.
+        """
+        row = await self._pool.fetchrow(
+            "SELECT definition_of_ready, definition_of_done FROM teams WHERE id = $1",
+            team_id,
+        )
+        if row is None:
+            return None
+        return {
+            "team_id": team_id,
+            "definition_of_ready": row["definition_of_ready"],
+            "definition_of_done": row["definition_of_done"],
+        }
+
+    async def update_quality_standards(
+        self, team_id: str, definition_of_ready: str, definition_of_done: str
+    ) -> dict | None:
+        """Persist generated DoR/DoD for a team. Returns None if no such team."""
+        row = await self._pool.fetchrow(
+            "UPDATE teams SET definition_of_ready = $2, definition_of_done = $3 "
+            "WHERE id = $1 RETURNING definition_of_ready, definition_of_done",
+            team_id, definition_of_ready, definition_of_done,
+        )
+        if row is None:
+            return None
+        return {
+            "team_id": team_id,
+            "definition_of_ready": row["definition_of_ready"],
+            "definition_of_done": row["definition_of_done"],
+        }
+
     async def get_active(self) -> Team | None:
         """Return the single live swarm (any non-terminal state). None if none exists."""
         terminal = SwarmStatus.terminal()

@@ -46,7 +46,7 @@ DAASH is built with XP: incremental delivery of small, testable slices under con
 - [x] **Slice 3: Harness Adapters** — Adapter interface, LMStudio adapter, `CompositeAdapter`, `build_adapter` factory; smoke-tested against live LMStudio. DAASHboard gains swarm lifecycle controls, Kanban task board, and archived swarm list.
 - [x] **Slice 4: Alignment Hierarchy** — Vision/Mission prompt composition (`composeVisionPrompt`, `composeMissionPrompt`) and Mission Judgement endpoint with embedding-based alignment scoring.
 - [ ] **Slice 5: Quality Gates** — DoD/DoR validation, E2E "Task Rejection" flow, updated DAASHboard.
-  - [ ] **5.0 Quality Judgement generates team DoR/DoD**: The Quality Judgement Agent for each team uses the Swarm Vision, the Team Mission, and any user guidance to create the team's Definition of Ready and Definition of Done (via the harness adapter).
+  - [x] **5.0 Quality Judgement generates team DoR/DoD**: The Quality Judgement Agent for each team uses the Swarm Vision, the Team Mission, and any user guidance to create the team's Definition of Ready and Definition of Done (via the harness adapter).
   - [ ] **5.1 Swarm DoR guidance CRUD + team DoR read-only**: As a user, I can CRUD Definition of Ready (Commitment Policy) guidance for the swarm and view the actual Definition of Ready for each Agent Team.
   - [ ] **5.2 Swarm DoD guidance CRUD + team DoD read-only**: As a user, I can CRUD Definition of Done (Fit and Finish) guidance for the swarm and view the actual Definition of Done for each Agent Team.
   - [ ] **5.3 Start a team and begin work**: As a Swarm Coordinator, I can give an Agent Team the Vision, Mission, DoR guidance and DoD guidance to start it, then tell it to start working on tasks.
@@ -73,18 +73,18 @@ Networks: `backend` (internal; db, redis, coordinator, test) and `frontend` (bri
 ### API
 - `GET /health`
 - **Swarms**: `POST /swarms`, `GET /swarms/active`, `POST /swarms/{id}/transitions/{action}`, `DELETE /swarms/{id}/delete`. Lifecycle actions: start (CREATED → ACTIVE), pause (ACTIVE/USER_FEEDBACK → PAUSED), resume (PAUSED → ACTIVE), feedback (PAUSED → USER_FEEDBACK), verify (ACTIVE/PAUSED → VERIFICATION), learn (VERIFICATION → LEARNING), archive (VERIFICATION/LEARNING → ARCHIVED), delete (CREATED/VERIFICATION). A partial unique index guarantees a single live swarm.
-- **Teams**: `GET /teams`, `GET /teams/{id}`.
+- **Teams**: `GET /teams`, `GET /teams/{id}`, `GET /teams/{id}/quality` (stored DoR/DoD, null until generated), `POST /teams/{id}/quality` (optional `{dor_guidance, dod_guidance}` body) — runs the harness adapter's Quality Judge over Vision/Mission + guidance, parses strict JSON, persists both standards on the team row (regeneration overwrites), and publishes a `quality.generated` decision-bus signal. Harness errors → 502 (busy → 409); unparseable model output → 502; unknown team → 404.
 - **Tasks**: `POST /tasks` (hierarchical via `parent_id`, embedded at creation), `GET /tasks?team_id=&status=`, `GET/PATCH/DELETE /tasks/{id}`, `PATCH /tasks/{id}/judgement` (cosine similarity of task text vs. team Vision + Mission embeddings; returns score, `aligned` at ≥ 0.7, and the composed Mission prompt).
 - **Decision Bus**: `POST/GET /decisions` (signal feed), `POST/GET /proposals`, `GET /proposals/{id}`, `POST /proposals/{id}/votes`. Votes resolve atomically via a Lua script; all bus keys carry a TTL.
 
 ### Components
 - **Embeddings** (`app/embeddings.py`): `Alibaba-NLP/gte-base-en-v1.5` (768-dim) enabled by `EMBEDDING_USE_MODEL`; deterministic 768-dim feature-hashing embedder by default.
-- **Prompts** (`app/prompts.py`): `composeVisionPrompt`, `composeMissionPrompt` layer Vision → Mission → Task.
-- **Adapters** (`app/adapter.py`): `BaseAdapter`, `LMStudioAdapter` (streaming), `CompositeAdapter`, `build_adapter`, `get_active_adapter`.
-- **DAASHboard** (`dashboard/`): active swarm view with lifecycle action buttons, Kanban task board with status advancement, archived swarm list.
+- **Prompts** (`app/prompts.py`): `composeVisionPrompt`, `composeMissionPrompt` layer Vision → Mission → Task. `composeQualityPrompt` builds the Quality Judge prompt (Vision + Mission + optional DoR/DoD guidance, strict-JSON output contract); `extract_quality_json` parses model responses tolerantly (bare JSON, code fences, surrounding prose).
+- **Adapters** (`app/adapter.py`): `BaseAdapter`, `LMStudioAdapter` (streaming), `CompositeAdapter`, `build_adapter`, `get_active_adapter`. The composite adapter is built at coordinator import time so Quality Judgement can run through it.
+- **DAASHboard** (`dashboard/`): active swarm view with lifecycle action buttons, Kanban task board with status advancement, archived swarm list, and a Quality Standards panel (view/generate/regenerate team DoR/DoD with optional guidance).
 
 ### Tests
-78 tests: `test_task_crud.py` (20), `test_bus.py` (19), `test_swarms.py` (14), `test_embeddings.py` (9), `test_adapter.py` (9), `test_alignment.py` (7). The suite builds its schema via Alembic each session.
+98 tests: `test_task_crud.py` (20), `test_quality.py` (20), `test_bus.py` (19), `test_swarms.py` (14), `test_embeddings.py` (9), `test_adapter.py` (9), `test_alignment.py` (7). The suite builds its schema via Alembic each session.
 
 ## 8. Completed Increments
 - **2026-09-28 — Slice 1**: Alembic initial migration; hierarchical task CRUD API; resilience verified across container stop/start and full stack down/up.
@@ -94,3 +94,4 @@ Networks: `backend` (internal; db, redis, coordinator, test) and `frontend` (bri
 - **2026-10-03 — Slice 4**: Vision/Mission prompt composition and Mission Judgement endpoint.
 - **2026-10-03 — Infrastructure**: Internal compose network for PostgreSQL and Redis; test suite runs in the compose `test` service.
 - **2026-10-03 — Slice 5 planning**: Quality Gates split into increments 5.0–5.4.
+- **2026-10-03 — Slice 5.0 (Quality Judgement)**: Team DoR/DoD migration (`c4a7e2f8d1b5`), `POST/GET /teams/{id}/quality`, quality-judge prompt + tolerant JSON extraction, Quality Standards panel in DAASHboard; verified live through LMStudio with guidance honored and `quality.generated` published to the Decision Bus.

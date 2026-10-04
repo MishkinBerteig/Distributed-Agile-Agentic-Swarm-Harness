@@ -88,6 +88,82 @@ function SwarmForm({ onCreated, onError }) {
   )
 }
 
+// -- Quality Judgement (Slice 5) --
+
+function QualityPanel({ swarm, onError }) {
+  const [quality, setQuality] = useState(null)   // {definition_of_ready, definition_of_done} | null
+  const [dorGuidance, setDorGuidance] = useState('')
+  const [dodGuidance, setDodGuidance] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    if (!swarm) return
+    setQuality(null)
+    api.getQuality(swarm.id)
+      .then(q => { if (q && !q.detail) setQuality(q) })
+      .catch(() => {})   // no standards yet — panel just shows the generate form
+  }, [swarm])
+
+  async function generate(e) {
+    e.preventDefault()
+    setBusy(true)
+    try {
+      const q = await api.generateQuality(swarm.id, {
+        dor_guidance: dorGuidance.trim(),
+        dod_guidance: dodGuidance.trim(),
+      })
+      if (q && !q.detail) {
+        setQuality(q)
+        setDorGuidance(''); setDodGuidance('')
+      } else {
+        onError(q?.detail || 'Quality generation failed')
+      }
+    } catch (err) {
+      onError(explain('Generating quality standards', err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const hasStandards = quality && (quality.definition_of_ready || quality.definition_of_done)
+
+  return (
+    <div className="card">
+      <h3 style={{marginTop: 0}}>Quality Standards</h3>
+      {hasStandards ? (
+        <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, fontSize: 14, whiteSpace: 'pre-wrap'}}>
+          <div>
+            <strong>Definition of Ready</strong>
+            <p style={{margin: '6px 0 0'}}>{quality.definition_of_ready || '—'}</p>
+          </div>
+          <div>
+            <strong>Definition of Done</strong>
+            <p style={{margin: '6px 0 0'}}>{quality.definition_of_done || '—'}</p>
+          </div>
+        </div>
+      ) : (
+        <p style={{color: '#666', fontSize: 14}}>No quality standards yet — generate a Definition of Ready / Done from this swarm's vision and mission.</p>
+      )}
+
+      <form onSubmit={generate} style={{marginTop: 12}}>
+        <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8}}>
+          <label style={{fontSize: 13}}>
+            Guidance for Definition of Ready (optional)
+            <textarea value={dorGuidance} onChange={(e) => setDorGuidance(e.target.value)} rows={2} placeholder="e.g. every task must name its verifier" />
+          </label>
+          <label style={{fontSize: 13}}>
+            Guidance for Definition of Done (optional)
+            <textarea value={dodGuidance} onChange={(e) => setDodGuidance(e.target.value)} rows={2} placeholder="e.g. tests run in Docker, no local venvs" />
+          </label>
+        </div>
+        <button type="submit" disabled={busy} style={{marginTop: 8}}>
+          {busy ? 'Judging…' : hasStandards ? '↻ Regenerate standards' : '✨ Generate quality standards'}
+        </button>
+      </form>
+    </div>
+  )
+}
+
 // -- Swarm detail --
 
 function SwarmDetail({ swarm, onRefresh, onError }) {
@@ -152,6 +228,8 @@ function SwarmDetail({ swarm, onRefresh, onError }) {
           )}
         </div>
       </div>
+
+      <QualityPanel swarm={swarm} onError={onError} />
 
       <div style={{marginBottom: 24}}>
         <TaskForm teamId={swarm.id} onCreated={(t) => setTasks(prev => [t, ...prev])} onError={onError} />
@@ -226,9 +304,9 @@ function TaskForm({ teamId, onCreated, onError }) {
     if (!name.trim()) return
     setBusy(true)
     try {
-      await api.createTask({ team_id: teamId, name, description, acceptance_criteria: criteria })
+      const task = await api.createTask({ team_id: teamId, name, description, acceptance_criteria: criteria })
       setName(''); setDescription(''); setCriteria('')
-      onCreated()
+      onCreated(task)
     } catch (err) {
       onError(explain('Creating task', err))
     } finally {
