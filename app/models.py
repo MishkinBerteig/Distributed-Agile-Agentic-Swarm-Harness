@@ -86,22 +86,76 @@ class MissionJudgementRequest(BaseModel):
     task_text: str
 
 
-# --- Team ---
+# --- Swarm / Team hierarchy ---
+# A swarm owns the Vision and the lifecycle (Slice 5.1 restructure: these lived
+# fused on `teams` since Slice 3, which made a swarm a single team). Teams own a
+# Mission; teams have no defined lifecycle of their own yet.
 
-class TeamBase(BaseModel):
+class SwarmBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     vision_statement: str
+
+
+class SwarmCreateRequest(SwarmBase):
+    """Body for POST /swarms: the swarm plus optional teams to seed it with."""
+    mission_statement: str = ""  # applied to the default team when none are given
+    teams: List["TeamCreateItem"] = Field(default_factory=list)
+
+
+class TeamCreateItem(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
     mission_statement: str = ""
 
 
-class TeamCreate(TeamBase):
-    id: str
-
-
-class Team(TeamBase):
+class Swarm(SwarmBase):
     id: str
     lifecycle_state: str = SwarmStatus.CREATED.value
     created_at: datetime
+
+
+class TeamCreate(BaseModel):
+    swarm_id: str
+    name: str = Field(..., min_length=1, max_length=255)
+    mission_statement: str = ""
+
+
+class Team(BaseModel):
+    id: str
+    swarm_id: Optional[str] = None   # a team can exist standalone; a swarm groups teams
+    name: str
+    vision_statement: Optional[str] = None  # legacy mirror; the swarm row is authoritative
+    mission_statement: str = ""
+    # Legacy mirror column only — the swarm owns the lifecycle (Slice 5.1).
+    lifecycle_state: Optional[str] = None
+    created_at: datetime
+
+
+# --- Agent sessions (Slice 5.1) ---
+
+class AgentSessionStatus(str, Enum):
+    PENDING = "pending"
+    LAUNCHING = "launching"
+    LIVE = "live"
+    STOPPED = "stopped"
+    FAILED = "failed"
+
+
+class AgentSession(BaseModel):
+    id: str
+    swarm_id: str
+    team_id: str
+    role: str
+    harness: str = "openclaude"
+    model: Optional[str] = None       # resolved from the runner's init event
+    session_state: str = AgentSessionStatus.PENDING.value
+    error: Optional[str] = None
+    harness_session_id: Optional[str] = None
+    turns: int = 0
+    launched_at: Optional[datetime] = None
+    last_seen: Optional[datetime] = None
+
+
+SwarmCreateRequest.model_rebuild()
 
 
 # --- Memory / Vector ---

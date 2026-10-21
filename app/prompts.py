@@ -173,3 +173,66 @@ def extract_quality_json(text: str) -> dict[str, str]:
             return {"definition_of_ready": dor.strip(), "definition_of_done": dod.strip()}
 
     raise ValueError(f"no valid quality JSON in model response: {text[:200]!r}")
+
+
+AGENT_ROLE_JOBS = {
+    "Mission Judgement": (
+        "Monitor the team's work for alignment with the Vision and Mission above. "
+        "When asked, judge whether proposed or delivered tasks serve them; reject "
+        "misaligned work with a reason."
+    ),
+    "Quality Judgement": (
+        "Uphold quality: audit deliverables against the team's Definition of Ready "
+        "(before work) and Definition of Done (after work); report verdicts as "
+        "pass/fail with specific reasoning."
+    ),
+    "Mission Delivery": (
+        "Execute the team's work. Claim Ready tasks, do the actual work with your "
+        "tools, update task status through the coordinator API, and submit "
+        "deliverables for judgement."
+    ),
+}
+
+
+def composeAgentRolePrompt(
+    swarm_vision: str,
+    team_mission: str,
+    role: str,
+    *,
+    team_name: str = "",
+    coordinator_url: str = "",
+    team_id: str = "",
+) -> str:
+    """System prompt for a live agent session (Slice 5.1).
+
+    Deterministic hierarchy per README: swarm Vision first, then the team's
+    Mission, then the role's job and operational instructions for reaching the
+    coordinator API.
+    """
+    lines: list[str] = []
+    lines.append("# Vision")
+    lines.append(swarm_vision)
+    lines.append("")
+    lines.append("# Mission")
+    lines.append(team_mission or "(no mission statement recorded yet)")
+    lines.append("")
+    lines.append(f"# Your Role: {role}")
+    if team_name:
+        lines.append(f"You are a member of the Agent Team \"{team_name}\".")
+    lines.append(AGENT_ROLE_JOBS.get(role, "Contribute to the team according to your role."))
+    lines.append("")
+    lines.append("# Operating Instructions")
+    lines.append(
+        "You run as a persistent headless agent session in an Agent Swarm. You stay "
+        "alive and receive instructions turn by turn over this session; wait for each "
+        "instruction, act on it, and reply concisely."
+    )
+    if coordinator_url:
+        tasks_hint = f"?team_id={team_id}" if team_id else ""
+        lines.append(
+            f"The DAASH coordinator API is reachable at {coordinator_url} (plain HTTP, "
+            "no auth). Use curl against it to act on the swarm: "
+            f"GET /api/tasks{tasks_hint} lists tasks; PATCH /api/tasks/<id> advances "
+            "status and submits deliverables."
+        )
+    return "\n".join(lines)

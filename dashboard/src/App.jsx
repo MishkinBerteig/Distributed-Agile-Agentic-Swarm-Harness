@@ -45,6 +45,136 @@ function LifecycleBadge({ state }) {
   )
 }
 
+// -- Agent session roster (Slice 5.1) --
+
+const SESSION_COLORS = {
+  live:       '#5cb85c',
+  launching:  '#f0ad4e',
+  failed:     '#d9534f',
+  stopped:    '#95a5a6',
+  pending:    '#bdc3c7',
+}
+
+function RosterPanel({ swarm, onRefresh }) {
+  const [roster, setRoster] = useState(null)
+  const [pollError, setPollError] = useState(false)
+
+  // Poll while the swarm is live so the roster tracks real agent sessions.
+  useEffect(() => {
+    if (!swarm || swarm.lifecycle_state !== 'ACTIVE') {
+      setRoster(null)
+      return
+    }
+    let cancelled = false
+    async function tick() {
+      try {
+        const res = await api.getSwarmSessions(swarm.id)
+        if (!cancelled) {
+          setRoster(res)
+          setPollError(false)
+        }
+      } catch {
+        if (!cancelled) setPollError(true)
+      }
+    }
+    tick()
+    const timer = setInterval(tick, 3000)
+    return () => { cancelled = true; clearInterval(timer) }
+  }, [swarm?.id, swarm?.lifecycle_state])
+
+  async function addTeam(e) {
+    e.preventDefault()
+    const form = new FormData(e.currentTarget)
+    const name = form.get('name')?.trim()
+    const mission = form.get('mission')?.trim() || ''
+    if (!name) return
+    try {
+      await api.createTeam({ swarm_id: swarm.id, name, mission_statement: mission })
+      onRefresh()
+      e.currentTarget.reset()
+    } catch (err) {
+      setPollError(true)
+    }
+  }
+
+  const runnerDown = roster
+    ? roster.teams.every(g => g.sessions.every(s => s.session_state === 'failed' && /runner/i.test(s.error || '')))
+    : false
+
+  return (
+    <div className="card">
+      <h3 style={{marginTop: 0}}>Agent Roster</h3>
+      {swarm.lifecycle_state !== 'ACTIVE' ? (
+        <p style={{color: '#666', fontSize: 14}}>
+          Agents run while the swarm is live — press ▶ Start to launch every team member as a real harness session.
+        </p>
+      ) : roster && runnerDown ? (
+        <p style={{color: '#d9534f', fontSize: 14}}>
+          ⚠ Agent runner unreachable — no sessions launched. On the device where OpenClaude is installed,
+          run <code>DAASH_RUNNER_TOKEN=change-me-runner python3 -m app.runner</code> and press ▶ Start again.
+        </p>
+      ) : roster ? (
+        <>
+          {roster.teams.map(group => (
+            <div key={group.team_id} style={{marginBottom: 14}}>
+              <strong style={{fontSize: 14}}>{group.team_name || shortId(group.team_id)}</strong>
+              <table style={{width: '100%', fontSize: 13, borderCollapse: 'collapse', marginTop: 4}}>
+                <thead>
+                  <tr style={{color: '#666', textAlign: 'left'}}>
+                    <th style={{padding: '2px 8px 2px 0'}}>Role</th>
+                    <th>Harness</th>
+                    <th>Model</th>
+                    <th>Status</th>
+                    <th>Turns</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {group.sessions.map(s => (
+                    <tr key={s.id} style={{verticalAlign: 'top'}}>
+                      <td style={{padding: '2px 8px 2px 0'}}>{s.role}</td>
+                      <td>{s.harness}</td>
+                      <td>{s.model || '—'}</td>
+                      <td>
+                        <span className="chip" style={{background: SESSION_COLORS[s.session_state] || '#999', color: '#fff'}}>
+                          {s.session_state}
+                        </span>
+                      </td>
+                      <td>{s.turns ?? 0}</td>
+                    </tr>
+                  ))}
+                  {group.sessions.filter(s => s.error).map(s => (
+                    <tr key={s.id + '-err'}>
+                      <td colSpan="5" style={{color: '#d9534f', fontSize: 12, padding: '0 0 4px 8px'}}>
+                        {s.role}: {s.error}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ))}
+          {roster.teams.length === 0 && <p style={{color: '#666', fontSize: 14}}>No teams in this swarm yet.</p>}
+        </>
+      ) : (
+        <p style={{color: '#666', fontSize: 14}}>Loading roster…</p>
+      )}
+      {pollError && !runnerDown && <p style={{color: '#d9534f', fontSize: 12}}>Roster refresh failed.</p>}
+
+      <form onSubmit={addTeam} style={{marginTop: 10, display: 'flex', gap: 8, alignItems: 'end', flexWrap: 'wrap'}}>
+        <label style={{fontSize: 13}}>
+          Add team
+          <input name="name" placeholder="Team name" style={{display: 'block', marginTop: 4}} required />
+        </label>
+        <label style={{fontSize: 13}}>
+          Mission
+          <input name="mission" placeholder="Team mission (optional)" style={{display: 'block', marginTop: 4, width: 220}} />
+        </label>
+        <button type="submit">+ Add team</button>
+      </form>
+    </div>
+  )
+}
+
 // -- Swarm form --
 
 function SwarmForm({ onCreated, onError }) {
@@ -58,7 +188,12 @@ function SwarmForm({ onCreated, onError }) {
     if (!name.trim()) return
     setBusy(true)
     try {
-      await api.createSwarm({ name: name.trim(), vision_statement: vision, mission_statement: mission })
+      // Vision is swarm-level; the mission seeds the swarm's first team.
+      await api.createSwarm({
+        name: name.trim(),
+        vision_statement: vision,
+        teams: [{ name: name.trim(), mission_statement: mission }],
+      })
       setName(''); setVision(''); setMission('')
       onCreated()
     } catch (err) {
@@ -76,11 +211,11 @@ function SwarmForm({ onCreated, onError }) {
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Alpha Swarm" required />
       </label>
       <label>
-        Vision statement
+        Vision statement (swarm-level, flows into every session)
         <input value={vision} onChange={(e) => setVision(e.target.value)} placeholder="Ship verified value daily" />
       </label>
       <label>
-        Mission statement
+        First team's mission
         <input value={mission} onChange={(e) => setMission(e.target.value)} placeholder="Automate the boring parts" />
       </label>
       <button type="submit" disabled={busy || !name.trim()}>{busy ? 'Creating…' : 'Create swarm'}</button>
@@ -88,27 +223,27 @@ function SwarmForm({ onCreated, onError }) {
   )
 }
 
-// -- Quality Judgement (Slice 5) --
+// -- Quality Judgement (Slice 5) — per team --
 
-function QualityPanel({ swarm, onError }) {
+function QualityPanel({ team, onError }) {
   const [quality, setQuality] = useState(null)   // {definition_of_ready, definition_of_done} | null
   const [dorGuidance, setDorGuidance] = useState('')
   const [dodGuidance, setDodGuidance] = useState('')
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
-    if (!swarm) return
+    if (!team) return
     setQuality(null)
-    api.getQuality(swarm.id)
+    api.getQuality(team.id)
       .then(q => { if (q && !q.detail) setQuality(q) })
       .catch(() => {})   // no standards yet — panel just shows the generate form
-  }, [swarm])
+  }, [team?.id])
 
   async function generate(e) {
     e.preventDefault()
     setBusy(true)
     try {
-      const q = await api.generateQuality(swarm.id, {
+      const q = await api.generateQuality(team.id, {
         dor_guidance: dorGuidance.trim(),
         dod_guidance: dodGuidance.trim(),
       })
@@ -129,7 +264,7 @@ function QualityPanel({ swarm, onError }) {
 
   return (
     <div className="card">
-      <h3 style={{marginTop: 0}}>Quality Standards</h3>
+      <h3 style={{marginTop: 0}}>Quality Standards — {team.name}</h3>
       {hasStandards ? (
         <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, fontSize: 14, whiteSpace: 'pre-wrap'}}>
           <div>
@@ -142,7 +277,7 @@ function QualityPanel({ swarm, onError }) {
           </div>
         </div>
       ) : (
-        <p style={{color: '#666', fontSize: 14}}>No quality standards yet — generate a Definition of Ready / Done from this swarm's vision and mission.</p>
+        <p style={{color: '#666', fontSize: 14}}>No quality standards yet — generate a Definition of Ready / Done from the swarm's vision and this team's mission.</p>
       )}
 
       <form onSubmit={generate} style={{marginTop: 12}}>
@@ -164,24 +299,54 @@ function QualityPanel({ swarm, onError }) {
   )
 }
 
+// -- Task board for one team --
+
+function TeamSection({ team, swarm, onRefresh }) {
+  const [tasks, setTasks] = useState([])
+
+  const loadTasks = useCallback(() => {
+    api.listTasks(team.id).then(res => {
+      const list = Array.isArray(res) ? res : (res.tasks || [])
+      setTasks(list)
+    }).catch(() => {})
+  }, [team.id])
+
+  useEffect(() => { loadTasks() }, [loadTasks])
+
+  return (
+    <div style={{marginTop: 20, borderTop: '2px solid #eee', paddingTop: 12}}>
+      <div style={{display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap'}}>
+        <h3 style={{margin: 0}}>{team.name}</h3>
+        {team.mission_statement && (
+          <span style={{color: '#666', fontSize: 13}}>Mission: {team.mission_statement}</span>
+        )}
+      </div>
+
+      <QualityPanel team={team} onError={() => {}} />
+
+      <div>
+        <TaskForm teamId={team.id} onCreated={(t) => setTasks(prev => [t, ...prev])} onStatusChange={loadTasks} />
+        <h3 style={{marginTop: 12}}>Task Board — {team.name}</h3>
+        <div className="board">
+          {STATUSES.map(s => (
+            <div key={s} className="column">
+              <h4>{s} ({tasks.filter(t => t.status === s).length})</h4>
+              {tasks.filter(t => t.status === s).map(task => (
+                <TaskItem key={task.id} task={task} onUpdated={(t) => setTasks(prev => prev.map(x => x.id === t.id ? t : x))} />
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // -- Swarm detail --
 
 function SwarmDetail({ swarm, onRefresh, onError }) {
-  const [tasks, setTasks] = useState([])
-  const [busy, setBusy] = useState(false)
-
-  useEffect(() => {
-    if (!swarm) return
-    api.listTasks(swarm.id).then(res => {
-      const tasks = Array.isArray(res) ? res : (res.tasks || [])
-      setTasks(tasks)
-    }).catch(() => onError('Fetching tasks'))
-  }, [swarm, onError])
-
-  if (!swarm) return null
-
   const actions = ALLOWED_ACTIONS[swarm.lifecycle_state] || []
-  const status = STATUSES.includes(swarm.lifecycle_state) ? swarm.lifecycle_state : 'In-Progress'
+  const teams = swarm.teams || []
 
   async function doAction(action) {
     try {
@@ -193,7 +358,7 @@ function SwarmDetail({ swarm, onRefresh, onError }) {
   }
 
   async function handleDelete() {
-    if (!window.confirm(`Hard-delete swarm "${swarm.name}"? All tasks will be lost.`)) return
+    if (!window.confirm(`Hard-delete swarm "${swarm.name}"? All teams and tasks will be lost.`)) return
     try {
       await api.deleteSwarm(swarm.id)
       onRefresh()
@@ -210,14 +375,13 @@ function SwarmDetail({ swarm, onRefresh, onError }) {
             <h2 style={{margin: 0}}>{swarm.name}</h2>
             <div style={{display: 'flex', gap: 8, marginTop: 6, flexWrap: 'wrap'}}>
               <LifecycleBadge state={swarm.lifecycle_state} />
-              <span className="chip">{status}</span>
+              <span className="chip">{teams.length} team{teams.length === 1 ? '' : 's'}</span>
               <span className="chip">ID: {shortId(swarm.id)}</span>
             </div>
           </div>
         </div>
         <div style={{marginTop: 12, color: '#666', fontSize: 14}}>
-          <p><strong>Vision:</strong> {swarm.vision_statement}</p>
-          {swarm.mission_statement && <p><strong>Mission:</strong> {swarm.mission_statement}</p>}
+          <p><strong>Vision:</strong> {swarm.vision_statement || '—'}</p>
         </div>
         <div style={{display: 'flex', gap: 8, marginTop: 16, flexWrap: 'wrap'}}>
           {actions.map(a => (
@@ -229,71 +393,55 @@ function SwarmDetail({ swarm, onRefresh, onError }) {
         </div>
       </div>
 
-      <QualityPanel swarm={swarm} onError={onError} />
+      <RosterPanel swarm={swarm} onRefresh={onRefresh} />
 
-      <div style={{marginBottom: 24}}>
-        <TaskForm teamId={swarm.id} onCreated={(t) => setTasks(prev => [t, ...prev])} onError={onError} />
-
-        <h3>Task Board</h3>
-        <div className="board">
-          {STATUSES.map(s => (
-            <div key={s} className="column">
-              <h4>{s} ({tasks.filter(t => t.status === s).length})</h4>
-              {tasks.filter(t => t.status === s).map(task => (
-                <TaskItem key={task.id} task={task} onUpdated={(t) => setTasks(prev => prev.map(x => x.id === t.id ? t : x))} onError={onError} />
-              ))}
-            </div>
-          ))}
-        </div>
-      </div>
+      {teams.map(team => (
+        <TeamSection key={team.id} team={team} swarm={swarm} onRefresh={onRefresh} />
+      ))}
     </div>
   )
 }
 
 // -- Archived list --
 
-function ArchivedSwarmList({ onRestore }) {
+function ArchivedSwarmList({ onRefresh }) {
   const [swarms, setSwarms] = useState([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    api.listTeams()
+    api.listSwarms()
       .then(res => {
-        const teams = Array.isArray(res) ? res : (res.teams || [])
-        const archived = teams.filter(t => t.lifecycle_state === 'ARCHIVED')
-        setSwarms(archived)
+        const list = Array.isArray(res) ? res : (res.swarms || [])
+        setSwarms(list.filter(s => s.lifecycle_state === 'ARCHIVED'))
         setLoading(false)
       })
       .catch(() => setLoading(false))
   }, [])
 
-  if (loading || swarms.length === 0) return null
+  if (loading) return <p>Loading…</p>
+  if (swarms.length === 0) return <p className="card">No archived swarms.</p>
 
   return (
     <div className="card">
       <h2>Archived swarms</h2>
-      {swarms.length === 0 ? (
-        <p>No archived swarms.</p>
-      ) : (
-        <ul className="list-group">
-          {swarms.map(s => (
-            <li key={s.id} className="list-group-item" style={{display: 'flex', justifyContent: 'space-between'}}>
-              <div>
-                <strong>{s.name}</strong>
-                <div style={{fontSize: 12, color: '#666'}}>{shortId(s.id)}</div>
-              </div>
-              <LifecycleBadge state={s.lifecycle_state} />
-            </li>
-          ))}
-        </ul>
-      )}
+      <ul className="list-group">
+        {swarms.map(s => (
+          <li key={s.id} className="list-group-item" style={{display: 'flex', justifyContent: 'space-between'}}>
+            <div>
+              <strong>{s.name}</strong>
+              <div style={{fontSize: 12, color: '#666'}}>{shortId(s.id)}</div>
+            </div>
+            <LifecycleBadge state={s.lifecycle_state} />
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }
 
 // -- Task components --
 
-function TaskForm({ teamId, onCreated, onError }) {
+function TaskForm({ teamId, onCreated, onStatusChange, onError = () => {} }) {
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [criteria, setCriteria] = useState('')
@@ -334,7 +482,7 @@ function TaskForm({ teamId, onCreated, onError }) {
   )
 }
 
-function TaskItem({ task, onUpdated, onError }) {
+function TaskItem({ task, onUpdated, onError = () => {} }) {
   const [showReject, setShowReject] = useState(false)
   const [rejectionReason, setRejectionReason] = useState('')
 
@@ -425,7 +573,7 @@ function explain(action, err) {
 // -- Main App --
 
 export default function App() {
-  const [swarm, setSwarm] = useState(null)       // single live swarm
+  const [swarm, setSwarm] = useState(null)        // single live swarm
   const [swarms, setSwarms] = useState([])        // full history
   const [errorMsg, setErrorMsg] = useState('')
   const [tab, setTab] = useState('active')        // active | archived
@@ -435,8 +583,8 @@ export default function App() {
     api.getActiveSwarm()
       .then(s => setSwarm(s))
       .catch(() => setSwarm(null))
-    api.listTeams()
-      .then(res => setSwarms(Array.isArray(res) ? res : (res.teams || [])))
+    api.listSwarms()
+      .then(res => setSwarms(Array.isArray(res) ? res : (res.swarms || [])))
       .catch(() => setSwarms([]))
   }, [])
 
@@ -444,8 +592,8 @@ export default function App() {
     api.getActiveSwarm()
       .then(s => setSwarm(s))
       .catch(() => setSwarm(null))
-    api.listTeams()
-      .then(res => setSwarms(Array.isArray(res) ? res : (res.teams || [])))
+    api.listSwarms()
+      .then(res => setSwarms(Array.isArray(res) ? res : (res.swarms || [])))
       .catch(() => setSwarms([]))
   }
 
@@ -472,7 +620,7 @@ export default function App() {
             </li>
             <li>
               <button onClick={() => setTab('archived')} style={{fontWeight: tab === 'archived' ? 'bold' : 'normal'}}>
-                Archived ({swarms.filter(t => t.lifecycle_state === 'ARCHIVED').length})
+                Archived ({swarms.filter(s => s.lifecycle_state === 'ARCHIVED').length})
               </button>
             </li>
           </ul>
@@ -490,7 +638,7 @@ export default function App() {
         )}
 
         {tab === 'archived' && (
-          <ArchivedSwarmList />
+          <ArchivedSwarmList onRefresh={refresh} />
         )}
       </main>
     </div>

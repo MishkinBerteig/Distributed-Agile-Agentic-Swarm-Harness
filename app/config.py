@@ -22,4 +22,15 @@ class Settings(BaseSettings):
     LLM_MODEL: str = "qwen3.8-27b-mlx"
     LLM_API_KEY: str = ""  # LMStudio by default requires no key
 
+    # Host runner (Slice 5.1): the daemon on a device with harness CLIs that
+    # launches real headless agent sessions. Empty URL disables launching
+    # entirely (transitions still work, swarm simply has no live agents).
+    RUNNER_URL: str = ""
+    RUNNER_TOKEN: str = ""
+    RUNNER_TIMEOUT_SECONDS: float = 15.0
+    SESSION_RECONCILE_SECONDS: int = 5
+    SESSION_STALE_AFTER_SECONDS: int = 90
+    # URL agents use to call back into the coordinator (host-visible port).
+    COORDINATOR_BASE_URL: str = "http://localhost:8173"
+
     model_config = {"env_prefix": "DAASH_"}

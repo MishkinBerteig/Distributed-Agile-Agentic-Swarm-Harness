@@ -20,10 +20,12 @@ from app.bus import DecisionBus, ProposalError
 from app.config import Settings
 from app.db import Database
 from app.embeddings import build_embedder
+from app.models import SwarmCreateRequest, TeamCreate as TeamCreateRequest, TeamCreateItem
 from app.models import TaskCreate as TaskCreateModel, TaskUpdate as TaskUpdateModel
 from app.models import TaskStatus, SwarmStatus
 from app.prompts import composeMissionPrompt, composeQualityPrompt, extract_quality_json
-from app.repo import TaskRepository, TeamRepository
+from app.repo import AgentSessionRepository, SwarmRepository, TaskRepository, TeamRepository
+from app.sessions import RunnerClient, SessionOrchestrator
 
 settings = Settings()
 db = Database(settings)
@@ -55,15 +57,41 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Session orchestrator (Slice 5.1). Built lazily against db.pool because tests
+# swap main.db for the test database after import — same reason the adapter is
+# built at module scope but consumed per request. When RUNNER_URL is empty the
+# client stays disabled and every session call degrades to a no-op, which keeps
+# the suite (and any host-less dev setup) green without a runner.
+_orch: SessionOrchestrator | None = None
+
+
+def _orchestrator() -> SessionOrchestrator:
+    global _orch
+    if _orch is None or _orch._pool is not db.pool:
+        _orch = SessionOrchestrator(db.pool, RunnerClient(settings), settings)
+    return _orch
+
+
+async def _stop_sessions(swarm_id: str) -> None:
+    """Best-effort terminate; errors are logged inside the orchestrator."""
+    await _orchestrator().stop_swarm(swarm_id)
+
 
 @app.on_event("startup")
 async def _startup() -> None:
     await db.connect()
     log.info("Database connection established.")
+    if settings.RUNNER_URL:
+        task = asyncio.create_task(_orchestrator().run_loop())
+        app.state.reconcile_task = task
+        log.info("Session reconcile loop started (every %ss).", settings.SESSION_RECONCILE_SECONDS)
 
 
 @app.on_event("shutdown")
 async def _shutdown() -> None:
+    task = getattr(app.state, "reconcile_task", None)
+    if task is not None:
+        task.cancel()
     await db.disconnect()
     await bus.close()
 
@@ -88,12 +116,6 @@ class TaskUpdateRequest(BaseModel):
     description: str | None = None
     acceptance_criteria: str | None = None
     rejection_reason: str | None = None
-
-
-class SwarmCreateRequest(BaseModel):
-    name: str = Field(..., min_length=1, max_length=255)
-    vision_statement: str = ""
-    mission_statement: str = ""
 
 
 class SignalPublishRequest(BaseModel):
@@ -128,10 +150,20 @@ class QualityGenerateRequest(BaseModel):
 
 
 # --- Swarm / Team endpoints ---
+#
+# Slice 5.1 restructure: a swarm owns the Vision and the lifecycle; teams (its
+# members' org units) own Missions and carry no lifecycle of their own yet.
+
+@app.get("/swarms")
+async def list_swarms() -> dict:
+    repo = SwarmRepository(db.pool)
+    swarms = await repo.list()
+    return {"swarms": [s.model_dump(mode="json") for s in swarms]}
+
 
 @app.get("/swarms/active")
 async def get_active_swarm():
-    repo = TeamRepository(db.pool)
+    repo = SwarmRepository(db.pool)
     swarm = await repo.get_active()
     if swarm is None:
         return None
@@ -140,7 +172,8 @@ async def get_active_swarm():
 
 @app.post("/swarms", status_code=201)
 async def create_swarm(req: SwarmCreateRequest) -> dict:
-    repo = TeamRepository(db.pool)
+    """Create a swarm (vision + lifecycle home) and seed it with ≥1 team."""
+    repo = SwarmRepository(db.pool)
     # Enforce: at most one live (non-ARCHIVED) swarm at any time.
     existing = await repo.get_active()
     if existing is not None:
@@ -149,44 +182,131 @@ async def create_swarm(req: SwarmCreateRequest) -> dict:
             detail=f"Swarm {existing.id} is already live ({existing.lifecycle_state}). "
                    f"Archive or delete it before creating a new one.",
         )
-    team = await repo.create(req.name, req.vision_statement, req.mission_statement)
-    return team.model_dump(mode="json")
+    swarm = await repo.create(req.name, req.vision_statement)
+    team_repo = TeamRepository(db.pool)
+    items = req.teams or [TeamCreateItem(name=req.name, mission_statement=req.mission_statement)]
+    teams = [await team_repo.create(swarm.id, t.name, t.mission_statement) for t in items]
+    out = swarm.model_dump(mode="json")
+    out["teams"] = [t.model_dump(mode="json") for t in teams]
+    return out
 
 
-@app.delete("/swarms/{team_id}/delete")
-async def delete_swarm(team_id: str) -> dict:
-    repo = TeamRepository(db.pool)
+@app.get("/swarms/{swarm_id}")
+async def get_swarm(swarm_id: str) -> dict:
+    repo = SwarmRepository(db.pool)
+    swarm = await repo.get(swarm_id)
+    if swarm is None:
+        raise HTTPException(status_code=404, detail="Swarm not found")
+    teams = await TeamRepository(db.pool).list(swarm_id=swarm_id)
+    sessions = await AgentSessionRepository(db.pool).list_for_swarm(swarm_id)
+    out = swarm.model_dump(mode="json")
+    out["teams"] = [t.model_dump(mode="json") for t in teams]
+    out["sessions"] = [s.model_dump(mode="json") for s in sessions]
+    return out
+
+
+@app.get("/swarms/{swarm_id}/sessions")
+async def list_swarm_sessions(swarm_id: str) -> dict:
+    """Live roster: per team, the three member sessions with harness/model/state."""
+    repo = SwarmRepository(db.pool)
+    swarm = await repo.get(swarm_id)
+    if swarm is None:
+        raise HTTPException(status_code=404, detail="Swarm not found")
     try:
-        await repo.hard_delete(team_id)
-        return {"deleted": team_id}
+        await _orchestrator().reconcile_swarm(swarm_id)  # refresh against the runner
+    except Exception as exc:  # noqa: BLE001 — roster must render even if runner is dead
+        log.debug("session reconcile failed for %s: %r", swarm_id, exc)
+    sessions = await AgentSessionRepository(db.pool).list_for_swarm(swarm_id)
+    teams = {t.id: t.model_dump(mode="json") for t in await TeamRepository(db.pool).list(swarm_id=swarm_id)}
+    roster: dict[str, list] = {}
+    for s in sessions:
+        entry = s.model_dump(mode="json")
+        team = teams.get(s.team_id)
+        entry["team_name"] = team["name"] if team else s.team_id
+        roster.setdefault(s.team_id, []).append(entry)
+    return {"swarm_id": swarm_id, "teams": [{"team_id": k, "sessions": v} for k, v in roster.items()]}
+
+
+@app.post("/swarms/{swarm_id}/sessions/{session_id}/turns", status_code=202)
+async def send_session_turn(swarm_id: str, session_id: str, body: dict = Body(...)) -> dict:
+    sess_repo = AgentSessionRepository(db.pool)
+    sess = await sess_repo.get(session_id)
+    if sess is None or sess.swarm_id != swarm_id:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if not await _orchestrator()._client.send_turn(session_id, str(body.get("text", ""))):
+        raise HTTPException(status_code=409, detail="Session is not reachable on the runner")
+    return {"accepted": True}
+
+
+@app.delete("/swarms/{swarm_id}/delete")
+async def delete_swarm(swarm_id: str) -> dict:
+    repo = SwarmRepository(db.pool)
+    try:
+        await _stop_sessions(swarm_id)
+        await repo.hard_delete(swarm_id)
+        return {"deleted": swarm_id}
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
 
-@app.post("/swarms/{team_id}/transitions/{action}")
-async def transition_swarm(team_id: str, action: str) -> dict:
-    repo = TeamRepository(db.pool)
+# Actions that must not leave agent sessions running.
+_STOP_ACTIONS = {"pause", "feedback", "verify", "learn", "archive", "delete"}
+
+
+@app.post("/swarms/{swarm_id}/transitions/{action}")
+async def transition_swarm(swarm_id: str, action: str) -> dict:
+    repo = SwarmRepository(db.pool)
     try:
-        swarm = await repo.transition(team_id, action)
-        return swarm.model_dump(mode="json")
+        swarm = await repo.transition(swarm_id, action)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
+    # Slice 5.1: going live launches each member's harness session; leaving the
+    # field terminates them. Launch/stop failures never fail the transition —
+    # they surface on the roster as failed sessions.
+    try:
+        if action in ("start", "resume"):
+            await _orchestrator().launch_swarm(swarm)
+        elif action in _STOP_ACTIONS:
+            await _stop_sessions(swarm_id)
+    except Exception as exc:  # noqa: BLE001 — session errors must not undo a legal transition
+        log.warning("session side effect for %s(%s) failed: %r", action, swarm_id, exc)
+
+    return swarm.model_dump(mode="json")
+
 
 @app.get("/teams")
-async def list_teams() -> dict:
+async def list_teams(swarm_id: str | None = None) -> dict:
     repo = TeamRepository(db.pool)
-    teams = await repo.list()
+    teams = await repo.list(swarm_id=swarm_id)
     return {"teams": [t.model_dump(mode="json") for t in teams]}
+
+
+@app.post("/teams", status_code=201)
+async def create_team(req: TeamCreateRequest) -> dict:
+    swarm = await SwarmRepository(db.pool).get(req.swarm_id)
+    if swarm is None:
+        raise HTTPException(status_code=404, detail="Swarm not found")
+    team = await TeamRepository(db.pool).create(req.swarm_id, req.name, req.mission_statement)
+    return team.model_dump(mode="json")
 
 
 @app.get("/teams/{team_id}")
 async def get_team(team_id: str) -> dict:
     repo = TeamRepository(db.pool)
-    swarm = await repo.get(team_id)
-    if swarm is None:
-        raise HTTPException(status_code=404, detail="Swarm not found")
-    return swarm.model_dump(mode="json")
+    team = await repo.get(team_id)
+    if team is None:
+        raise HTTPException(status_code=404, detail="Team not found")
+    return team.model_dump(mode="json")
+
+
+@app.delete("/teams/{team_id}")
+async def delete_team(team_id: str) -> dict:
+    try:
+        await TeamRepository(db.pool).delete(team_id)
+        return {"deleted": team_id}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
 
 # --- Quality Judgement endpoints (Slice 5.0) ---
@@ -202,10 +322,13 @@ async def generate_team_quality(team_id: str, req: QualityGenerateRequest | None
     repo = TeamRepository(db.pool)
     team = await repo.get(team_id)
     if team is None:
-        raise HTTPException(status_code=404, detail="Swarm not found")
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    # The deterministic hierarchy (README): swarm Vision flows into every team.
+    swarm = await SwarmRepository(db.pool).get(team.swarm_id)
 
     system_prompt = composeQualityPrompt(
-        team_vision=team.vision_statement or "",
+        team_vision=(swarm.vision_statement if swarm else team.vision_statement) or "",
         team_mission=team.mission_statement or "",
         dor_guidance=(req.dor_guidance if req else "") or None,
         dod_guidance=(req.dod_guidance if req else "") or None,
@@ -236,7 +359,7 @@ async def generate_team_quality(team_id: str, req: QualityGenerateRequest | None
         team.id, standards["definition_of_ready"], standards["definition_of_done"]
     )
     if persisted is None:  # team vanished between get and update
-        raise HTTPException(status_code=404, detail="Swarm not found")
+        raise HTTPException(status_code=404, detail="Team not found")
 
     # Best-effort decision-bus signal so the swarm sees quality evolution.
     try:

@@ -138,9 +138,10 @@ class TestSwarmLifecycle:
         swarm = await self._verify_swarm(client)
         id_a = swarm["id"]
 
-        # Create tasks for this swarm so we can verify cascade delete.
+        # Create a task for the swarm's team so we can verify cascade delete.
+        team_id = (await client.get(f"/swarms/{id_a}")).json()["teams"][0]["id"]
         tasks_r = await client.post("/tasks", json={
-            "team_id": id_a,
+            "team_id": team_id,
             "name": "Task 1", "description": "Do thing", "acceptance_criteria": "It works",
         })
         task_id = tasks_r.json()["id"]
@@ -237,7 +238,7 @@ class TestSwarmLifecycle:
             except Exception:
                 pass
             try:
-                sw = await client.get(f"/teams/{team_id}")
+                sw = await client.get(f"/swarms/{team_id}")
                 if sw.status_code != 200:
                     return
                 state = sw.json()["lifecycle_state"]
@@ -261,18 +262,12 @@ class TestSwarmLifecycle:
             return
         async def _teardown():
             try:
-                teams = await client.get("/teams")
-                if teams.status_code == 200:
-                    for t in teams.json().get("teams", []):
-                        if t["lifecycle_state"] not in ("ARCHIVED", "DELETED"):
+                swarms = await client.get("/swarms")
+                if swarms.status_code == 200:
+                    for sw in swarms.json().get("swarms", []):
+                        if sw["lifecycle_state"] not in ("ARCHIVED", "DELETED"):
                             try:
-                                ts = await client.get(f"/tasks?team_id={t['id']}")
-                                for task in ts.json().get("tasks", []):
-                                    await client.delete(f"/tasks/{task['id']}")
-                            except Exception:
-                                pass
-                            try:
-                                await client.post(f"/swarms/{t['id']}/transitions/archive")
+                                await client.post(f"/swarms/{sw['id']}/transitions/archive")
                             except Exception:
                                 pass
             except Exception:
@@ -288,11 +283,11 @@ class TestSwarmLifecycle:
         })
         id_a = r.json()["id"]
         await client.post(f"/swarms/{id_a}/transitions/start")
-        r2 = await client.get(f"/teams/{id_a}")
+        r2 = await client.get(f"/swarms/{id_a}")
         return r2.json()
 
     async def _verify_swarm(self, client):
         swarm = await self._create_active(client)
         await client.post(f"/swarms/{swarm['id']}/transitions/verify")
-        r2 = await client.get(f"/teams/{swarm['id']}")
+        r2 = await client.get(f"/swarms/{swarm['id']}")
         return r2.json()

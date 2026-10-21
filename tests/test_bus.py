@@ -228,9 +228,10 @@ async def test_bus_state_disappears_when_ttl_expires():
 
 async def test_end_to_end_consensus_flow(client):
     """E2E (PLAN): create swarm → proposal → agents vote in parallel → consensus."""
-    swarm = await client.post("/swarms", json={"name": "Decision Swarm"})
+    swarm = await client.post(
+        "/swarms", json={"name": "Decision Swarm", "vision_statement": "Ship fast"})
     assert swarm.status_code == 201, swarm.text
-    team_id = swarm.json()["id"]
+    team_id = swarm.json()["teams"][0]["id"]
 
     task = await client.post(
         "/tasks",

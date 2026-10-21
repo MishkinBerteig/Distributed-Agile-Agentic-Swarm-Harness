@@ -1,12 +1,25 @@
 export const api = {
-  // Swarm / lifecycle
+  // Swarm / lifecycle (a swarm owns the vision + lifecycle; teams own missions)
   createSwarm(payload) { return api._post('/api/swarms', payload) },
-  getActiveSwarm()   { return api._get('/api/swarms/active') },
-  transition(teamId, action) {
-    return api._post(`/api/swarms/${teamId}/transitions/${action}`)
+  getActiveSwarm()     { return api._get('/api/swarms/active') },
+  getSwarm(id)         { return api._get(`/api/swarms/${id}`) },
+  listSwarms()         { return api._get('/api/swarms') },
+  transition(swarmId, action) {
+    return api._post(`/api/swarms/${swarmId}/transitions/${action}`)
   },
-  deleteSwarm(teamId) { return api._del(`/api/swarms/${teamId}/delete`) },
-  listTeams()         { return api._get('/api/teams') },
+  deleteSwarm(swarmId) { return api._del(`/api/swarms/${swarmId}/delete`) },
+
+  // Agent sessions (Slice 5.1) — live roster of a swarm's harness sessions.
+  getSwarmSessions(swarmId) { return api._get(`/api/swarms/${swarmId}/sessions`) },
+  sendSessionTurn(swarmId, sessionId, text) {
+    return api._post(`/api/swarms/${swarmId}/sessions/${sessionId}/turns`, { text })
+  },
+
+  // Teams
+  listTeams(swarmId) {
+    return api._get(swarmId ? `/api/teams?swarm_id=${encodeURIComponent(swarmId)}` : '/api/teams')
+  },
+  createTeam(payload) { return api._post('/api/teams', payload) },
 
   // Tasks
   listTasks(teamId, status) {
@@ -18,9 +31,10 @@ export const api = {
   updateTask(id, body){ return api._patch(`/api/tasks/${id}`, body) },
   deleteTask(id)      { return api._del(`/api/tasks/${id}`) },
 
-  // Quality Judgement (Slice 5) — DoR/DoD per swarm. Generation runs through
-  // the LMStudio harness and can fail (LMStudio down, unparseable JSON), so
-  // it uses _postStrict which rejects with the server's detail message.
+  // Quality Judgement (Slice 5) — DoR/DoD per TEAM (the swarm's vision flows
+  // in from its parent swarm). Generation runs through the LMStudio harness
+  // and can fail (LMStudio down, unparseable JSON), so it uses _postStrict
+  // which rejects with the server's detail message.
   getQuality(teamId)       { return api._get(`/api/teams/${teamId}/quality`) },
   generateQuality(teamId, payload = {}) {
     return api._postStrict(`/api/teams/${teamId}/quality`, payload)
