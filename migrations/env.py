@@ -6,9 +6,6 @@ from sqlalchemy import pool
 
 from alembic import context
 
-# Import your Base and models here
-from app.orm import Base
-
 config = context.config
 
 # Environment wins over alembic.ini so containers can point at the compose DB.
@@ -21,7 +18,8 @@ if env_url:
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-target_metadata = Base.metadata
+# Hand-written migrations (docs/DESIGN-0.1.md section 5): no ORM metadata.
+target_metadata = None
 
 
 def run_migrations_offline() -> None:
