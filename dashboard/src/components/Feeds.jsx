@@ -16,7 +16,7 @@ export function ActivityFeed({ events, names, teamNames, onOpenTask }) {
           <strong>{names[e.actor] || e.actor}</strong>
           {e.team_id && teamNames[e.team_id] && <span className="muted"> [{teamNames[e.team_id]}]</span>}
           <span> {eventText(e)}</span>
-          {e.task_id && <button className="link" onClick={() => onOpenTask(e.task_id)}>task</button>}
+          {e.task_id && <>{' '}<button className="link" onClick={() => onOpenTask(e.task_id)}>open task</button></>}
         </li>
       ))}
     </ul>
