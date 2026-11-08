@@ -424,6 +424,9 @@ async def list_tasks(swarm_id: Optional[str] = None, team_id: Optional[str] = No
 async def create_task(req: TaskCreate) -> dict:
     team = await _team_or_404(req.team_id)
     problem = H.criteria_error(req.acceptance_criteria)
+    if not problem and not req.acceptance_criteria:
+        problem = ("A task needs at least one acceptance criterion: the Definition of Ready "
+                   "never commits a task without one.")
     if problem:
         raise HTTPException(422, problem)
     emb = None

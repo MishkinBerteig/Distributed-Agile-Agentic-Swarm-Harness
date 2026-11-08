@@ -297,6 +297,12 @@ class Jobs:
                 task_id=task_id, duration_ms=int((time.monotonic() - t0) * 1000))
             return parsed
 
+    async def _still(self, task_id: str, *statuses: str) -> Optional[Task]:
+        """The task as it is now if it still exists in one of `statuses` (the user may have
+        rejected, reopened or deleted it while a model call ran), else None."""
+        cur = await self.tasks.get(task_id)
+        return cur if cur is not None and cur.status in statuses else None
+
     async def _team_agent(self, swarm: Swarm, team: Team, role: str) -> Agent:
         return await services.team_agent(self.pool, swarm, team, role)
 
@@ -358,7 +364,7 @@ class Jobs:
             return
         tasks = await self.tasks.list(team_id=team.id)
         limit = swarm.config.limits.max_tasks_per_team
-        if len(tasks) < limit or any(t.status in TaskStatus.open_statuses() for t in tasks):
+        if len(tasks) < limit or policy.live_open_tasks(tasks):
             return
         await self.teams.update(team.id, status=TeamStatus.FAILED.value)
         done = sum(1 for t in tasks if t.status == TaskStatus.DONE.value)
@@ -410,6 +416,8 @@ class Jobs:
             log.info("commit of %r skipped: %s", task.name, "; ".join(res.reasons))
             return
         idle = policy.idle_delivery_agents(team_agents, team_tasks)
+        if not idle:
+            return
         agent = next((a for a in idle if a.id == action.agent_id), idle[0])
         await self.tasks.update(task.id, status=TaskStatus.IN_PROGRESS.value,
                                 assigned_agent_id=agent.id, committed_at=now)
@@ -506,7 +514,7 @@ class Jobs:
         lim = swarm.config.limits
         tasks = await self.tasks.list(team_id=team.id)
         cap = min(lim.max_new_tasks_per_plan, lim.max_tasks_per_team - len(tasks))
-        if cap <= 0 or any(t.status in TaskStatus.open_statuses() for t in tasks):
+        if cap <= 0 or policy.live_open_tasks(tasks):
             return
         agent = await self._team_agent(swarm, team, DELIVERY)
         done = [t for t in tasks if t.status == TaskStatus.DONE.value]
@@ -519,7 +527,7 @@ class Jobs:
         # Re-check just before writing: another job may have changed the team.
         tasks = await self.tasks.list(team_id=team.id)
         room = lim.max_tasks_per_team - len(tasks)
-        if room <= 0 or any(t.status in TaskStatus.open_statuses() for t in tasks):
+        if room <= 0 or policy.live_open_tasks(tasks):
             return
         created: list[Task] = []
         for pt in planned[:room]:
@@ -557,6 +565,11 @@ class Jobs:
             swarm, mj, team, "prioritize", model, user,
             lambda o: prompts.parse_prioritize(o, valid), query=team.mission_statement)
 
+        # The user may have changed or deleted tasks while Mission Judgement thought.
+        fresh = {t.id: t.status for t in await self.tasks.list(team_id=team.id)}
+        res.rejections = [(tid, r) for tid, r in res.rejections
+                          if fresh.get(tid) == by_id[tid].status]
+        res.order = [tid for tid in res.order if fresh.get(tid) == by_id[tid].status]
         now = _now()
         rejected = {tid for tid, _ in res.rejections}
         for tid, reason in res.rejections:
@@ -570,6 +583,8 @@ class Jobs:
         rank = 0
         nxt = res.next_task_id if res.next_task_id in cand_ids else None
         order = [tid for tid in res.order if tid not in rejected]
+        if nxt not in order:
+            nxt = None
         if nxt is None:
             nxt = next((tid for tid in order if tid in cand_ids), None)
         for tid in order:
@@ -642,6 +657,9 @@ class Jobs:
                 self.pool, agent, "work_task", model, usage=loop.usage, transcript=loop.transcript,
                 task_id=task.id, duration_ms=int((time.monotonic() - t0) * 1000))
 
+            if await self._still(task.id, TaskStatus.IN_PROGRESS.value) is None:
+                log.info("work on %r dropped: the task changed while the agent worked", task.name)
+                return
             files = dedupe_files(registry.files_written)
             if loop.stopped_by == "terminal" and loop.terminal_tool == "submit":
                 summary = submitted.get("summary") or loop.terminal_output or ""
@@ -664,6 +682,8 @@ class Jobs:
     async def _attempt_failed(self, swarm: Swarm, team: Team, agent: Agent, task: Task,
                               model: str, registry: ToolRegistry, why: str,
                               final_text: str = "") -> None:
+        if await self._still(task.id, TaskStatus.IN_PROGRESS.value) is None:
+            return
         attempts = task.attempts + 1
         verdict = policy.rework_or_fail(attempts, swarm.config.limits.max_attempts_per_task)
         feedback = (f"Attempt {attempts} did not finish: {why} Write the files, check each "
@@ -769,6 +789,11 @@ class Jobs:
             if len(teams) >= swarm.config.limits.max_teams:
                 raise ToolError(f"the swarm already has the maximum of "
                                 f"{swarm.config.limits.max_teams} teams")
+            wanted = name.lower()
+            if any(t.name.lower() == wanted for t in teams) or any(
+                    p.name.lower() == wanted and p.status in ("pending", "approved")
+                    for p in await self.proposals.list(swarm.id)):
+                raise ToolError(f"a team or proposal named {name!r} already exists")
             voters = await self._delivery_agents(swarm, team)
             prop = await self.proposals.create(
                 swarm.id, team.id, agent.id, name, mission, reason,
@@ -900,6 +925,11 @@ class Jobs:
         if errors:
             raise errors[0]
         qr, mr = results
+        if await self._still(task.id, TaskStatus.REVIEW.value) is None:
+            self._partial.pop(qkey, None)
+            self._partial.pop(mkey, None)
+            log.info("review of %r dropped: the task changed while the judges worked", task.name)
+            return
 
         # 3. record: criteria, verdicts
         rubric_scores: list[float] = []
@@ -993,7 +1023,7 @@ class Jobs:
         if team is None or team.status != TeamStatus.ACTIVE.value:
             return
         tasks = await self.tasks.list(team_id=team.id)
-        if any(t.status in TaskStatus.open_statuses() for t in tasks):
+        if policy.live_open_tasks(tasks):
             return
         done = [t for t in tasks if t.status == TaskStatus.DONE.value]
         failed = [t for t in tasks if t.status == TaskStatus.FAILED.value]

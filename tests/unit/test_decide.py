@@ -301,3 +301,37 @@ def test_running_suppresses_commit_plan_bootstrap_and_retrospective():
 def test_action_job_key_matches_helper():
     a = Action(kind=K.WORK_TASK, team_id="tm", task_id="w")
     assert a.job_key() == job_key(K.WORK_TASK, "tm", "w")
+
+
+# -- hardening: tasks that can never start must not stall the team ---------------------
+
+def test_pending_task_behind_failed_dependency_does_not_block_planning():
+    t0 = task("t0", "Failed", updated_at=T0)
+    t1 = task("t1", "Pending", depends_on=["t0"])
+    out = decide(snap([t0, t1], teams=[team(last_assessed_at=NOW)]))
+    assert kinds(out) == [K.PLAN_TASKS]
+
+
+def test_stall_is_transitive_and_covers_ready_and_missing_deps():
+    from app.policy import live_open_tasks, stalled_task_ids
+    t0 = task("t0", "Rejected")
+    t1 = task("t1", "Ready", depends_on=["t0"])
+    t2 = task("t2", "Pending", depends_on=["t1"])
+    t3 = task("t3", "Pending", depends_on=["ghost"])
+    t4 = task("t4", "Pending")
+    tasks = [t0, t1, t2, t3, t4]
+    assert stalled_task_ids(tasks) == {"t1", "t2", "t3"}
+    assert [t.id for t in live_open_tasks(tasks)] == ["t4"]
+
+
+def test_reopen_resets_attempts():
+    from app import api_helpers as H
+    assert H.task_patch_fields({"status": "Pending"})["attempts"] == 0
+    assert "attempts" not in H.task_patch_fields({"status": "Rejected"})
+
+
+def test_read_artifact_nul_byte_is_not_found(tmp_path):
+    import pytest
+    from app import api_helpers as H
+    with pytest.raises(FileNotFoundError):
+        H.read_artifact(tmp_path, "a\x00b")

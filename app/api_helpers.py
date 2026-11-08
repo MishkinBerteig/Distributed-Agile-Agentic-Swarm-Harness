@@ -42,11 +42,14 @@ def read_artifact(root: Path, rel: str, cap: int = ARTIFACT_READ_CAP) -> dict:
     traversal attempt (the API maps both to 404)."""
     try:
         target = safe_path(Path(root), rel)
-    except ToolError as exc:
+    except (ToolError, ValueError, OSError) as exc:
         raise FileNotFoundError(str(exc)) from None
-    if not target.is_file():
-        raise FileNotFoundError(f"no such file: {rel}")
-    text = target.read_text(encoding="utf-8", errors="replace")
+    try:
+        if not target.is_file():
+            raise FileNotFoundError(f"no such file: {rel}")
+        text = target.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:  # unreadable, or a name the OS rejects
+        raise FileNotFoundError(str(exc)) from None
     return {"path": rel, "content": text[:cap], "truncated": len(text) > cap}
 
 
@@ -107,8 +110,10 @@ def task_patch_fields(patch: dict[str, Any]) -> dict[str, Any]:
     """Repo update fields for a user PATCH (only fields the user actually set).
 
     Reopening a task (status -> Pending) clears its assignment and approval/commit stamps
-    (and done_at, so a reopened Done task is not still timed as finished)."""
+    (and done_at, so a reopened Done task is not still timed as finished) and gives it a
+    fresh attempt budget, so a reopened Failed task is not failed again after one try."""
     fields = {k: (v.value if hasattr(v, "value") else v) for k, v in patch.items()}
     if fields.get("status") == "Pending":
-        fields.update(assigned_agent_id=None, approved_at=None, committed_at=None, done_at=None)
+        fields.update(assigned_agent_id=None, approved_at=None, committed_at=None, done_at=None,
+                      attempts=0)
     return fields

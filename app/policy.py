@@ -116,6 +116,35 @@ def deps_done(task: Task, tasks_by_id: dict[str, Task]) -> bool:
     return True
 
 
+def stalled_task_ids(tasks: list[Task]) -> set[str]:
+    """Pending/Ready tasks that can never start: a dependency is missing, Failed or
+    Rejected, or is itself stalled (transitive)."""
+    by_id = {t.id: t for t in tasks}
+    waiting = (TaskStatus.PENDING.value, TaskStatus.READY.value)
+    dead = (TaskStatus.FAILED.value, TaskStatus.REJECTED.value)
+    stalled: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for t in tasks:
+            if t.id in stalled or t.status not in waiting:
+                continue
+            for d in t.depends_on:
+                dep = by_id.get(d)
+                if dep is None or dep.status in dead or dep.id in stalled:
+                    stalled.add(t.id)
+                    changed = True
+                    break
+    return stalled
+
+
+def live_open_tasks(tasks: list[Task]) -> list[Task]:
+    """Open tasks that can still make progress (stalled ones do not hold a team back)."""
+    stalled = stalled_task_ids(tasks)
+    return [t for t in tasks
+            if t.status in TaskStatus.open_statuses() and t.id not in stalled]
+
+
 def idle_delivery_agents(team_agents: list[Agent], team_tasks: list[Task]) -> list[Agent]:
     """Delivery agents that are idle and own no In-Progress/Review task."""
     busy_ids = {t.assigned_agent_id for t in team_tasks

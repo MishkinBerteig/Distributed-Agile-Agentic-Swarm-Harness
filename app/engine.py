@@ -127,7 +127,7 @@ def decide(snap: SwarmSnapshot) -> list[Action]:
         if not has_startable_ready and has_candidate:
             emit(Action(kind=ActionKind.PRIORITIZE, team_id=team.id))
 
-        if not any(t.status in TaskStatus.open_statuses() for t in tasks):
+        if not policy.live_open_tasks(tasks):
             terminal = [t for t in tasks if t.status in (TaskStatus.DONE.value,
                                                          TaskStatus.FAILED.value)]
             latest = max((t.updated_at for t in terminal), default=None)
