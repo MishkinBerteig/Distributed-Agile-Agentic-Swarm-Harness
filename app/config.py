@@ -4,6 +4,8 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
+    """Process settings from the environment (prefix ``DAASH_``). See docs/DESIGN-0.1.md §4."""
+
     DATABASE_URL: str = "postgresql://daash:daash@localhost/daash"
     REDIS_URL: str = "redis://localhost:6379/0"
 
@@ -17,20 +19,21 @@ class Settings(BaseSettings):
     # deterministic hash-based embedder is used instead of downloading the model.
     EMBEDDING_USE_MODEL: bool = False
 
-    # LLM harness (Slice 3: Harness Adapters). Defaults to local LMStudio.
-    LLM_ENDPOINT: str = "http://127.0.0.1:12345"
-    LLM_MODEL: str = "qwen3.8-27b-mlx"
-    LLM_API_KEY: str = ""  # LMStudio by default requires no key
+    # LLM gateway: any OpenAI-compatible endpoint. The default is the m3u512gb
+    # private gateway (aliases instant/fast/great/amazing). Its Tailscale name is
+    # used because `m3u512gb.local` is mDNS and does not resolve inside Docker.
+    LLM_ENDPOINT: str = "http://m3u512gb.tail391a32.ts.net:12345"
+    LLM_API_KEY: str = ""
+    LLM_TIMEOUT_SECONDS: float = 600.0
+    # Gateway models are reasoning models: small budgets come back with only
+    # reasoning_content and no answer, so keep this generous.
+    LLM_MAX_TOKENS: int = 16384
 
-    # Host runner (Slice 5.1): the daemon on a device with harness CLIs that
-    # launches real headless agent sessions. Empty URL disables launching
-    # entirely (transitions still work, swarm simply has no live agents).
-    RUNNER_URL: str = ""
-    RUNNER_TOKEN: str = ""
-    RUNNER_TIMEOUT_SECONDS: float = 15.0
-    SESSION_RECONCILE_SECONDS: int = 5
-    SESSION_STALE_AFTER_SECONDS: int = 90
-    # URL agents use to call back into the coordinator (host-visible port).
-    COORDINATOR_BASE_URL: str = "http://localhost:8173"
+    # Artifacts produced by agents live under WORKSPACE_ROOT/<swarm_id>/.
+    WORKSPACE_ROOT: str = "/workspaces"
+
+    # Engine (python -m app.engine).
+    ENGINE_TICK_SECONDS: float = 3.0
+    ENGINE_ENABLED: bool = True
 
     model_config = {"env_prefix": "DAASH_"}
