@@ -111,8 +111,7 @@ services:
 
   # Unit tests: `docker compose --profile test run --rm --build test`.
   # Fast and isolated: no database, Redis or network (docs/DESIGN-0.1.md §11).
-  # Deferred integration tests: append `python -m pytest tests/integration` and
-  # start db/redis first.
+  # Integration tests have their own service (`integration`); e2e: scripts/e2e.sh.
   test:
     profiles: ["test"]
     build:
@@ -122,6 +121,27 @@ services:
       - DAASH_TEST_DATABASE_URL=postgresql://daash:daash@db:5432/daash_test
       - DAASH_TEST_REDIS_URL=redis://redis:6379/15
     network_mode: none
+
+  # Integration tests: `docker compose --profile integration run --rm --build integration`
+  # (docs/DESIGN-0.2.md A.2). Real PostgreSQL (database daash_test, created and migrated per
+  # session) and real Redis (DB 15); the API and the engine run in-process against an
+  # in-process scripted fake LLM (tests/fakes). No published ports.
+  integration:
+    profiles: ["integration"]
+    build:
+      context: .
+      target: test
+    command: ["python", "-m", "pytest", "tests/integration", "-q"]
+    environment:
+      - DAASH_TEST_DATABASE_URL=postgresql://daash:daash@db:5432/daash_test
+      - DAASH_TEST_REDIS_URL=redis://redis:6379/15
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - backend
 
 networks:
   backend:

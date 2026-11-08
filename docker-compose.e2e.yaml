@@ -1,0 +1,112 @@
+# End-to-end tier (docs/DESIGN-0.2.md A.3). Run it with scripts/e2e.sh, which uses its own
+# compose project (-p ${DAASH_E2E_PROJECT:-daash-e2e}) so it can run beside the dev stack:
+#   - NO published ports, and an internal network (no egress);
+#   - the real coordinator and engine containers, a real PostgreSQL and Redis;
+#   - `fake-llm` (the scripted fake gateway, test image) instead of the real LLM;
+#   - `e2e` (test image) drives the coordinator over HTTP and restarts the engine container
+#     through the Docker Engine API (/var/run/docker.sock mounted; no docker CLI needed).
+x-daash-env: &daash-env
+  DAASH_DATABASE_URL: postgresql://daash:daash@db:5432/daash
+  DAASH_ALEMBIC_DATABASE_URL: postgresql+psycopg://daash:daash@db:5432/daash
+  DAASH_REDIS_URL: redis://redis:6379/0
+  DAASH_DATABASE_HOST: db
+  DAASH_LLM_ENDPOINT: http://fake-llm:9100
+  DAASH_LLM_API_KEY: ""
+  DAASH_WORKSPACE_ROOT: /workspaces
+
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: daash
+      POSTGRES_PASSWORD: daash
+      POSTGRES_DB: daash
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U daash"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks: [e2e]
+
+  redis:
+    image: redis:7-alpine
+    networks: [e2e]
+
+  fake-llm:
+    build:
+      context: .
+      target: test
+    command: ["python", "-m", "tests.fakes.fake_llm_server", "--port", "9100"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9100/health', timeout=3)"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks: [e2e]
+
+  coordinator:
+    build:
+      context: .
+      target: runtime
+    environment:
+      <<: *daash-env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      fake-llm:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+      start_period: 5s
+    volumes:
+      - e2e-workspaces:/workspaces
+    networks: [e2e]
+
+  engine:
+    build:
+      context: .
+      target: runtime
+    command: ["engine"]
+    restart: unless-stopped
+    environment:
+      <<: *daash-env
+      DAASH_ENGINE_TICK_SECONDS: "0.5"
+      DAASH_ENGINE_ENABLED: "true"
+    depends_on:
+      coordinator:
+        condition: service_healthy
+    volumes:
+      - e2e-workspaces:/workspaces
+    networks: [e2e]
+
+  e2e:
+    build:
+      context: .
+      target: test
+    command: ["python", "-m", "pytest", "tests/e2e", "-q"]
+    environment:
+      E2E_COORDINATOR_URL: http://coordinator:8000
+      E2E_FAKE_LLM_URL: http://fake-llm:9100
+      E2E_COMPOSE_PROJECT: ${DAASH_E2E_PROJECT:-daash-e2e}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      coordinator:
+        condition: service_healthy
+      engine:
+        condition: service_started
+      fake-llm:
+        condition: service_healthy
+    networks: [e2e]
+
+networks:
+  e2e:
+    internal: true
+
+volumes:
+  e2e-workspaces:
