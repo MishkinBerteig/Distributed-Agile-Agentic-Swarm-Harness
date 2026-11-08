@@ -1,7 +1,7 @@
 # Networks:
-#   backend  - internal (no egress, no published ports): db, redis, coordinator, test.
+#   backend  - internal (no egress, no published ports): db, redis, coordinator, engine, test.
 #              PostgreSQL and Redis are reachable only from containers on this network.
-#   frontend - regular bridge: coordinator and dashboard. Carries the published ports,
+#   frontend - regular bridge: coordinator, engine and dashboard. Carries the published ports,
 #              the dashboard's /api proxy to the coordinator, npm installs, and the
 #              coordinator's egress to the LLM endpoint on the host.
 # Published ports bind to 127.0.0.1 only:
@@ -19,7 +19,9 @@ services:
       - DAASH_ALEMBIC_DATABASE_URL=postgresql+psycopg://daash:daash@db:5432/daash
       - DAASH_REDIS_URL=redis://redis:6379/0
       - DAASH_DATABASE_HOST=db
-      - DAASH_LLM_ENDPOINT=http://host.docker.internal:12345
+      - DAASH_LLM_ENDPOINT=${DAASH_LLM_ENDPOINT:-http://m3u512gb.tail391a32.ts.net:12345}
+      - DAASH_LLM_API_KEY=${DAASH_LLM_API_KEY:-}
+      - DAASH_WORKSPACE_ROOT=/workspaces
     extra_hosts:
       - host.docker.internal:host-gateway
     depends_on:
@@ -27,8 +29,41 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
     volumes:
-      - daash-data:/var/lib/postgresql/data
+      - daash-workspaces:/workspaces
+    networks:
+      - backend
+      - frontend
+
+  # The engine drives the agents (python -m app.engine). Same image as the coordinator;
+  # shares the workspaces volume. Needs the frontend network for LLM gateway egress.
+  engine:
+    build:
+      context: .
+      target: runtime
+    command: ["engine"]
+    restart: unless-stopped
+    environment:
+      - DAASH_DATABASE_URL=postgresql://daash:daash@db:5432/daash
+      - DAASH_REDIS_URL=redis://redis:6379/0
+      - DAASH_DATABASE_HOST=db
+      - DAASH_LLM_ENDPOINT=${DAASH_LLM_ENDPOINT:-http://m3u512gb.tail391a32.ts.net:12345}
+      - DAASH_LLM_API_KEY=${DAASH_LLM_API_KEY:-}
+      - DAASH_WORKSPACE_ROOT=/workspaces
+      - DAASH_ENGINE_ENABLED=${DAASH_ENGINE_ENABLED:-true}
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    depends_on:
+      coordinator:
+        condition: service_healthy
+    volumes:
+      - daash-workspaces:/workspaces
     networks:
       - backend
       - frontend
@@ -91,5 +126,5 @@ networks:
 
 volumes:
   pg-data:
-  daash-data:
+  daash-workspaces:
   dashboard-node-modules:
