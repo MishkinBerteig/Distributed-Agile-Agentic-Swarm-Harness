@@ -65,13 +65,16 @@ learning mechanisms, budgets.
       coordinator-bootstrapped two-team swarm ("Backyard Birds") run through the API/dashboard, including a mid-run
       engine rebuild/restart and a user-added task
 
-### Milestone 0.2 — Test harness + throughput (in progress; tag `v0.2` when done)
+### Milestone 0.2 — Test harness + throughput (done; tagged `v0.2`)
 Design: docs/DESIGN-0.2.md. (`v0.1` is tagged at f1e5526.)
-- [ ] Scripted fake LLM (in-process and as a container) with scenarios and call recording
-- [ ] Integration tier: real PostgreSQL/Redis, API in-process, engine in-process driven to VERIFICATION
-- [ ] E2E tier: real containers + fake-LLM container, incl. engine restart mid-run, pause stops spending
-- [ ] Batch approval (Ready buffer = delivery agents), judges run concurrently, per-model LLM concurrency
-- [ ] Leaving ACTIVE cancels running jobs; verification closes open tasks
+- [x] Scripted fake LLM (in-process and as a container) with scenarios and call recording
+- [x] Integration tier: real PostgreSQL/Redis, API in-process, engine in-process driven to VERIFICATION
+- [x] E2E tier: real containers + fake-LLM container, incl. engine restart mid-run, pause stops spending
+- [x] Batch approval (Ready buffer = delivery agents), judges run concurrently, per-model LLM concurrency
+- [x] Leaving ACTIVE cancels running jobs; verification closes open tasks
+- Verified: unit 384 passed (~1 s); integration 99 passed (~45 s); e2e 8 passed (~2 min). Live on the gateway, a
+  2-delivery-agent swarm had two tasks approved in one call and both agents committing in the same second; 4/4
+  tasks Done on the first attempt, p90 cycle time 4.7 min (v0.1 runs: 11–13 min).
 
 ### After 0.2 (in priority order)
 1. **Distributed, heterogeneous harnesses**: external CLI agents (OpenClaude, Claude Code, Codex) on any device
@@ -122,9 +125,14 @@ timeline, artifacts), metrics, activity feed. API docs: http://127.0.0.1:8000/do
   calibrated so these are reachable (DESIGN-0.1 §12).
 - Only one live swarm at a time; archive or delete it to create the next.
 
-### Tests
-~330 fast unit tests in `tests/unit/` (run in < 1s, no DB/network). The old DB-backed tests are parked in
-`tests/integration/` and need revising against the 0.1 schema.
+### Tests (three tiers, docs/DESIGN-0.2.md)
+- **unit** — `docker compose --profile test run --rm --build test` — pure logic, ~1 s.
+- **integration** — `docker compose --profile integration run --rm --build integration` — real PostgreSQL/Redis
+  (`daash_test`, Redis DB 15), API and engine in-process against the scripted fake LLM (`tests/fakes/`).
+- **e2e** — `scripts/e2e.sh` — separate compose project `daash-e2e` (no published ports, safe beside the dev
+  stack): real coordinator/engine containers + fake-LLM container; includes engine restart mid-run.
+- New fake-LLM scenario: add a field to `Scenario` in `tests/fakes/fake_llm.py`, read it in the job's `_answer_*`
+  method, then `fake.configure({...})` in a test.
 
 ### Known limitations (0.1)
 - Agents can only read/write files in their swarm workspace; no code execution (automation scripts are recorded,
@@ -144,3 +152,5 @@ timeline, artifacts), metrics, activity feed. API docs: http://127.0.0.1:8000/do
 - **2026-11-08 — 0.1 prototype**: data layer, domain logic, native harness, engine, API, DAASHboard, hardening and
   team-voting passes built by parallel sub-agents against DESIGN-0.1; judge calibration; verified live on the
   m3u512gb gateway.
+- **2026-11-08 — 0.2**: three-tier test harness with a scripted fake LLM; batch approval, concurrent judges,
+  per-model LLM concurrency, cancel-on-pause and verification task closing. Tagged `v0.2`.
