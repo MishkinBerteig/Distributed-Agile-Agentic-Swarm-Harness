@@ -671,18 +671,23 @@ def quality_review_prompt(task: Any, criteria_with_det_results: Iterable[Any],
     s = (f"Job: review the delivered work for this task against the Definition of Done.\n"
          f"{_task_block(task, with_criteria=False)}\n\nCriteria:\n" + ("\n".join(lines) or "(none)")
          + f"\n\nDeliverable files:\n{_files_block(deliverable_files)}\n"
-         "Score each RUBRIC criterion from 0 to 1 (1 = fully and certainly met; be strict and "
-         "cite evidence from the files). Automatically checked criteria are already decided. "
-         "quality_score is the overall quality of the work from 0 to 1. passed is true only if "
-         "the work is complete and meets the Definition of Done. If not passed, feedback must "
-         "list concrete fixes.\n")
+         "Each acceptance criterion is green or red with certainty. Score each RUBRIC criterion "
+         "as your certainty that it is met: 1.0 = fully met and you cannot name any concrete "
+         "defect against it; 0.5-0.9 = partly met; 0 = not met. Judge only what the criterion "
+         "asks: do not deduct for style preferences or for improvements beyond it. Any score "
+         "below 1.0 MUST name the specific, fixable defect in reason (quote or point to the "
+         "file). Cite evidence from the files. Automatically checked criteria are already "
+         "decided. quality_score uses the same scale for the work as a whole (1.0 when every "
+         "criterion is fully met and nothing in the Definition of Done is violated). passed is "
+         "true only if the work is complete and meets the Definition of Done. If not passed, "
+         "feedback must list concrete fixes.\n")
     ex_ord = rubric[0] if rubric else 1
     s += (_JSON_ONLY + 'Contract: {"passed": true|false, "quality_score": 0.0-1.0, "criteria": '
           '[{"ordinal": <int>, "passed": true|false, "score": 0.0-1.0, "reason": "..."}], '
           '"feedback": "..."}\n'
           f'Include one entry in "criteria" for each RUBRIC ordinal ({", ".join(map(str, rubric)) or "none"}).\n'
-          f'Example: {{"passed": true, "quality_score": 0.95, "criteria": [{{"ordinal": {ex_ord}, '
-          '"passed": true, "score": 0.95, "reason": "Section 2 states the rule clearly"}], '
+          f'Example: {{"passed": true, "quality_score": 1.0, "criteria": [{{"ordinal": {ex_ord}, '
+          '"passed": true, "score": 1.0, "reason": "Section 2 states the rule clearly"}], '
           '"feedback": ""}')
     return s
 
@@ -746,8 +751,10 @@ def mission_review_prompt(task: Any, deliverable_summary: str,
             "quality); decide if the work actually advances the Mission.\n\n"
             f"{_task_block(task)}\n\nAgent's summary:\n{_clip(deliverable_summary, 2000) or '(none)'}\n\n"
             f"Deliverable files:\n{_files_block(deliverable_files)}\n"
-            "confidence is how sure you are (0 to 1) that the expected value is met; use 0.99 or "
-            "more only when you are certain. If it is not met, feedback lists what to change.\n"
+            "confidence is your probability (0 to 1) that the expected value is met. If you "
+            "cannot name a concrete gap between the work and what the task and Mission require, "
+            "the value is met: answer 0.99 or 1.0. Below 0.99 you MUST name the concrete gap in "
+            "feedback, as a fix the delivery agent can make.\n"
             + _JSON_ONLY + 'Contract: {"expected_value_met": true|false, "confidence": 0.0-1.0, '
             '"reasoning": "...", "feedback": "..."}\n'
             'Example: {"expected_value_met": true, "confidence": 0.99, "reasoning": "The guide '
