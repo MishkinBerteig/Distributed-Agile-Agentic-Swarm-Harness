@@ -1,53 +1,74 @@
-export const api = {
-  // Swarm / lifecycle (a swarm owns the vision + lifecycle; teams own missions)
-  createSwarm(payload) { return api._post('/api/swarms', payload) },
-  getActiveSwarm()     { return api._get('/api/swarms/active') },
-  getSwarm(id)         { return api._get(`/api/swarms/${id}`) },
-  listSwarms()         { return api._get('/api/swarms') },
-  transition(swarmId, action) {
-    return api._post(`/api/swarms/${swarmId}/transitions/${action}`)
-  },
-  deleteSwarm(swarmId) { return api._del(`/api/swarms/${swarmId}/delete`) },
+// Every coordinator endpoint the DAASHboard uses (DESIGN-0.1 section 9).
+// Errors throw Error(server `detail`) with `.status` set (0 = unreachable).
+const BASE = '/api'
 
-  // Agent sessions (Slice 5.1) — live roster of a swarm's harness sessions.
-  getSwarmSessions(swarmId) { return api._get(`/api/swarms/${swarmId}/sessions`) },
-  sendSessionTurn(swarmId, sessionId, text) {
-    return api._post(`/api/swarms/${swarmId}/sessions/${sessionId}/turns`, { text })
-  },
-
-  // Teams
-  listTeams(swarmId) {
-    return api._get(swarmId ? `/api/teams?swarm_id=${encodeURIComponent(swarmId)}` : '/api/teams')
-  },
-  createTeam(payload) { return api._post('/api/teams', payload) },
-
-  // Tasks
-  listTasks(teamId, status) {
-    const q = status ? `?team_id=${encodeURIComponent(teamId)}&status=${status}` : `?team_id=${encodeURIComponent(teamId)}`
-    return api._get(`/api/tasks${q}`)
-  },
-  createTask(payload) { return api._post('/api/tasks', payload) },
-  getTask(id)         { return api._get(`/api/tasks/${id}`) },
-  updateTask(id, body){ return api._patch(`/api/tasks/${id}`, body) },
-  deleteTask(id)      { return api._del(`/api/tasks/${id}`) },
-
-  // Quality Judgement (Slice 5) — DoR/DoD per TEAM (the swarm's vision flows
-  // in from its parent swarm). Generation runs through the LMStudio harness
-  // and can fail (LMStudio down, unparseable JSON), so it uses _postStrict
-  // which rejects with the server's detail message.
-  getQuality(teamId)       { return api._get(`/api/teams/${teamId}/quality`) },
-  generateQuality(teamId, payload = {}) {
-    return api._postStrict(`/api/teams/${teamId}/quality`, payload)
-  },
+async function request(method, path, body) {
+  let res
+  try {
+    res = await fetch(BASE + path, {
+      method,
+      headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    })
+  } catch {
+    const err = new Error('Coordinator unreachable')
+    err.status = 0
+    throw err
+  }
+  if (!res.ok) {
+    let detail = `${res.status} ${res.statusText}`
+    try {
+      const j = await res.json()
+      if (j && j.detail !== undefined) {
+        detail = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail)
+      }
+    } catch { /* non-JSON body */ }
+    const err = new Error(detail)
+    err.status = res.status
+    throw err
+  }
+  if (res.status === 204) return null
+  return res.json()
 }
 
-api._get  = (url) => fetch(url).then(r => r.json())
-api._post = (url, body) => fetch(url, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) }).then(r => r.json())
-api._patch= (url, body) => fetch(url, { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) }).then(r => r.json())
-api._del  = (url) => fetch(url, { method: 'DELETE' })
-api._postStrict = (url, body) => fetch(url, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body ?? {}) })
-  .then(async r => {
-    const data = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`)
-    return data
-  })
+const q = (params) => {
+  const s = Object.entries(params)
+    .filter(([, v]) => v !== undefined && v !== null && v !== '')
+    .map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&')
+  return s ? `?${s}` : ''
+}
+const enc = encodeURIComponent
+
+export const api = {
+  health: () => request('GET', '/health'),
+  getConfig: () => request('GET', '/config'),
+  putConfig: (cfg) => request('PUT', '/config', cfg),
+  getModels: () => request('GET', '/models'),
+
+  listSwarms: () => request('GET', '/swarms'),
+  createSwarm: (payload) => request('POST', '/swarms', payload),
+  getActiveSwarm: () => request('GET', '/swarms/active'),
+  transition: (id, action) => request('POST', `/swarms/${id}/transitions/${action}`),
+  postFeedback: (id, text) => request('POST', `/swarms/${id}/feedback`, { text }),
+  deleteSwarm: (id) => request('DELETE', `/swarms/${id}`),
+  getBoard: (id) => request('GET', `/swarms/${id}/board`),
+  getMetrics: (id) => request('GET', `/swarms/${id}/metrics`),
+  getEvents: (id, limit = 100) => request('GET', `/swarms/${id}/events${q({ limit })}`),
+  listArtifacts: (id) => request('GET', `/swarms/${id}/artifacts`),
+  getArtifact: (id, path) =>
+    request('GET', `/swarms/${id}/artifacts/${path.split('/').map(enc).join('/')}`),
+  getLearnings: (id) => request('GET', `/swarms/${id}/learnings`),
+  getProposals: (id) => request('GET', `/swarms/${id}/proposals`),
+
+  getAgentCalls: (id, limit = 20) => request('GET', `/agents/${id}/calls${q({ limit })}`),
+
+  generateQuality: (teamId, dor_guidance, dod_guidance) =>
+    request('POST', `/teams/${teamId}/quality`, { dor_guidance, dod_guidance }),
+
+  getTask: (id) => request('GET', `/tasks/${id}`),
+  createTask: (payload) => request('POST', '/tasks', payload),
+  updateTask: (id, patch) => request('PATCH', `/tasks/${id}`, patch),
+  deleteTask: (id) => request('DELETE', `/tasks/${id}`),
+
+  getDecisions: (limit = 50) => request('GET', `/decisions${q({ limit })}`),
+}
