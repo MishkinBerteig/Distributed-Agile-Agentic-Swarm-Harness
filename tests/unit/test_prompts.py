@@ -356,3 +356,14 @@ def test_scope_block_lists_sibling_teams_and_is_used_by_team_jobs():
     assert "QuickChart" in prioritize_prompt([], [], None, [sib])
     assert "QuickChart" in assess_prompt({"name": "Notes", "mission_statement": "m"}, [], [], [sib])
     assert "Other teams" not in plan_prompt("Notes", [], [], 2, None, "")
+
+
+def test_assessment_requires_next_focus_unless_confidently_accomplished():
+    import pytest as _pytest
+    for bad in ({"status": "accomplished", "confidence": 0.95, "next_focus": ""},
+                {"status": "continue", "confidence": 0.5}):
+        with _pytest.raises(ValueError, match="next_focus"):
+            parse_assessment(bad)
+    assert parse_assessment({"status": "accomplished", "confidence": 0.99}).status == "accomplished"
+    assert parse_assessment({"status": "continue", "confidence": 0.5,
+                             "next_focus": "Add the basil guide"}).next_focus

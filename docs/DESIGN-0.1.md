@@ -342,6 +342,8 @@ resilience and performance tests.
   rework forever.
 * **Blocking verdicts must say what to fix.** `parse_mission_review` rejects a blocking verdict (not met, or
   confidence below 0.99) with empty `feedback`, and `complete_json` re-asks once. Delivery agents never rework blind.
+  The mission assessment has the same contract: anything short of "accomplished at >= 0.99" must name concrete
+  missing content in `next_focus` (general polish does not count), so teams do not loop on vague polish tasks.
 * **Infrastructure errors are not failures.** Gateway connection/timeout/5xx/429 errors cool the job down (30s
   doubling to 5 min) and never count a task attempt. Three consecutive parse/protocol failures escalate the job's
   model one rung up the ladder.

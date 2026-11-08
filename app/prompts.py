@@ -855,7 +855,11 @@ def assess_prompt(team: Any, done_tasks: Iterable[Any], failed_tasks: Iterable[A
             "- continue: more work is needed; next_focus says what the next tasks should do.\n"
             "- restart: the approach is failing; learn from it and start over; next_focus says "
             "what to do differently.\n"
-            "Say accomplished only when you are very sure (confidence 0.99 or more).\n"
+            "confidence is your probability that the Mission's expected value is met. If you "
+            "cannot name specific missing or wrong content in the team's Mission scope, it is "
+            "met: say accomplished with confidence 0.99 or more. General polish (tightening, "
+            "rewording, clarity passes) is not missing content. Otherwise say continue and name "
+            "that content in next_focus.\n"
             + _JSON_ONLY + 'Contract: {"status": "continue"|"accomplished"|"restart", '
             '"confidence": 0.0-1.0, "reasoning": "...", "next_focus": "..."}\n'
             'Example: {"status": "continue", "confidence": 0.8, "reasoning": "Intro is done, '
@@ -867,8 +871,18 @@ def parse_assessment(obj: Any) -> Assessment:
     st = _text(o.get("status")).lower()
     if st not in ("continue", "accomplished", "restart"):
         raise ValueError('"status" must be exactly one of: "continue", "accomplished", "restart"')
-    return Assessment(status=st, confidence=_unit(o.get("confidence"), "confidence"),  # type: ignore[arg-type]
-                      reasoning=_text(o.get("reasoning")), next_focus=_text(o.get("next_focus")))
+    a = Assessment(status=st, confidence=_unit(o.get("confidence"), "confidence"),  # type: ignore[arg-type]
+                   reasoning=_text(o.get("reasoning")), next_focus=_text(o.get("next_focus")))
+    # Same contract as the review judges: anything short of "accomplished at >= 0.99"
+    # must name the concrete remaining work, or the team plans vague polish forever.
+    blocking = a.status != "accomplished" or a.confidence < MISSION_CONFIDENCE_FLOOR
+    if blocking and not a.next_focus:
+        raise ValueError(
+            f'"next_focus" is empty, but status "{a.status}" at confidence {a.confidence:.2f} '
+            "means more work. Either name the specific missing or wrong content in "
+            '"next_focus" (status "continue"), or, if you cannot name any, answer status '
+            f'"accomplished" with confidence {MISSION_CONFIDENCE_FLOOR} or higher.')
+    return a
 
 
 # ---------------------------------------------------------------------------
