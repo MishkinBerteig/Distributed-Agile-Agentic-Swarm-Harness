@@ -65,12 +65,23 @@ learning mechanisms, budgets.
       coordinator-bootstrapped two-team swarm ("Backyard Birds") run through the API/dashboard, including a mid-run
       engine rebuild/restart and a user-added task
 
-### After 0.1
-- Revive integration tests; add E2E (create → run → verify), restart-resilience, security and performance tests.
-- External CLI harnesses through the host runner (heterogeneous harnesses across devices — the "distributed" part).
-- Learning mechanism 2: execute agent-written automation scripts in a sandbox container.
-- Real embedding model by default; richer RAG over transcripts.
-- Multiple providers in one swarm; authentication; push updates (SSE) instead of polling.
+### Milestone 0.2 — Test harness + throughput (in progress; tag `v0.2` when done)
+Design: docs/DESIGN-0.2.md. (`v0.1` is tagged at f1e5526.)
+- [ ] Scripted fake LLM (in-process and as a container) with scenarios and call recording
+- [ ] Integration tier: real PostgreSQL/Redis, API in-process, engine in-process driven to VERIFICATION
+- [ ] E2E tier: real containers + fake-LLM container, incl. engine restart mid-run, pause stops spending
+- [ ] Batch approval (Ready buffer = delivery agents), judges run concurrently, per-model LLM concurrency
+- [ ] Leaving ACTIVE cancels running jobs; verification closes open tasks
+
+### After 0.2 (in priority order)
+1. **Distributed, heterogeneous harnesses**: external CLI agents (OpenClaude, Claude Code, Codex) on any device
+   through the host runner (`app/runner.py`), plus authentication. These harnesses bring their own code execution
+   and web research, so this item largely covers items 2 and 3.
+2. Sandboxed code execution for the native harness (learning mechanism 2: run agent-written automation scripts;
+   test-based deterministic checks).
+3. Research tools for the native harness (web fetch/search with required citations) so fact-checking is grounded.
+4. Long soak run at README scale (10M+ tokens); real embedding model by default; richer RAG over transcripts;
+   multiple providers per swarm; push updates (SSE) instead of polling.
 
 ## 6. Risks
 - **Local model reliability** (malformed JSON, missing tool calls): tolerant extraction, one re-ask, bounded tool
