@@ -761,14 +761,29 @@ def mission_review_prompt(task: Any, deliverable_summary: str,
             'covers all three steps the Mission requires", "feedback": ""}')
 
 
-def parse_mission_review(obj: Any) -> MissionReview:
+#: Mission Judgement must name a concrete gap whenever it is less than this sure
+#: (README: the expected value is met with 99% confidence or better).
+MISSION_CONFIDENCE_FLOOR = 0.99
+
+
+def parse_mission_review(obj: Any, min_confidence: float = MISSION_CONFIDENCE_FLOOR
+                         ) -> MissionReview:
     o = _as_obj(obj)
     if "expected_value_met" not in o:
         raise ValueError('"expected_value_met" is required: true or false')
-    return MissionReview(
+    r = MissionReview(
         expected_value_met=_bool(o["expected_value_met"], "expected_value_met"),
         confidence=_unit(o.get("confidence"), "confidence"),  # type: ignore[arg-type]
         reasoning=_text(o.get("reasoning")), feedback=_text(o.get("feedback")))
+    # Enforce the contract: a verdict that blocks Done must say what to fix, or the
+    # delivery agent reworks blind. Re-asked once by complete_json.
+    if (not r.expected_value_met or r.confidence < min_confidence) and not r.feedback:
+        raise ValueError(
+            f'"feedback" is empty, but your verdict (expected_value_met={str(r.expected_value_met).lower()}, '
+            f'confidence={r.confidence:.2f}) would send the work back. Either name the specific, '
+            f'fixable gap in "feedback", or, if you cannot name one, set expected_value_met to '
+            f'true and confidence to {min_confidence} or higher.')
+    return r
 
 
 # ---------------------------------------------------------------------------

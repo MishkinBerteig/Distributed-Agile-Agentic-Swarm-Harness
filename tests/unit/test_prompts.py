@@ -280,7 +280,8 @@ def test_quality_review_prompt():
 def test_mission_review():
     r = parse_mission_review({"expected_value_met": "yes", "confidence": "99%", "reasoning": "r"})
     assert r.expected_value_met and r.confidence == pytest.approx(0.99) and r.feedback == ""
-    assert parse_mission_review({"expected_value_met": False, "confidence": -3}).confidence == 0.0
+    assert parse_mission_review({"expected_value_met": False, "confidence": -3,
+                                 "feedback": "Add the missing section"}).confidence == 0.0
     for bad in ([], {"confidence": 1}, {"expected_value_met": True},
                 {"expected_value_met": True, "confidence": "sure"}, {"expected_value_met": "dunno", "confidence": 1}):
         with pytest.raises(ValueError):
@@ -331,3 +332,15 @@ def test_parse_vote_happy_and_invalid():
     for bad in ({}, {"approve": "maybe"}, "nonsense"):
         with pytest.raises(ValueError):
             parse_vote(bad)
+
+
+def test_mission_review_requires_feedback_when_blocking():
+    import pytest as _pytest
+    with _pytest.raises(ValueError, match="feedback"):
+        parse_mission_review({"expected_value_met": True, "confidence": 0.97, "feedback": ""})
+    with _pytest.raises(ValueError, match="feedback"):
+        parse_mission_review({"expected_value_met": False, "confidence": 0.99})
+    ok = parse_mission_review({"expected_value_met": True, "confidence": 0.97,
+                               "feedback": "Add the Blue Jay's call"})
+    assert ok.confidence == 0.97 and ok.feedback
+    assert parse_mission_review({"expected_value_met": True, "confidence": 0.99}).feedback == ""
