@@ -228,6 +228,8 @@ async def transition_swarm(swarm_id: str, action: str) -> dict:
     updated = await SwarmRepo(_p()).update(swarm_id, **fields)
     await EventRepo(_p()).add(swarm_id, "swarm", actor="user",
                               detail=H.transition_detail(action, swarm.lifecycle_state, new_state))
+    if action == "verify":
+        await services.close_open_tasks(_p(), swarm_id, services.VERIFY_CLOSE_REASON)
     return await _swarm_detail(updated or swarm)
 
 

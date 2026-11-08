@@ -46,6 +46,41 @@ COORD = AgentRole.SWARM_COORDINATOR.value
 # Pure helpers
 # ---------------------------------------------------------------------------
 
+class SwarmNotActive(Exception):
+    """The swarm left the state a job needs (ACTIVE, or LEARNING for the retrospective) while the
+    job ran. Its results were discarded; this is not a failure and is not retried."""
+
+
+class RefCounts:
+    """Running-job reference counts per key (agent id): BUSY while count > 0."""
+
+    def __init__(self) -> None:
+        self._n: dict[str, int] = {}
+
+    def enter(self, key: str) -> bool:
+        """Count one more job; True if this is the first (the agent just became busy)."""
+        n = self._n.get(key, 0)
+        self._n[key] = n + 1
+        return n == 0
+
+    def exit(self, key: str) -> bool:
+        """Count one job less; True if none remain (the agent is idle again)."""
+        n = self._n.get(key, 0) - 1
+        if n <= 0:
+            self._n.pop(key, None)
+            return True
+        self._n[key] = n
+        return False
+
+    def count(self, key: str) -> int:
+        return self._n.get(key, 0)
+
+
+def prioritize_slots(n_delivery: int, ready_startable: int) -> int:
+    """How many tasks Mission Judgement may approve: free buffer slots, at least 1."""
+    return max(1, max(1, n_delivery) - ready_startable)
+
+
 def is_infrastructure_error(exc: BaseException) -> bool:
     """Gateway trouble that says nothing about the work: connection, timeout, 5xx, 429."""
     if not isinstance(exc, LLMError):
@@ -234,6 +269,7 @@ class Jobs:
         self.verdicts = VerdictRepo(pool)
         self.proposals = ProposalRepo(pool)
         self._locks: dict[str, asyncio.Lock] = {}
+        self._refs = RefCounts()
         # judge replies already paid for in a review that later failed (infra error)
         self._partial: dict[tuple, Any] = {}
 
@@ -244,16 +280,35 @@ class Jobs:
 
     @asynccontextmanager
     async def busy(self, agent: Agent, task_id: Optional[str] = None):
-        """One job at a time per agent; BUSY during the job, IDLE after."""
-        async with self.lock(agent.id):
-            await self.agents.set_state(agent.id, AgentState.BUSY.value, task_id)
+        """BUSY while at least one job of the agent runs, IDLE after the last one.
+
+        Only Delivery agents are serialized (they own a task and its workspace edits); judges
+        and the coordinator may run concurrent jobs."""
+        serial = agent.role == DELIVERY
+        if serial:
+            await self.lock(agent.id).acquire()
+        try:
+            first = self._refs.enter(agent.id)
             try:
+                if first or serial:
+                    await self.agents.set_state(agent.id, AgentState.BUSY.value, task_id)
                 yield
             finally:
-                try:
-                    await self.agents.set_state(agent.id, AgentState.IDLE.value, None)
-                except Exception:  # noqa: BLE001 - reset_busy() cleans up on restart
-                    log.exception("could not set agent %s idle", agent.name)
+                # Always decrement, also on errors and cancellation.
+                if self._refs.exit(agent.id):
+                    try:
+                        await self.agents.set_state(agent.id, AgentState.IDLE.value, None)
+                    except BaseException as exc:  # noqa: BLE001 - reset_busy() cleans up on restart
+                        log.warning("could not set agent %s idle: %r", agent.name, exc)
+        finally:
+            if serial:
+                self.lock(agent.id).release()
+
+    async def _require_state(self, swarm: Swarm, allowed: tuple[str, ...] = ("ACTIVE",)) -> None:
+        """Raise SwarmNotActive unless the swarm is (still) in one of `allowed` states."""
+        cur = await self.swarms.get(swarm.id)
+        if cur is None or cur.lifecycle_state not in allowed:
+            raise SwarmNotActive(swarm.id)
 
     async def signal(self, kind: str, team_id: Optional[str] = None,
                      task_id: Optional[str] = None, **payload: Any) -> None:
@@ -278,7 +333,7 @@ class Jobs:
 
     async def _json_job(self, swarm: Swarm, agent: Agent, team: Optional[Team], purpose: str,
                         model: str, user: str, parse, task_id: Optional[str] = None,
-                        query: str = ""):
+                        query: str = "", allowed: tuple[str, ...] = ("ACTIVE",)):
         """One complete_json call with prompt context, accounting and busy state."""
         async with self.busy(agent, task_id):
             system = await services.agent_system_prompt(
@@ -295,6 +350,8 @@ class Jobs:
             await services.record_call(
                 self.pool, agent, purpose, model, usage=loop.usage, transcript=loop.transcript,
                 task_id=task_id, duration_ms=int((time.monotonic() - t0) * 1000))
+            # Discard the result (usage is already recorded) if the swarm left the state.
+            await self._require_state(swarm, allowed)
             return parsed
 
     async def _still(self, task_id: str, *statuses: str) -> Optional[Task]:
@@ -352,6 +409,7 @@ class Jobs:
             return
         await self.swarms.update(swarm.id, lifecycle_state=policy.transition(
             fresh.lifecycle_state, "verify"))
+        await services.close_open_tasks(self.pool, swarm.id, services.VERIFY_CLOSE_REASON)
         done = sum(1 for t in teams if t.status == TeamStatus.ACCOMPLISHED.value)
         await self.events.add(
             swarm.id, "swarm",
@@ -504,7 +562,8 @@ class Jobs:
         model = escalate_model(choose_model(COORD, swarm.config), swarm.config, escalation)
         learned = await self._json_job(
             swarm, coord, None, "retrospective", model, prompts.retrospective_prompt(summary),
-            prompts.parse_retrospective, query=swarm.vision_statement)
+            prompts.parse_retrospective, query=swarm.vision_statement,
+            allowed=("LEARNING",))
         for kind, content in learned:
             await self.learnings.add(content, kind, swarm_id=None, created_by=coord.id,
                                      embedding=self._embed(content))
@@ -526,9 +585,14 @@ class Jobs:
             eff.config.role_models.quality_judgement = escalate_model(
                 choose_model(QJ, swarm.config), swarm.config, escalation)
         qj = await self._team_agent(swarm, team, QJ)
-        async with self.lock(qj.id):
+        async def still_ok() -> bool:
+            cur = await self.swarms.get(swarm.id)
+            return cur is not None and cur.lifecycle_state == "ACTIVE"
+
+        async with self.busy(qj):
             await services.generate_standards(self.pool, self.llm, eff, team,
-                                              embedder=self.embedder)
+                                              embedder=self.embedder, manage_state=False,
+                                              still_ok=still_ok)
 
     async def plan_tasks(self, swarm: Swarm, action: Action, escalation: int = 0) -> None:
         team = await self.teams.get(action.team_id)
@@ -585,10 +649,13 @@ class Jobs:
         mj = await self._team_agent(swarm, team, MJ)
         model = escalate_model(choose_model(MJ, swarm.config), swarm.config, escalation)
         others = [t for t in await self.teams.list(swarm.id) if t.id != team.id]
-        user = prompts.prioritize_prompt(candidates, done, team.definition_of_ready, others)
+        ready_startable = sum(1 for t in ready if policy.deps_done(t, by_id))
+        slots = prioritize_slots(len(await self._delivery_agents(swarm, team)), ready_startable)
+        user = prompts.prioritize_prompt(candidates, done, team.definition_of_ready, others,
+                                         slots=slots)
         res = await self._json_job(
             swarm, mj, team, "prioritize", model, user,
-            lambda o: prompts.parse_prioritize(o, valid), query=team.mission_statement)
+            lambda o: prompts.parse_prioritize(o, valid, slots), query=team.mission_statement)
 
         # The user may have changed or deleted tasks while Mission Judgement thought.
         fresh = {t.id: t.status for t in await self.tasks.list(team_id=team.id)}
@@ -606,19 +673,19 @@ class Jobs:
                 from_status=t.status, to_status=TaskStatus.REJECTED.value,
                 detail=f"{mj.name} rejected '{t.name}': {reason}")
         rank = 0
-        nxt = res.next_task_id if res.next_task_id in cand_ids else None
         order = [tid for tid in res.order if tid not in rejected]
-        if nxt not in order:
-            nxt = None
-        if nxt is None:
-            nxt = next((tid for tid in order if tid in cand_ids), None)
+        approve = [tid for tid in dict.fromkeys(res.next_task_ids or [res.next_task_id])
+                   if tid in cand_ids and tid in order][:slots]
+        if not approve:
+            first = next((tid for tid in order if tid in cand_ids), None)
+            approve = [first] if first else []
         for tid in order:
             rank += 1
             fields: dict[str, Any] = {"priority": rank}
-            if tid == nxt:
+            if tid in approve:
                 fields.update(status=TaskStatus.READY.value, approved_at=now)
             await self.tasks.update(tid, **fields)
-            if tid == nxt:
+            if tid in approve:
                 await self.events.add(
                     swarm.id, "approved", team_id=team.id, task_id=tid, actor=mj.id,
                     from_status=TaskStatus.PENDING.value, to_status=TaskStatus.READY.value,
@@ -672,6 +739,7 @@ class Jobs:
                     self.pool, agent, "work_task", model, usage=exc.usage,
                     transcript=exc.transcript, ok=False, error=str(exc), task_id=task.id,
                     duration_ms=int((time.monotonic() - t0) * 1000))
+                await self._require_state(swarm)
                 if is_infrastructure_error(exc):
                     raise
                 await self._attempt_failed(
@@ -681,6 +749,7 @@ class Jobs:
             await services.record_call(
                 self.pool, agent, "work_task", model, usage=loop.usage, transcript=loop.transcript,
                 task_id=task.id, duration_ms=int((time.monotonic() - t0) * 1000))
+            await self._require_state(swarm)
 
             if await self._still(task.id, TaskStatus.IN_PROGRESS.value) is None:
                 log.info("work on %r dropped: the task changed while the agent worked", task.name)
@@ -985,6 +1054,12 @@ class Jobs:
         if errors:
             raise errors[0]
         qr, mr = results
+        try:
+            await self._require_state(swarm)
+        except SwarmNotActive:
+            self._partial.pop(qkey, None)
+            self._partial.pop(mkey, None)
+            raise
         if await self._still(task.id, TaskStatus.REVIEW.value) is None:
             self._partial.pop(qkey, None)
             self._partial.pop(mkey, None)

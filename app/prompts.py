@@ -530,17 +530,22 @@ class PrioritizeResult:
     order: list[str]
     next_task_id: Optional[str]
     rejections: list[tuple[str, str]] = field(default_factory=list)
+    next_task_ids: list[str] = field(default_factory=list)
 
 
 def prioritize_prompt(candidates: Iterable[Any], done_tasks: Iterable[Any],
-                      team_dor: Optional[str] = None, other_teams: Iterable[Any] = ()) -> str:
+                      team_dor: Optional[str] = None, other_teams: Iterable[Any] = (),
+                      slots: int = 1) -> str:
+    slots = max(1, int(slots))
     s = scope_block(other_teams)
     s += ("Job: prioritize this team's candidate tasks by how directly they advance the Mission.\n"
          "1. order: ALL candidate task ids, highest priority first (respect dependencies).\n"
-         "2. next_task_id: the one task approved to start now (the highest priority one that is "
-         "not rejected and meets the Definition of Ready).\n"
+         f"2. next_task_ids: the tasks approved to start now: up to {slots} slot(s) are free, so "
+         f"approve up to {slots} task(s), highest priority first, each not rejected and meeting "
+         "the Definition of Ready. Approve fewer only if fewer candidates qualify. "
+         "next_task_id: the first of them.\n"
          "3. rejections: tasks that do not serve the Mission or the Vision, duplicate other "
-         "work, or belong to another team's Mission, each with a reason. Rejected ids must not be next_task_id.\n"
+         "work, or belong to another team's Mission, each with a reason. Rejected ids must not be in next_task_ids.\n"
          "Copy task ids exactly as written.\n\n")
     if team_dor and team_dor.strip():
         s += f"Team Definition of Ready:\n{team_dor.strip()}\n\n"
@@ -549,14 +554,17 @@ def prioritize_prompt(candidates: Iterable[Any], done_tasks: Iterable[Any],
     for t in cands:
         s += _task_block(t) + "\n"
     s += f"\nDone tasks:\n{_task_list(done_tasks)}\n\n"
-    s += (_JSON_ONLY + 'Contract: {"order": ["<task id>", ...], "next_task_id": "<task id>", '
+    s += (_JSON_ONLY + 'Contract: {"order": ["<task id>", ...], "next_task_ids": ["<task id>", ...], '
+          '"next_task_id": "<task id>", '
           '"rejections": [{"task_id": "<task id>", "reason": "..."}]}\n'
-          'Example: {"order": ["t2", "t1", "t3"], "next_task_id": "t2", "rejections": '
+          'Example: {"order": ["t2", "t1", "t3"], "next_task_ids": ["t2"], "next_task_id": "t2", '
+          '"rejections": '
           '[{"task_id": "t3", "reason": "Unrelated to the Mission"}]}')
     return s
 
 
-def parse_prioritize(obj: Any, valid_ids: Iterable[str]) -> PrioritizeResult:
+def parse_prioritize(obj: Any, valid_ids: Iterable[str], slots: int = 1) -> PrioritizeResult:
+    slots = max(1, int(slots))
     o = _as_obj(obj)
     valid = [str(v) for v in valid_ids]
     vset = set(valid)
@@ -584,16 +592,33 @@ def parse_prioritize(obj: Any, valid_ids: Iterable[str]) -> PrioritizeResult:
         if all(tid != x for x, _ in rejections):
             rejections.append((tid, reason))
     rejected = {t for t, _ in rejections}
-    nxt = o.get("next_task_id")
-    nxt = None if nxt is None or str(nxt).strip().lower() in ("", "null", "none") else norm(nxt, '"next_task_id"')
-    if nxt in rejected:
-        raise ValueError(f"next_task_id {nxt} is also in rejections; choose one task to approve")
+    raw_next: list[Any] = []
+    ids_field = o.get("next_task_ids")
+    if isinstance(ids_field, list):
+        raw_next.extend(ids_field)
+    elif ids_field not in (None, ""):
+        raw_next.append(ids_field)
+    legacy = o.get("next_task_id")
+    if legacy is not None and str(legacy).strip().lower() not in ("", "null", "none"):
+        raw_next.append(legacy)
+    if not isinstance(ids_field, list) and legacy is not None and str(legacy).strip() in rejected:
+        raise ValueError(f"next_task_id {legacy} is also in rejections; choose one task to approve")
+    chosen: list[str] = []
+    for v in raw_next:
+        if v is None or str(v).strip().lower() in ("", "null", "none"):
+            continue
+        tid = norm(v, '"next_task_ids"')
+        if tid not in rejected and tid not in chosen:
+            chosen.append(tid)
+    chosen = chosen[:slots]
     for v in valid:  # tasks the model forgot go last, keeping the order total
         if v not in order:
             order.append(v)
-    if nxt is None:  # the engine must always have something to approve unless all were rejected
-        nxt = next((v for v in order if v not in rejected), None)
-    return PrioritizeResult(order=order, next_task_id=nxt, rejections=rejections)
+    if not chosen:  # the engine must always have something to approve unless all were rejected
+        chosen = [v for v in order if v not in rejected][:slots]
+    nxt = chosen[0] if chosen else None
+    return PrioritizeResult(order=order, next_task_id=nxt, rejections=rejections,
+                            next_task_ids=chosen)
 
 
 # ---------------------------------------------------------------------------

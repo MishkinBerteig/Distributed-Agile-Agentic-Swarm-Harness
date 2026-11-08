@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import json
+import logging
+
 from pydantic_settings import BaseSettings
+
+log = logging.getLogger("daash.config")
 
 
 class Settings(BaseSettings):
@@ -28,6 +33,10 @@ class Settings(BaseSettings):
     # Gateway models are reasoning models: small budgets come back with only
     # reasoning_content and no answer, so keep this generous.
     LLM_MAX_TOKENS: int = 16384
+    # Concurrent HTTP calls per model (one LLM server slows badly above about 4), and
+    # per-model overrides as a JSON object, e.g. {"amazing": 1}.
+    LLM_MAX_CONCURRENCY: int = 4
+    LLM_MODEL_CONCURRENCY: str = "{}"
 
     # Artifacts produced by agents live under WORKSPACE_ROOT/<swarm_id>/.
     WORKSPACE_ROOT: str = "/workspaces"
@@ -35,5 +44,19 @@ class Settings(BaseSettings):
     # Engine (python -m app.engine).
     ENGINE_TICK_SECONDS: float = 3.0
     ENGINE_ENABLED: bool = True
+
+    def model_concurrency(self) -> dict[str, int]:
+        """LLM_MODEL_CONCURRENCY parsed to {model: limit}; bad JSON is logged and ignored."""
+        raw = (self.LLM_MODEL_CONCURRENCY or "").strip()
+        if not raw:
+            return {}
+        try:
+            obj = json.loads(raw)
+            if not isinstance(obj, dict):
+                raise ValueError("not a JSON object")
+            return {str(k): int(v) for k, v in obj.items() if int(v) >= 1}
+        except (ValueError, TypeError) as exc:
+            log.warning("ignoring bad DAASH_LLM_MODEL_CONCURRENCY %r: %s", raw, exc)
+            return {}
 
     model_config = {"env_prefix": "DAASH_"}

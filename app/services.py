@@ -13,7 +13,7 @@ from typing import Any, Optional
 import asyncpg
 
 from app.config import Settings
-from app.models import Agent, AgentRole, AgentState, CreatorKind, Swarm, Team
+from app.models import Agent, AgentRole, AgentState, CreatorKind, Swarm, TaskStatus, Team
 from app.prompts import compose_system_prompt, parse_standards, standards_prompt
 from app.repo import (AgentRepo, CallRepo, ConfigRepo, EventRepo, FeedbackRepo, LearningRepo,
                       MemoryRepo, TeamRepo)
@@ -108,7 +108,9 @@ def build_llm(settings: Settings):
     from app.llm import LLMClient  # local import: keeps services importable in pure tests
 
     return LLMClient(settings.LLM_ENDPOINT, api_key=settings.LLM_API_KEY,
-                     timeout=settings.LLM_TIMEOUT_SECONDS, max_tokens=settings.LLM_MAX_TOKENS)
+                     timeout=settings.LLM_TIMEOUT_SECONDS, max_tokens=settings.LLM_MAX_TOKENS,
+                     default_concurrency=settings.LLM_MAX_CONCURRENCY,
+                     model_concurrency=settings.model_concurrency())
 
 
 # -- prompt context + accounting -------------------------------------------------
@@ -159,9 +161,30 @@ async def team_agent(pool: asyncpg.Pool, swarm: Swarm, team: Team, role: str) ->
     raise LookupError(f"team {team.id} has no {role} agent")
 
 
+VERIFY_CLOSE_REASON = "Closed: the swarm went to verification before this task finished."
+
+
+async def close_open_tasks(pool: asyncpg.Pool, swarm_id: str, reason: str) -> int:
+    """Reject every open task (Pending/Ready/In-Progress/Review) of the swarm.
+
+    Used when the swarm leaves ACTIVE for verification, so nothing stays In-Progress forever.
+    Clears the assignee, and writes one summary event. Returns how many tasks were closed."""
+    rows = await pool.fetch(
+        "UPDATE tasks SET status = 'Rejected', rejection_reason = $2, assigned_agent_id = NULL, "
+        "updated_at = now() WHERE swarm_id = $1 AND status = ANY($3::text[]) RETURNING id",
+        swarm_id, reason, list(TaskStatus.open_statuses()))
+    n = len(rows)
+    if n:
+        await EventRepo(pool).add(
+            swarm_id, "rejected", actor="engine",
+            detail=f"{n} open task(s) closed as Rejected. {reason}")
+    return n
+
+
 async def generate_standards(pool: asyncpg.Pool, llm: Any, swarm: Swarm, team: Team,
                              dor_guidance: str = "", dod_guidance: str = "",
-                             embedder: Any = None) -> Team:
+                             embedder: Any = None, manage_state: bool = True,
+                             still_ok: Any = None) -> Team:
     """Quality Judgement derives the team's DoR additions and team-mission DoD.
 
     Raises app.llm.LLMError on harness/parse failure (after recording the call).
@@ -173,7 +196,8 @@ async def generate_standards(pool: asyncpg.Pool, llm: Any, swarm: Swarm, team: T
     system = await agent_system_prompt(pool, swarm, qj, team, query=team.mission_statement,
                                        embedder=embedder)
     agents = AgentRepo(pool)
-    await agents.set_state(qj.id, AgentState.BUSY.value)
+    if manage_state:
+        await agents.set_state(qj.id, AgentState.BUSY.value)
     t0 = time.monotonic()
     try:
         standards, loop = await llm.complete_json(
@@ -184,10 +208,13 @@ async def generate_standards(pool: asyncpg.Pool, llm: Any, swarm: Swarm, team: T
                           duration_ms=int((time.monotonic() - t0) * 1000))
         raise
     finally:
-        await agents.set_state(qj.id, AgentState.IDLE.value)
+        if manage_state:
+            await agents.set_state(qj.id, AgentState.IDLE.value)
     await record_call(pool, qj, "generate_standards", model, usage=loop.usage,
                       transcript=loop.transcript,
                       duration_ms=int((time.monotonic() - t0) * 1000))
+    if still_ok is not None and not await still_ok():
+        return team  # the swarm left ACTIVE while the call ran: discard the result
     updated = await TeamRepo(pool).update(
         team.id, definition_of_ready=standards["definition_of_ready"],
         definition_of_done=standards["definition_of_done"])

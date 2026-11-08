@@ -193,7 +193,9 @@ class LLMClient:
     def __init__(self, endpoint: str, api_key: str = "", timeout: float = 600.0,
                  max_tokens: int = 16384, transport: httpx.AsyncBaseTransport | None = None,
                  max_retries: int = 2,
-                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> None:
+                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+                 default_concurrency: int | None = None,
+                 model_concurrency: dict[str, int] | None = None) -> None:
         self.endpoint = endpoint.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
@@ -201,6 +203,20 @@ class LLMClient:
         self.transport = transport
         self.max_retries = max_retries
         self._sleep = sleep
+        self.default_concurrency = default_concurrency
+        self.model_concurrency = dict(model_concurrency or {})
+        self._sems: dict[str, asyncio.Semaphore] = {}
+
+    def _semaphore(self, model: str | None) -> asyncio.Semaphore | None:
+        """Per-model semaphore (None = unlimited). Created lazily, one per model name."""
+        limit = self.model_concurrency.get(model or "", self.default_concurrency)
+        if not limit or limit < 1:
+            return None
+        key = model or ""
+        sem = self._sems.get(key)
+        if sem is None:
+            sem = self._sems[key] = asyncio.Semaphore(int(limit))
+        return sem
 
     def _url(self, path: str) -> str:
         base = self.endpoint[:-3] if self.endpoint.endswith("/v1") else self.endpoint
@@ -213,14 +229,22 @@ class LLMClient:
         return h
 
     async def _request(self, method: str, path: str, payload: dict | None = None) -> dict:
+        sem = self._semaphore(payload.get("model") if payload else None)
         last: LLMError | None = None
         for attempt in range(self.max_retries + 1):
             if attempt:
                 await self._sleep(float(2 ** (attempt - 1)))
             try:
-                async with httpx.AsyncClient(transport=self.transport, timeout=self.timeout) as c:
-                    r = await c.request(method, self._url(path), headers=self._headers(),
-                                        json=payload)
+                if sem is not None:
+                    await sem.acquire()
+                try:
+                    async with httpx.AsyncClient(transport=self.transport,
+                                                 timeout=self.timeout) as c:
+                        r = await c.request(method, self._url(path), headers=self._headers(),
+                                            json=payload)
+                finally:
+                    if sem is not None:
+                        sem.release()
             except httpx.TimeoutException as exc:
                 last = LLMError(f"LLM request timed out: {exc!r}", "timeout")
                 continue

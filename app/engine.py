@@ -21,7 +21,7 @@ from app.bus import DecisionBus
 from app.config import Settings
 from app.db import create_pool
 from app.embeddings import build_embedder
-from app.jobs import Jobs, is_infrastructure_error
+from app.jobs import Jobs, SwarmNotActive, is_infrastructure_error
 from app.llm import LLMError
 from app.models import (Action, ActionKind, AgentRole, Swarm, SwarmSnapshot, SwarmStatus, Task,
                         TaskStatus, TeamStatus)
@@ -135,12 +135,14 @@ def decide(snap: SwarmSnapshot) -> list[Action]:
                 emit(Action(kind=ActionKind.COMMIT_TASK, team_id=team.id, task_id=cand.id,
                             agent_id=agent.id))
 
-        # Mission Judgement approves the next task when nothing startable is Ready.
-        has_startable_ready = any(t.status == TaskStatus.READY.value
-                                  and policy.deps_done(t, by_id) for t in tasks)
+        # Mission Judgement keeps a buffer of approved work equal to the number of delivery
+        # agents (at least 1): it approves more when fewer startable Ready tasks exist.
+        ready_startable = sum(1 for t in tasks if t.status == TaskStatus.READY.value
+                              and policy.deps_done(t, by_id))
+        buffer = max(1, sum(1 for a in agents if a.role == AgentRole.MISSION_DELIVERY.value))
         has_candidate = any(t.status == TaskStatus.PENDING.value
                             and policy.deps_done(t, by_id) for t in tasks)
-        if not has_startable_ready and has_candidate:
+        if ready_startable < buffer and has_candidate:
             emit(Action(kind=ActionKind.PRIORITIZE, team_id=team.id))
 
         if not policy.live_open_tasks(tasks):
@@ -161,6 +163,19 @@ def decide(snap: SwarmSnapshot) -> list[Action]:
                           for t in snap.teams):
         emit(Action(kind=ActionKind.COMPLETE_SWARM))
     return out
+
+
+def keys_to_cancel(running_keys, lifecycle_state: Optional[str]) -> list[str]:
+    """Running LLM job keys that must be cancelled because the live swarm is in
+    `lifecycle_state` (None = no live swarm). ACTIVE keeps everything; LEARNING keeps only
+    the retrospective; any other state cancels everything."""
+    keys = list(running_keys)
+    if lifecycle_state == SwarmStatus.ACTIVE.value:
+        return []
+    if lifecycle_state == SwarmStatus.LEARNING.value:
+        prefix = f"{ActionKind.RETROSPECTIVE.value}:"
+        return [k for k in keys if not k.startswith(prefix)]
+    return keys
 
 
 # ---------------------------------------------------------------------------
@@ -289,6 +304,7 @@ class Engine:
 
     async def tick(self) -> list[Action]:
         swarm = await SwarmRepo(self.pool).get_live()
+        await self._cancel_stale(swarm.lifecycle_state if swarm is not None else None)
         if swarm is None or swarm.lifecycle_state not in (SwarmStatus.ACTIVE.value,
                                                           SwarmStatus.LEARNING.value):
             return []
@@ -304,6 +320,23 @@ class Engine:
             else:
                 self._launch(snap.swarm, action)
         return actions
+
+    async def _cancel_stale(self, lifecycle_state: Optional[str]) -> None:
+        """Leaving ACTIVE stops spending: cancel jobs that no longer belong to the state.
+
+        Cancelled jobs reset their agents to IDLE (Jobs.busy) and never count an attempt. The
+        partially spent usage of a cancelled call is not recorded (the HTTP call is aborted and
+        carries no usage)."""
+        stale = keys_to_cancel(self.running, lifecycle_state)
+        tasks = [self.running[k] for k in stale if k in self.running]
+        if not tasks:
+            return
+        log.info("swarm is %s: cancelling %d running job(s)", lifecycle_state, len(tasks))
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        for k in stale:
+            self.running.pop(k, None)
 
     async def _run_inline(self, swarm: Swarm, action: Action) -> None:
         try:
@@ -329,6 +362,8 @@ class Engine:
             log.info("finished %s", key)
         except asyncio.CancelledError:
             raise
+        except SwarmNotActive:
+            log.info("discarded %s: the swarm left the state this job needs", key)
         except Exception as exc:  # noqa: BLE001
             await self._on_failure(swarm, action, key, exc)
         finally:
