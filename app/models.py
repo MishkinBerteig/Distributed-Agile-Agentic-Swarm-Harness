@@ -147,6 +147,8 @@ class ActionKind(str, Enum):
     FAIL_TEAM = "fail_team"                    # deterministic: team exhausted its task budget
     COMPLETE_SWARM = "complete_swarm"          # deterministic: all teams terminal -> VERIFICATION
     RETROSPECTIVE = "retrospective"            # coordinator in LEARNING: swarm-wide learnings
+    VOTE = "vote"                              # delivery agents vote on a pending team proposal
+    EXPIRE_PROPOSAL = "expire_proposal"        # deterministic: stale/orphaned proposal -> rejected
 
 
 # ---------------------------------------------------------------------------

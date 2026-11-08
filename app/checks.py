@@ -51,6 +51,9 @@ def _path_problem(path: Optional[str]) -> Optional[str]:
     return None
 
 
+MAX_PATTERN_CHARS = 300
+
+
 def validate_check_spec(kind: str, path: Optional[str], arg: Optional[str]) -> Optional[str]:
     """An error message if the check spec is unusable, else None."""
     kind = _kind(kind)
@@ -69,6 +72,9 @@ def validate_check_spec(kind: str, path: Optional[str], arg: Optional[str]) -> O
     if kind == CheckKind.FILE_CONTAINS.value:
         if arg is None or arg == "":
             return "Check 'file_contains' needs a regular expression in check_arg."
+        if len(arg) > MAX_PATTERN_CHARS:
+            return (f"Check 'file_contains' regular expression is too long ({len(arg)} "
+                    f"characters; the limit is {MAX_PATTERN_CHARS}). Use a simpler pattern.")
         try:
             re.compile(arg)
         except re.error as exc:

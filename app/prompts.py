@@ -772,6 +772,35 @@ def parse_mission_review(obj: Any) -> MissionReview:
 
 
 # ---------------------------------------------------------------------------
+# Team proposal vote (Mission Delivery)
+# ---------------------------------------------------------------------------
+
+def vote_prompt(proposal: Any, team_name: str, open_tasks: Iterable[Any],
+                done_tasks: Iterable[Any]) -> str:
+    reason = _get(proposal, "reason", "") or "(none given)"
+    return ("Job: vote on a proposal to spin out a NEW team with its own Mission. Approve only if "
+            "the proposed Mission is a distinct portion of the Vision that your team's current "
+            "Mission does not cover well, and a separate team would accomplish it better than "
+            "your team alone. Reject duplicates, overlaps and busywork. A majority of your "
+            "team's Mission Delivery agents decides.\n"
+            f"Your team: {team_name}\n"
+            f'Proposed team: {_get(proposal, "name", "")}\n'
+            f'Proposed Mission: {_get(proposal, "mission_statement", "")}\n'
+            f"Proposer's reason: {_clip(reason, 600)}\n\n"
+            f"Your team's open tasks:\n{_task_list(open_tasks)}\n\n"
+            f"Your team's done tasks:\n{_task_list(done_tasks)}\n"
+            + _JSON_ONLY + 'Contract: {"approve": true|false, "reason": "one sentence"}\n'
+            'Example: {"approve": false, "reason": "Our current Mission already covers this"}')
+
+
+def parse_vote(obj: Any) -> tuple[bool, str]:
+    o = _as_obj(obj)
+    if "approve" not in o:
+        raise ValueError('"approve" is required: true or false')
+    return _bool(o["approve"], "approve"), _text(o.get("reason"))
+
+
+# ---------------------------------------------------------------------------
 # Mission assessment (Mission Judgement)
 # ---------------------------------------------------------------------------
 

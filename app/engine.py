@@ -13,7 +13,7 @@ import logging
 import signal
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
 
 from app import policy
@@ -37,7 +37,10 @@ ESCALATE_AFTER = 3          # consecutive parse/protocol failures before trying 
 #: Actions the engine performs itself, without an LLM.
 INLINE_ACTIONS = frozenset({
     ActionKind.PAUSE_FOR_LIMITS, ActionKind.MATERIALIZE_TEAM, ActionKind.COMMIT_TASK,
-    ActionKind.FAIL_TEAM, ActionKind.COMPLETE_SWARM})
+    ActionKind.FAIL_TEAM, ActionKind.COMPLETE_SWARM, ActionKind.EXPIRE_PROPOSAL})
+
+#: A pending team proposal that has not reached a majority by then is rejected.
+PROPOSAL_TTL = timedelta(minutes=30)
 
 #: Human wording for error events.
 JOB_LABELS = {
@@ -49,6 +52,7 @@ JOB_LABELS = {
     ActionKind.REVIEW_TASK: "Task review",
     ActionKind.ASSESS_MISSION: "Mission assessment",
     ActionKind.RETROSPECTIVE: "Swarm retrospective",
+    ActionKind.VOTE: "Team proposal vote",
 }
 
 
@@ -86,6 +90,18 @@ def decide(snap: SwarmSnapshot) -> list[Action]:
         if prop.status == "approved" and not prop.created_team_id:
             emit(Action(kind=ActionKind.MATERIALIZE_TEAM, team_id=prop.team_id,
                         task_id=prop.id, proposal_id=prop.id, detail=prop.name))
+
+    active_teams = {t.id for t in snap.teams if t.status == TeamStatus.ACTIVE.value}
+    for prop in snap.proposals:
+        if prop.status != "pending":
+            continue
+        if prop.team_id not in active_teams or snap.now - prop.created_at > PROPOSAL_TTL:
+            emit(Action(kind=ActionKind.EXPIRE_PROPOSAL, team_id=prop.team_id, task_id=prop.id,
+                        proposal_id=prop.id, detail=prop.name))
+        elif any(a.team_id == prop.team_id and a.role == AgentRole.MISSION_DELIVERY.value
+                 and a.id not in prop.votes for a in snap.agents):
+            emit(Action(kind=ActionKind.VOTE, team_id=prop.team_id, task_id=prop.id,
+                        proposal_id=prop.id, detail=prop.name))
 
     lim = swarm.config.limits
     for team in snap.teams:

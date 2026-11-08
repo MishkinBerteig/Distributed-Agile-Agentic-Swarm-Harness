@@ -196,3 +196,9 @@ def test_read_cap_two_megabytes(tmp_path):
     assert not r.passed and "2 MB" in r.evidence
     r = checks.run_check(crit("min_words", "big.txt", "100"), tmp_path)
     assert r.passed and "2 MB" in r.evidence
+
+
+def test_file_contains_rejects_overlong_pattern():
+    assert checks.validate_check_spec("file_contains", "a.md", "a" * 300) is None
+    err = checks.validate_check_spec("file_contains", "a.md", "a" * 301)
+    assert err and "too long" in err

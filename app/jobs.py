@@ -325,6 +325,8 @@ class Jobs:
             ActionKind.FAIL_TEAM: self.fail_team,
             ActionKind.COMPLETE_SWARM: self.complete_swarm,
             ActionKind.RETROSPECTIVE: self.retrospective,
+            ActionKind.VOTE: self.vote,
+            ActionKind.EXPIRE_PROPOSAL: self.expire_proposal,
         }[action.kind]
         await handler(swarm, action, escalation)
 
@@ -392,12 +394,33 @@ class Jobs:
                 detail=f"Proposal for new team '{prop.name}' was approved by vote but "
                        f"rejected: the swarm already has the maximum of {limit} teams.")
             return
-        team = await services.create_team(
-            self.pool, swarm, prop.name, prop.mission_statement,
-            creator_kind=CreatorKind.TEAM.value, creator_team_id=prop.team_id,
-            actor=prop.proposer_agent_id)
+        # Idempotent: a crash after creating the team but before set_status must not duplicate it.
+        team = next((t for t in teams if t.name == prop.name
+                     and t.creator_team_id == prop.team_id), None)
+        if team is not None:
+            await services.ensure_team_agents(self.pool, swarm, team)
+        else:
+            team = await services.create_team(
+                self.pool, swarm, prop.name, prop.mission_statement,
+                creator_kind=CreatorKind.TEAM.value, creator_team_id=prop.team_id,
+                actor=prop.proposer_agent_id)
         await self.proposals.set_status(prop.id, "approved", created_team_id=team.id)
         await self.signal("team.created", team_id=team.id, name=team.name)
+
+    async def expire_proposal(self, swarm: Swarm, action: Action, escalation: int = 0) -> None:
+        prop = await self.proposals.get(action.proposal_id) if action.proposal_id else None
+        if prop is None or prop.status != "pending":
+            return
+        team = await self.teams.get(prop.team_id)
+        why = ("the proposing team is no longer active"
+               if team is None or team.status != TeamStatus.ACTIVE.value
+               else "no majority within 30 minutes")
+        await self.proposals.set_status(prop.id, "rejected")
+        await self.events.add(
+            swarm.id, "proposal", team_id=prop.team_id, actor="engine",
+            detail=f"Proposal for new team '{prop.name}' was rejected: {why}.")
+        await self.signal("proposal.decided", prop.team_id, outcome="rejected",
+                          proposal_id=prop.id)
 
     async def commit_task(self, swarm: Swarm, action: Action, escalation: int = 0) -> None:
         """Re-check the Definition of Ready against fresh state, then commit."""
@@ -860,6 +883,41 @@ class Jobs:
             await self.proposals.set_status(prop.id, outcome)
         return outcome
 
+    async def vote(self, swarm: Swarm, action: Action, escalation: int = 0) -> None:
+        """Each delivery agent that has not voted yet votes, one at a time, until decided."""
+        prop = await self.proposals.get(action.proposal_id) if action.proposal_id else None
+        team = await self.teams.get(prop.team_id) if prop is not None else None
+        if (prop is None or prop.status != "pending" or team is None
+                or team.status != TeamStatus.ACTIVE.value):
+            return
+        voters = sorted(await self._delivery_agents(swarm, team), key=lambda a: a.name)
+        tasks = await self.tasks.list(team_id=team.id)
+        done = [t for t in tasks if t.status == TaskStatus.DONE.value]
+        open_ = [t for t in tasks if t.status not in (TaskStatus.DONE.value,
+                                                      TaskStatus.FAILED.value)]
+        model = escalate_model(choose_model(DELIVERY, swarm.config), swarm.config, escalation)
+        for agent in voters:
+            prop = await self.proposals.get(prop.id)
+            if prop is None or prop.status != "pending":
+                return
+            if agent.id in prop.votes:
+                continue
+            approve, reason = await self._json_job(
+                swarm, agent, team, "vote_proposal", model,
+                prompts.vote_prompt(prop, team.name, open_, done), prompts.parse_vote,
+                query=prop.name)
+            prop = await self.proposals.record_vote(prop.id, agent.id, approve) or prop
+            outcome = await self._settle(swarm, team, prop, len(voters))
+            await self.events.add(
+                swarm.id, "proposal", team_id=team.id, actor=agent.id,
+                detail=f"{agent.name} voted {'for' if approve else 'against'} the proposal for "
+                       f"team '{prop.name}': {_clip(reason, 250) or 'no reason given'} "
+                       f"(vote status: {outcome}).")
+            if outcome != "pending":
+                await self.signal("proposal.decided", team.id, outcome=outcome,
+                                  proposal_id=prop.id)
+                return
+
     # -- review -----------------------------------------------------------------
 
     async def review_task(self, swarm: Swarm, action: Action, escalation: int = 0) -> None:
@@ -878,7 +936,7 @@ class Jobs:
         for c in task.criteria:
             if not is_deterministic(c.check_kind):
                 continue
-            res = run_check(c, ws)
+            res = await asyncio.to_thread(run_check, c, ws)
             det_results.append(res.passed)
             if not res.passed:
                 failed_checks.append(f"{c.text} ({res.evidence})")

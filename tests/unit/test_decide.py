@@ -335,3 +335,55 @@ def test_read_artifact_nul_byte_is_not_found(tmp_path):
     from app import api_helpers as H
     with pytest.raises(FileNotFoundError):
         H.read_artifact(tmp_path, "a\x00b")
+
+
+# -- team proposal voting -----------------------------------------------------------
+
+def vproposal(id="p1", team_id="tm", votes=None, age=timedelta(minutes=5), status="pending"):
+    return TeamProposal(id=id, swarm_id="s", team_id=team_id, proposer_agent_id="d1",
+                        name=f"New {id}", mission_statement="M2", status=status,
+                        votes=votes or {}, quorum=2, created_at=NOW - age)
+
+
+def vote_snap(props, agents=None, teams=None):
+    agents = agents if agents is not None else [agent("d1"), agent("d2")]
+    return snap(agents=agents, teams=teams, proposals=props)
+
+
+def test_vote_emitted_for_unvoted_pending_proposal():
+    out = decide(vote_snap([vproposal(votes={"d1": True})]))
+    votes = [a for a in out if a.kind == K.VOTE]
+    assert len(votes) == 1
+    assert (votes[0].team_id, votes[0].task_id, votes[0].proposal_id) == ("tm", "p1", "p1")
+
+
+def test_no_vote_once_every_delivery_agent_voted():
+    out = decide(vote_snap([vproposal(votes={"d1": True, "d2": False})]))
+    assert K.VOTE not in kinds(out) and K.EXPIRE_PROPOSAL not in kinds(out)
+
+
+def test_judges_do_not_count_as_voters():
+    agents = [agent("d1"), agent("mj", role="mission_judgement")]
+    out = decide(vote_snap([vproposal(votes={"d1": True})], agents=agents))
+    assert K.VOTE not in kinds(out)
+
+
+def test_stale_proposal_expires_instead_of_voting():
+    out = decide(vote_snap([vproposal(age=timedelta(minutes=31))]))
+    assert K.EXPIRE_PROPOSAL in kinds(out) and K.VOTE not in kinds(out)
+
+
+def test_proposal_of_inactive_team_expires():
+    out = decide(vote_snap([vproposal()], teams=[team(status="failed")]))
+    assert K.EXPIRE_PROPOSAL in kinds(out) and K.VOTE not in kinds(out)
+
+
+def test_decided_proposal_gets_no_vote_or_expiry():
+    out = decide(vote_snap([vproposal(status="rejected", age=timedelta(hours=2))]))
+    assert K.VOTE not in kinds(out) and K.EXPIRE_PROPOSAL not in kinds(out)
+
+
+def test_vote_job_keys_unique_per_proposal():
+    out = decide(vote_snap([vproposal("p1"), vproposal("p2")]))
+    keys = [a.job_key() for a in out if a.kind == K.VOTE]
+    assert len(keys) == 2 and len(set(keys)) == 2

@@ -308,3 +308,26 @@ def test_retrospective():
         with pytest.raises(ValueError):
             parse_retrospective(bad)
     assert "history here" in retrospective_prompt("history here")
+
+
+# -- team proposal vote ---------------------------------------------------------
+
+def test_vote_prompt_content():
+    from app.prompts import vote_prompt
+    prop = models.TeamProposal(id="p1", swarm_id="s", team_id="tm", proposer_agent_id="a",
+                               name="Data Team", mission_statement="Clean the data",
+                               reason="too much scope", created_at=NOW)
+    text = vote_prompt(prop, "Alpha", [{"id": "t1", "name": "Open one"}],
+                       [{"id": "t2", "name": "Done one"}])
+    for needle in ("Data Team", "Clean the data", "too much scope", "Alpha", "Open one",
+                   "Done one", '"approve"'):
+        assert needle in text
+
+
+def test_parse_vote_happy_and_invalid():
+    from app.prompts import parse_vote
+    assert parse_vote({"approve": True, "reason": " fits "}) == (True, "fits")
+    assert parse_vote({"approve": "no"}) == (False, "")
+    for bad in ({}, {"approve": "maybe"}, "nonsense"):
+        with pytest.raises(ValueError):
+            parse_vote(bad)
