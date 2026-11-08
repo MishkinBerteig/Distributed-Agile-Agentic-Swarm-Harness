@@ -11,3 +11,7 @@ build/
 *.swp
 *.swo
 .DS_Store
+.claude/
+agents-workspace/
+.playwright-cli/
+dashboard/
