@@ -70,8 +70,10 @@ services:
     networks:
       - frontend
 
-  # Test suite: `docker compose --profile test run --rm --build test`.
-  # Runs against the daash_test database and Redis DB 15 on the internal network.
+  # Unit tests: `docker compose --profile test run --rm --build test`.
+  # Fast and isolated: no database, Redis or network (docs/DESIGN-0.1.md §11).
+  # Deferred integration tests: append `python -m pytest tests/integration` and
+  # start db/redis first.
   test:
     profiles: ["test"]
     build:
@@ -80,15 +82,7 @@ services:
     environment:
       - DAASH_TEST_DATABASE_URL=postgresql://daash:daash@db:5432/daash_test
       - DAASH_TEST_REDIS_URL=redis://redis:6379/15
-      - DAASH_DATABASE_URL=postgresql://daash:daash@db:5432/daash_test
-      - DAASH_REDIS_URL=redis://redis:6379/15
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_started
-    networks:
-      - backend
+    network_mode: none
 
 networks:
   backend:

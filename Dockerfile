@@ -33,4 +33,4 @@ RUN pip install --no-cache-dir "pytest>=8.0.0" "pytest-asyncio>=0.24.0"
 COPY tests /opt/daash/tests
 
 ENTRYPOINT []
-CMD ["python", "-m", "pytest"]
+CMD ["python", "-m", "pytest", "tests/unit", "-q"]

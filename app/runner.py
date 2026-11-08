@@ -1,5 +1,9 @@
 """DAASH host runner — spawns and supervises headless harness sessions.
 
+EXPERIMENTAL / NOT WIRED IN 0.1: the 0.1 prototype drives agents through the
+native "daash" harness (app/llm.py). This daemon is kept as the starting point
+for external CLI harnesses on other devices (docs/DESIGN-0.1.md §1).
+
 The coordinator runs inside Docker and cannot launch processes on the host,
 but harness CLIs (openclaude, claude, codex, ...) are installed *on devices*.
 This daemon is that device's agent: it runs outside compose (`python3 -m
@@ -102,13 +106,13 @@ class Session:
         # 502 instead of a phantom live session. The model name stays unknown
         # until the init event arrives on the first turn — reconcile picks it
         # up as soon as it is known.
-        self._out_thread.join(timeout=0.3)
-        if self.state == "launching":
-            self.state = "live"
-
         self._out_thread = threading.Thread(target=self._pump_stdout, daemon=True)
         self._out_thread.start()
         threading.Thread(target=self._pump_stderr, daemon=True).start()
+        self._out_thread.join(timeout=0.3)
+        with _lock:
+            if self.state == "launching":
+                self.state = "live"
         if os.environ.get("DAASH_RUNNER_KILL_TEST"):
             # Test-only: simulate a crashed agent so reconcile/failed paths are
             # exercisable without killing real processes.
