@@ -48,19 +48,22 @@ Slices 1–5.0: durable task state, first DAASHboard, Decision Bus with atomic q
 interface, Vision/Mission prompt composition, LLM-generated team DoR/DoD. Slice 5.1 (host runner + OpenClaude
 sessions) was built but never ran end to end; it is superseded by the native harness for 0.1.
 
-### Milestone 0.1 — Prototype (in progress)
+### Milestone 0.1 — Prototype (ready for user testing)
 Corrects earlier misreadings of the README (see DESIGN-0.1 §1): agentic (not embedding-based) Mission Judgement,
 deterministic DoR gate and thresholded two-level DoD, Swarm Coordinator + swarm configuration + global Values &
 Principles, multi-criterion green/red tasks, cycle-time/error/failure metrics, team spin-out by majority vote,
 learning mechanisms, budgets.
-- [ ] Data layer: new schema migration, repositories, snapshot loader
-- [ ] Domain logic: lifecycle/task transitions, DoR gate, DoD evaluation, voting, limits, routing, metrics, checks
-- [ ] Native harness: LLM client + tool loop, sandboxed workspace tools, prompts + parsers
-- [ ] Engine: pure `decide()` + executor jobs (bootstrap, standards, plan, prioritize, commit, work, review, assess,
-      materialize team, retrospective)
-- [ ] API per DESIGN-0.1 §9; compose `engine` service + workspace volume
-- [ ] DAASHboard rewrite per DESIGN-0.1 §10
-- [ ] Live smoke run against the m3u512gb gateway (a small vision driven to VERIFICATION)
+- [x] Data layer: new schema migration, repositories, snapshot loader (verified against real PostgreSQL)
+- [x] Domain logic: lifecycle/task transitions, DoR gate, DoD evaluation, voting, limits, routing, metrics, checks
+- [x] Native harness: LLM client + tool loop, sandboxed workspace tools, prompts + parsers (verified on the gateway)
+- [x] Engine: pure `decide()` + executor jobs (bootstrap, standards, plan, prioritize, commit, work, review, assess,
+      vote/expire proposals, materialize team, fail team, complete swarm, retrospective), cooldowns, model escalation
+- [x] API per DESIGN-0.1 §9; compose `engine` service + workspace volume
+- [x] DAASHboard rewrite per DESIGN-0.1 §10
+- [x] Hardening pass (dead-dependency stalls, user overrides vs running jobs, reopen semantics, duplicate proposals)
+- [x] Live runs against the m3u512gb gateway: a seeded one-team swarm driven to VERIFICATION + retrospective; a
+      coordinator-bootstrapped two-team swarm ("Backyard Birds") run through the API/dashboard, including a mid-run
+      engine rebuild/restart and a user-added task
 
 ### After 0.1
 - Revive integration tests; add E2E (create → run → verify), restart-resilience, security and performance tests.
@@ -76,8 +79,49 @@ learning mechanisms, budgets.
 - **State consistency**: PostgreSQL is the only source of record; Redis holds only expiring signals; the engine is
   restart-safe (BUSY agents reset, open tasks resumed).
 
-## 7. Current System State
-Being rebuilt for 0.1 on branch `prototype-0.1`; see the milestone checklist above.
+## 7. Current System State (0.1 prototype, branch `prototype-0.1`)
+
+### Run it
+```bash
+cp .env.example .env            # set DAASH_LLM_API_KEY (and DAASH_LLM_ENDPOINT if not the m3u512gb gateway)
+docker compose up --build -d    # db, redis, coordinator :8000, engine, dashboard :7173
+docker compose --profile test run --rm --build test   # unit tests
+```
+DAASHboard: http://127.0.0.1:7173 — create a swarm (vision; optional teams, else the Swarm Coordinator forms them;
+advanced config for role models and limits), press ▶ Start, watch teams, Kanban, task drawers (criteria, verdicts,
+timeline, artifacts), metrics, activity feed. API docs: http://127.0.0.1:8000/docs.
+
+### Services
+- **coordinator** — FastAPI (`app/main.py`), runs `alembic upgrade head` at start; healthcheck on `/health`.
+- **engine** — `python -m app.engine`; restart-safe; `DAASH_ENGINE_ENABLED=false` idles it.
+- **db** (PostgreSQL 17 + pgvector, volume `pg-data`), **redis** (Decision Bus), **dashboard** (Vite dev server).
+- Volume `daash-workspaces` holds each swarm's artifacts at `/workspaces/<swarm_id>/`.
+
+### Code map (`app/`)
+`models.py` contract · `policy.py` / `routing.py` / `metrics.py` pure rules · `checks.py` deterministic criteria ·
+`llm.py` + `tools.py` native harness · `prompts.py` prompt hierarchy + parsers · `repo.py` data access ·
+`services.py` shared team/agent/prompt/accounting helpers · `engine.py` (`decide()` + loop) and `jobs.py` ·
+`main.py` + `api_helpers.py` API · `bus.py` Decision Bus · `embeddings.py` · `runner.py` (experimental, unwired).
+
+### Defaults worth knowing
+- Role models: coordinator `amazing`, judges `great`, delivery `fast` (escalates up `instant→fast→great→amazing`
+  on failed attempts and on learned low success rates), classifier `instant`.
+- Limits: 5M tokens per swarm, 3 simultaneous agent jobs, 4 teams, 25 tasks per team, 3 attempts per task.
+- DoD thresholds are the README's (deterministic 100%, rubric > 99.9%, mission confidence ≥ 99%); judge prompts are
+  calibrated so these are reachable (DESIGN-0.1 §12).
+- Only one live swarm at a time; archive or delete it to create the next.
+
+### Tests
+~330 fast unit tests in `tests/unit/` (run in < 1s, no DB/network). The old DB-backed tests are parked in
+`tests/integration/` and need revising against the 0.1 schema.
+
+### Known limitations (0.1)
+- Agents can only read/write files in their swarm workspace; no code execution (automation scripts are recorded,
+  not run). External CLI harnesses are not wired.
+- Judges are LLMs: verdicts are good but not infallible (e.g. minor factual slips can pass a rubric).
+- Dashboard polls every 3s; no auth; CORS open — local prototype only.
+- The pre-0.1 dev database was replaced by the new schema (a dump of the old data is in
+  `agents-workspace/coordinator/db-backup/`).
 
 ## 8. Completed Increments
 - **2026-09-28 — Slice 1 / 1.5**: durable task state, embeddings, first DAASHboard.
@@ -86,3 +130,6 @@ Being rebuilt for 0.1 on branch `prototype-0.1`; see the milestone checklist abo
 - **2026-10-03 — Slice 4 / 5.0**: Vision/Mission prompts; LLM-generated team DoR/DoD.
 - **2026-10-09 — Slice 5.1 (partial)**: host runner + session orchestration (superseded for 0.1).
 - **2026-11-08 — 0.1 design**: DESIGN-0.1 contract, domain model, unit/integration test split, runner spawn fix.
+- **2026-11-08 — 0.1 prototype**: data layer, domain logic, native harness, engine, API, DAASHboard, hardening and
+  team-voting passes built by parallel sub-agents against DESIGN-0.1; judge calibration; verified live on the
+  m3u512gb gateway.
