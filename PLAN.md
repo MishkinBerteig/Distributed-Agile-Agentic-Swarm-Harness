@@ -79,7 +79,7 @@ learning mechanisms, budgets.
 - **State consistency**: PostgreSQL is the only source of record; Redis holds only expiring signals; the engine is
   restart-safe (BUSY agents reset, open tasks resumed).
 
-## 7. Current System State (0.1 prototype, branch `prototype-0.1`)
+## 7. Current System State (0.1 prototype, on `main`)
 
 ### Run it
 ```bash
