@@ -378,6 +378,20 @@ def extract_quality_json(text: str) -> dict[str, str]:
 # Planning (Mission Delivery)
 # ---------------------------------------------------------------------------
 
+def scope_block(other_teams: Iterable[Any]) -> str:
+    """Sibling teams' Missions, so a team stays inside its own scope (multi-team swarms)."""
+    lines = []
+    for t in other_teams:
+        lines.append(f'- "{_get(t, "name", "")}" ({_get(t, "status", "active")}): '
+                     f'{_clip(_get(t, "mission_statement", ""), 300)}')
+    if not lines:
+        return ""
+    return ("Other teams in this swarm own these Missions and the artifacts they produce. Stay "
+            "inside YOUR team's Mission: do not plan, require, redo or rewrite their work. The "
+            "vision-level Definition of Done is met by all teams together, not by your team "
+            "alone.\n" + "\n".join(lines) + "\n\n")
+
+
 @dataclass
 class PlannedTask:
     name: str
@@ -388,9 +402,11 @@ class PlannedTask:
 
 
 def plan_prompt(team_name: str, done_tasks: Iterable[Any], open_tasks: Iterable[Any],
-                max_new: int, next_focus: Optional[str], workspace_listing: str) -> str:
+                max_new: int, next_focus: Optional[str], workspace_listing: str,
+                other_teams: Iterable[Any] = ()) -> str:
     s = (f'Job: plan the next tasks for team "{team_name}" toward its Mission.\n'
          f"Plan 1 to {max_new} NEW tasks. Do not repeat existing work.\n")
+    s += scope_block(other_teams)
     if next_focus and next_focus.strip():
         s += f"Mission Judgement says to focus on: {next_focus.strip()}\n"
     s += (f"\nDone tasks:\n{_task_list(done_tasks)}\n\nOpen tasks:\n{_task_list(open_tasks)}\n\n"
@@ -517,13 +533,14 @@ class PrioritizeResult:
 
 
 def prioritize_prompt(candidates: Iterable[Any], done_tasks: Iterable[Any],
-                      team_dor: Optional[str] = None) -> str:
-    s = ("Job: prioritize this team's candidate tasks by how directly they advance the Mission.\n"
+                      team_dor: Optional[str] = None, other_teams: Iterable[Any] = ()) -> str:
+    s = scope_block(other_teams)
+    s += ("Job: prioritize this team's candidate tasks by how directly they advance the Mission.\n"
          "1. order: ALL candidate task ids, highest priority first (respect dependencies).\n"
          "2. next_task_id: the one task approved to start now (the highest priority one that is "
          "not rejected and meets the Definition of Ready).\n"
-         "3. rejections: tasks that do not serve the Mission or the Vision, or duplicate other "
-         "work, each with a reason. Rejected ids must not be next_task_id.\n"
+         "3. rejections: tasks that do not serve the Mission or the Vision, duplicate other "
+         "work, or belong to another team's Mission, each with a reason. Rejected ids must not be next_task_id.\n"
          "Copy task ids exactly as written.\n\n")
     if team_dor and team_dor.strip():
         s += f"Team Definition of Ready:\n{team_dor.strip()}\n\n"
@@ -827,8 +844,10 @@ class Assessment:
     next_focus: str = ""
 
 
-def assess_prompt(team: Any, done_tasks: Iterable[Any], failed_tasks: Iterable[Any]) -> str:
-    return ("Job: assess the team's Mission now that it has no open tasks.\n"
+def assess_prompt(team: Any, done_tasks: Iterable[Any], failed_tasks: Iterable[Any],
+                  other_teams: Iterable[Any] = ()) -> str:
+    return (scope_block(other_teams) + "Job: assess the team's Mission now that it has no open tasks. "
+            "Judge it against the team's Mission only.\n"
             f'Team: {_get(team, "name", "")}\nMission: {_get(team, "mission_statement", "")}\n\n'
             f"Done tasks:\n{_task_list(done_tasks)}\n\nFailed tasks:\n{_task_list(failed_tasks)}\n\n"
             "Choose status:\n"

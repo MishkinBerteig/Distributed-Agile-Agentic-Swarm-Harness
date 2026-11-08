@@ -344,3 +344,15 @@ def test_mission_review_requires_feedback_when_blocking():
                                "feedback": "Add the Blue Jay's call"})
     assert ok.confidence == 0.97 and ok.feedback
     assert parse_mission_review({"expected_value_met": True, "confidence": 0.99}).feedback == ""
+
+
+def test_scope_block_lists_sibling_teams_and_is_used_by_team_jobs():
+    from app.prompts import assess_prompt, plan_prompt, prioritize_prompt, scope_block
+    sib = {"name": "QuickChart", "status": "accomplished", "mission_statement": "Deliver the chart"}
+    block = scope_block([sib])
+    assert "QuickChart" in block and "Deliver the chart" in block and "YOUR team's Mission" in block
+    assert scope_block([]) == ""
+    assert "QuickChart" in plan_prompt("Notes", [], [], 2, None, "", [sib])
+    assert "QuickChart" in prioritize_prompt([], [], None, [sib])
+    assert "QuickChart" in assess_prompt({"name": "Notes", "mission_statement": "m"}, [], [], [sib])
+    assert "Other teams" not in plan_prompt("Notes", [], [], 2, None, "")

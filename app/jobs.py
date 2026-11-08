@@ -542,8 +542,9 @@ class Jobs:
         agent = await self._team_agent(swarm, team, DELIVERY)
         done = [t for t in tasks if t.status == TaskStatus.DONE.value]
         model = escalate_model(choose_model(DELIVERY, swarm.config), swarm.config, escalation)
+        others = [t for t in await self.teams.list(swarm.id) if t.id != team.id]
         user = prompts.plan_prompt(team.name, done, [], cap, team.next_focus,
-                                   workspace_listing(self.workspace(swarm)))
+                                   workspace_listing(self.workspace(swarm)), others)
         planned = await self._json_job(
             swarm, agent, team, "plan_tasks", model, user,
             lambda o: prompts.parse_plan(o, cap), query=team.mission_statement)
@@ -583,7 +584,8 @@ class Jobs:
         done = [t for t in tasks if t.status == TaskStatus.DONE.value]
         mj = await self._team_agent(swarm, team, MJ)
         model = escalate_model(choose_model(MJ, swarm.config), swarm.config, escalation)
-        user = prompts.prioritize_prompt(candidates, done, team.definition_of_ready)
+        others = [t for t in await self.teams.list(swarm.id) if t.id != team.id]
+        user = prompts.prioritize_prompt(candidates, done, team.definition_of_ready, others)
         res = await self._json_job(
             swarm, mj, team, "prioritize", model, user,
             lambda o: prompts.parse_prioritize(o, valid), query=team.mission_statement)
@@ -1096,7 +1098,10 @@ class Jobs:
                        + "\n".join(f"--- {p} ---\n{c}\n" for p, c in excerpts.items()) + "\n")
         res = await self._json_job(
             swarm, mj, team, "assess_mission", model,
-            context + prompts.assess_prompt(team, done, failed), prompts.parse_assessment,
+            context + prompts.assess_prompt(
+                team, done, failed,
+                [t for t in await self.teams.list(swarm.id) if t.id != team.id]),
+            prompts.parse_assessment,
             query=team.mission_statement)
         threshold = swarm.config.dod_thresholds.mission_confidence
         now = _now()
