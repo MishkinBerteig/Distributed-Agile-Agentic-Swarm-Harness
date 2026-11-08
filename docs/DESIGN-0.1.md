@@ -104,10 +104,12 @@ below. Column names = `app/models.py` field names. `jsonb` for dicts and lists;
 Pending -> Ready | Rejected
 Ready -> In-Progress | Pending | Rejected
 In-Progress -> Review | In-Progress (rework) | Failed | Pending (team restart -> Rejected)
-Review -> Done | In-Progress (rework) | Failed
+Review -> Done | In-Progress (rework) | Failed | Rejected (team restart)
 Done, Failed, Rejected -> (terminal; user may reopen to Pending via API)
 ```
-Also: `can_transition_task(frm, to) -> bool`. Anything not listed (including any user override) goes through the API's explicit `PATCH`, which may also set Pending.
+Also: `can_transition_task(frm, to) -> bool`. Anything not listed (including any user override) goes through the API's explicit `PATCH`, which may also set Pending
+(reopening resets `attempts` and clears assignment/commit timestamps). Tasks that can never start because a dependency
+is Failed/Rejected/missing (transitively) do not count as open (`policy.stalled_task_ids`), so a team never stalls behind them.
 
 ### 6.2 Definition of Ready (commitment policy), README minimums, all required
 1. at least one Mission Delivery agent of the team is IDLE with no In-Progress task assigned;
@@ -173,6 +175,8 @@ if swarm.state != ACTIVE: []
 if limits_exceeded: [PAUSE_FOR_LIMITS(detail=reasons)]
 if swarm.definition_of_done is None or no teams: [BOOTSTRAP]        # nothing else until bootstrapped
 for each APPROVED proposal with no created_team_id: MATERIALIZE_TEAM
+for each PENDING proposal: EXPIRE_PROPOSAL if older than 30 min or its team is not active,
+    else VOTE if some delivery agent of the team has not voted yet
 for team in teams with status active:
     if team.definition_of_done is None: GENERATE_STANDARDS; continue
     for t in team tasks with status Review: REVIEW_TASK(t)
@@ -181,8 +185,8 @@ for team in teams with status active:
         c = next_ready_task(); if c and dor_check ok: COMMIT_TASK(c, agent)
     if no Ready task and some Pending task (deps Done or none): PRIORITIZE(team)
     if team has no open tasks:
-        if lifetime task count >= max_tasks_per_team: FAIL_TEAM
-        elif team has Done/Failed tasks and (last_assessed_at is None or < latest terminal task time): ASSESS_MISSION
+        if team has Done/Failed tasks and (last_assessed_at is None or < latest terminal task time): ASSESS_MISSION
+        elif lifetime task count >= max_tasks_per_team: FAIL_TEAM     # only after the last work was assessed
         else: PLAN_TASKS (uses team.next_focus)
 if teams and every team is accomplished/failed: [COMPLETE_SWARM]
 ```
@@ -220,6 +224,9 @@ if teams and every team is accomplished/failed: [COMPLETE_SWARM]
   `accomplished` needs `confidence >= mission_confidence`; otherwise it is treated as continue. `restart` means:
   open tasks are set to Rejected ("team restart"), `generation += 1`, a learning is recorded, and `next_focus` is set.
   Always set `last_assessed_at = now`.
+* **VOTE** (each delivery agent of the proposing team that has not voted, one LLM call each, `{approve, reason}`), then
+  `policy.tally`. Delivery agents can also vote from inside a work task (`vote_on_proposal`). **EXPIRE_PROPOSAL** rejects
+  stale proposals deterministically. **MATERIALIZE_TEAM** is idempotent (reuses a same-name team from the same creator).
 * **MATERIALIZE_TEAM** / **FAIL_TEAM** / **COMPLETE_SWARM** / **PAUSE_FOR_LIMITS**: deterministic DB updates
   plus an event and a bus signal. COMPLETE_SWARM sets the swarm to VERIFICATION.
 * **RETROSPECTIVE** (coordinator): swarm history in, `{learnings: [{kind, content}]}` out, stored with
@@ -326,3 +333,15 @@ Redis, no network, no Docker-in-tests. They live in `tests/unit/` and run with
 `docker compose --profile test run --rm --build test` (no DB dependency). The earlier DB/Redis-backed tests
 move to `tests/integration/` and are **not** run by default. Revive them after 0.1 together with E2E,
 resilience and performance tests.
+
+## 12. Calibration notes (learned during the 0.1 build)
+
+* **Judges score certainty, not grades.** README thresholds (rubric > 0.999, mission confidence ≥ 0.99) are kept.
+  Judge prompts define a rubric score as certainty that the criterion is met (1.0 = no nameable defect), and any
+  score below 1.0 must name a concrete, fixable defect. Graded-style prompts made good work score 0.95 and
+  rework forever.
+* **Blocking verdicts must say what to fix.** `parse_mission_review` rejects a blocking verdict (not met, or
+  confidence below 0.99) with empty `feedback`, and `complete_json` re-asks once. Delivery agents never rework blind.
+* **Infrastructure errors are not failures.** Gateway connection/timeout/5xx/429 errors cool the job down (30s
+  doubling to 5 min) and never count a task attempt. Three consecutive parse/protocol failures escalate the job's
+  model one rung up the ladder.
