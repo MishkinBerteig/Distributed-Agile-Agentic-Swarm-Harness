@@ -2,12 +2,26 @@
 // Errors throw Error(server `detail`) with `.status` set (0 = unreachable).
 const BASE = '/api'
 
+// Admin token (DESIGN-0.3 section 4), kept in localStorage; every access is guarded.
+const TOKEN_KEY = 'daash_api_token'
+export const getToken = () => { try { return localStorage.getItem(TOKEN_KEY) || '' } catch { return '' } }
+export const setToken = (t) => {
+  try { if (t) localStorage.setItem(TOKEN_KEY, t); else localStorage.removeItem(TOKEN_KEY) } catch { /* storage blocked */ }
+}
+// App registers a handler that is called on any 401 (shows the login screen).
+let authHandler = null
+export const onAuthRequired = (fn) => { authHandler = fn }
+
 async function request(method, path, body) {
   let res
   try {
+    const headers = {}
+    if (body !== undefined) headers['Content-Type'] = 'application/json'
+    const token = getToken()
+    if (token) headers.Authorization = `Bearer ${token}`
     res = await fetch(BASE + path, {
       method,
-      headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
+      headers,
       body: body !== undefined ? JSON.stringify(body) : undefined,
     })
   } catch {
@@ -25,6 +39,7 @@ async function request(method, path, body) {
     } catch { /* non-JSON body */ }
     const err = new Error(detail)
     err.status = res.status
+    if (res.status === 401 && authHandler) authHandler()
     throw err
   }
   if (res.status === 204) return null
@@ -69,6 +84,12 @@ export const api = {
   createTask: (payload) => request('POST', '/tasks', payload),
   updateTask: (id, patch) => request('PATCH', `/tasks/${id}`, patch),
   deleteTask: (id) => request('DELETE', `/tasks/${id}`),
+
+  listRunners: () => request('GET', '/runners'),
+  createRunner: (name) => request('POST', '/runners', { name }),
+  patchRunner: (id, patch) => request('PATCH', `/runners/${enc(id)}`, patch),
+  deleteRunner: (id) => request('DELETE', `/runners/${enc(id)}`),
+  listRemoteJobs: (swarm_id) => request('GET', `/remote-jobs${q({ swarm_id })}`),
 
   getDecisions: (limit = 50) => request('GET', `/decisions${q({ limit })}`),
 }

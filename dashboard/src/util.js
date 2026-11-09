@@ -96,3 +96,14 @@ export function buildArtifactTree(files) {
 
 // Number input value -> number or undefined (blank).
 export const num = (v) => (v === '' || v === null || v === undefined ? undefined : Number(v))
+
+// "12s ago" style age from an ISO timestamp.
+export function ago(iso) {
+  if (!iso) return 'never'
+  const t = new Date(iso).getTime()
+  if (Number.isNaN(t)) return String(iso)
+  const sec = Math.max(0, (Date.now() - t) / 1000)
+  return sec < 5 ? 'just now' : `${humanDuration(sec)} ago`
+}
+
+export const HARNESS_CHOICES = ['daash', 'openclaude', 'claude-code', 'codex']

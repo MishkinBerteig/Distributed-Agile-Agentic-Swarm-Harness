@@ -7,6 +7,7 @@ import SwarmHeader from './SwarmHeader.jsx'
 import MetricsStrip from './MetricsStrip.jsx'
 import TeamCard from './TeamCard.jsx'
 import TaskDrawer from './TaskDrawer.jsx'
+import RemoteJobs from './RemoteJobs.jsx'
 import Modal from './Modal.jsx'
 import AgentCalls from './AgentCalls.jsx'
 import Artifacts from './Artifacts.jsx'
@@ -29,6 +30,8 @@ export default function LiveSwarm({ swarm, onSwarmChanged }) {
   const teams = (b && b.teams) || []
   const names = useMemo(() => actorNames(b), [b])
   const teamsById = useMemo(() => Object.fromEntries(teams.map((e) => [e.team.id, e.team])), [teams])
+  const tasksById = useMemo(
+    () => Object.fromEntries(teams.flatMap((e) => (e.tasks || []).map((t) => [t.id, t]))), [teams])
   const teamNames = useMemo(() => Object.fromEntries(teams.map((e) => [e.team.id, e.team.name])), [teams])
 
   const refreshAll = () => { board.refresh(); metrics.refresh(); events.refresh(); onSwarmChanged() }
@@ -64,6 +67,8 @@ export default function LiveSwarm({ swarm, onSwarmChanged }) {
           ))}
         </div>
       )}
+
+      <RemoteJobs swarmId={id} tasksById={tasksById} />
 
       <section className="card panel">
         <div className="tabs" role="tablist">

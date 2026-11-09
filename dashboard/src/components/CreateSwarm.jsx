@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { api } from '../api.js'
 import { useLoad } from '../hooks/usePolling.js'
-import { num } from '../util.js'
+import { HARNESS_CHOICES, num } from '../util.js'
 import { Collapsible, ErrorNote, Spinner, useAction } from './Common.jsx'
 
 const ROLES = [
@@ -26,6 +26,67 @@ function ModelSelect({ value, onChange, models }) {
     <select value={value || ''} onChange={(e) => onChange(e.target.value)}>
       {list.map((m) => <option key={m} value={m}>{m}</option>)}
     </select>
+  )
+}
+
+// Harness mix (DESIGN-0.3 section 2): allowed harnesses + delivery_harnesses rows.
+function HarnessMix({ cfg, setCfg, modelList }) {
+  const allowed = cfg.allowed_harnesses || ['daash']
+  const rows = cfg.delivery_harnesses || []
+  const toggle = (h, on) => {
+    const next = on ? [...allowed, h] : allowed.filter((x) => x !== h)
+    setCfg({ ...cfg, allowed_harnesses: next, delivery_harnesses: rows.filter((r) => next.includes(r.harness)) })
+  }
+  const setRow = (i, patch) => setCfg({ ...cfg, delivery_harnesses: rows.map((r, j) => (j === i ? { ...r, ...patch } : r)) })
+  const choices = HARNESS_CHOICES.filter((h) => allowed.includes(h))
+  return (
+    <>
+      <fieldset className="harness-mix">
+        <legend>Allowed harnesses</legend>
+        <div className="row">
+          {HARNESS_CHOICES.map((h) => (
+            <label key={h} className="inline">
+              <input type="checkbox" checked={allowed.includes(h)} onChange={(e) => toggle(h, e.target.checked)} /> {h}
+            </label>
+          ))}
+        </div>
+        <p className="muted">Anything other than daash runs on a runner (see Runners). Without a matching runner,
+          the work falls back to the built-in harness after the fallback time below.</p>
+      </fieldset>
+      <fieldset className="harness-mix">
+        <legend>Delivery agents</legend>
+        {!rows.length && <div className="muted">No rows: every delivery agent uses the built-in daash harness.</div>}
+        {rows.map((r, i) => (
+          <div className="row" key={i}>
+            <label>Harness for row {i + 1}
+              <select value={r.harness} onChange={(e) => setRow(i, { harness: e.target.value })}>
+                {(choices.includes(r.harness) ? choices : [r.harness, ...choices]).map((h) => <option key={h} value={h}>{h}</option>)}
+              </select></label>
+            <label>Model
+              <select value={r.model || ''} onChange={(e) => setRow(i, { model: e.target.value })}>
+                <option value="">routing (default)</option>
+                {(r.model && !modelList.includes(r.model) ? [r.model, ...modelList] : modelList)
+                  .map((m) => <option key={m} value={m}>{m}</option>)}
+              </select></label>
+            <button type="button" className="btn small" aria-label={`Remove row ${i + 1}`}
+              onClick={() => setCfg({ ...cfg, delivery_harnesses: rows.filter((_, j) => j !== i) })}>Remove</button>
+          </div>
+        ))}
+        <button type="button" className="btn small" disabled={!choices.length}
+          onClick={() => setCfg({ ...cfg, delivery_harnesses: [...rows, { harness: choices[0] || 'daash', provider: 'default', model: '' }] })}>
+          + Add row</button>
+        <p className="muted">Delivery agents cycle through these rows: agent 1 uses row 1, agent 2 row 2, and so on,
+          wrapping around.</p>
+      </fieldset>
+      <div className="grid-2">
+        <label>Remote fallback (minutes)
+          <input type="number" min="1" value={cfg.remote_fallback_minutes ?? ''} placeholder="wait forever"
+            onChange={(e) => setCfg({ ...cfg, remote_fallback_minutes: num(e.target.value) ?? null })} /></label>
+        <label>Remote job timeout (minutes)
+          <input type="number" min="1" value={cfg.limits.remote_job_timeout_minutes ?? 30}
+            onChange={(e) => setCfg({ ...cfg, limits: { ...cfg.limits, remote_job_timeout_minutes: num(e.target.value) ?? 30 } })} /></label>
+      </div>
+    </>
   )
 }
 
@@ -106,6 +167,7 @@ export default function CreateSwarm({ onCreated }) {
                     onChange={(e) => setLimit(k, e.target.value)} /></label>
               ))}
             </div>
+            <HarnessMix cfg={swarmCfg} setCfg={setSwarmCfg} modelList={modelList} />
           </div>
         )}
       </Collapsible>

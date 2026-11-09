@@ -15,7 +15,9 @@ function Roster({ agents, tasksById, onAgent }) {
           <tr key={a.id}>
             <td>{a.role.replace(/_/g, ' ')}</td>
             <td><button type="button" className="link" onClick={() => onAgent(a)}>{a.name}</button></td>
-            <td>{a.model}</td>
+            <td>{a.model}{a.harness && a.harness !== 'daash' && (
+              <> <span className="chip harness-badge" title={`harness: ${a.harness}`}>{a.harness}</span></>
+            )}</td>
             <td><Chip status={a.state} /></td>
             <td className="clip">{a.current_task_id ? (tasksById[a.current_task_id]?.name || a.current_task_id) : '-'}</td>
             <td>{fmtNum(a.tokens_used)}</td>

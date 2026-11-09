@@ -88,6 +88,12 @@ export default function TaskDrawer({ taskId, names, onClose, onChanged, onOpenTa
           <h4>Deliverable</h4>
           {task.deliverable && (task.deliverable.summary || files.length) ? (
             <>
+              {(task.deliverable.harness || task.deliverable.runner) && (
+                <div className="muted">
+                  {task.deliverable.harness && <>harness <strong>{task.deliverable.harness}</strong></>}
+                  {task.deliverable.runner && <> on runner <strong>{task.deliverable.runner}</strong></>}
+                </div>
+              )}
               <p className="prewrap">{task.deliverable.summary}</p>
               <ul className="files">{files.map((f) => {
                 const path = typeof f === 'string' ? f : f.path
