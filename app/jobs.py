@@ -186,6 +186,17 @@ def review_paths(task: Task) -> list[str]:
     return dedupe_files(paths)
 
 
+ASSESS_MAX_FILES = 12
+ASSESS_TOTAL_CHARS = 40_000
+
+
+def assess_clip(n_files: int) -> int:
+    """Per-file excerpt length for the mission assessment: up to 4000 characters each, shrinking
+    (not below 1500) so up to ASSESS_MAX_FILES excerpts stay within ASSESS_TOTAL_CHARS."""
+    n = max(1, min(n_files, ASSESS_MAX_FILES))
+    return max(1500, min(4000, ASSESS_TOTAL_CHARS // n))
+
+
 def read_deliverable_files(root: Path, paths: Iterable[str],
                            limit: int = FILE_CLIP) -> dict[str, str]:
     """Contents of existing workspace files, each truncated to `limit` characters."""
@@ -1453,11 +1464,15 @@ class Jobs:
         model = escalate_model(choose_model(MJ, swarm.config), swarm.config, escalation)
         # The assessment prompt only lists task names; show the judge the real deliverables.
         paths = dedupe_files(p for t in done for p in review_paths(t))
-        excerpts = read_deliverable_files(self.workspace(swarm), paths[:6], limit=4000)
-        context = ""
+        ws = self.workspace(swarm)
+        excerpts = read_deliverable_files(ws, paths[:ASSESS_MAX_FILES],
+                                          limit=assess_clip(len(paths)))
+        listing = workspace_listing(ws)
+        # Every file that exists (a capped excerpt list once hid a README that was there).
+        context = (f"All files in the shared workspace now:\n{listing}\n\n" if listing else "")
         if excerpts:
-            context = ("Current deliverable files (excerpts):\n"
-                       + "\n".join(f"--- {p} ---\n{c}\n" for p, c in excerpts.items()) + "\n")
+            context += ("Current deliverable files (excerpts):\n"
+                        + "\n".join(f"--- {p} ---\n{c}\n" for p, c in excerpts.items()) + "\n")
         res = await self._json_job(
             swarm, mj, team, "assess_mission", model,
             context + prompts.assess_prompt(

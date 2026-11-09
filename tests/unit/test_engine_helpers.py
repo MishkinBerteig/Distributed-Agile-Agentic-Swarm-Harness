@@ -158,3 +158,10 @@ def test_binary_deliverables_are_never_inlined(tmp_path):
     out = read_deliverable_files(tmp_path, ["a.pyc", "ok.md"])
     assert out["a.pyc"].startswith("[binary file, ") and "\x00" not in out["a.pyc"]
     assert out["ok.md"] == "hello"
+
+
+def test_assess_clip_keeps_twelve_excerpts_bounded():
+    from app.jobs import ASSESS_MAX_FILES, ASSESS_TOTAL_CHARS, assess_clip
+    assert assess_clip(1) == 4000 and assess_clip(7) == 4000
+    assert assess_clip(12) * ASSESS_MAX_FILES <= ASSESS_TOTAL_CHARS
+    assert assess_clip(50) == assess_clip(12) >= 1500
