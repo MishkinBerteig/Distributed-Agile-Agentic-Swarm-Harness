@@ -531,11 +531,14 @@ class PrioritizeResult:
     next_task_id: Optional[str]
     rejections: list[tuple[str, str]] = field(default_factory=list)
     next_task_ids: list[str] = field(default_factory=list)
+    # Mission Judgement approved nothing on purpose (`"next_task_ids": []`): the remaining
+    # candidates belong to the Mission but cannot start yet, so they stay Pending.
+    deferred: bool = False
 
 
 def prioritize_prompt(candidates: Iterable[Any], done_tasks: Iterable[Any],
                       team_dor: Optional[str] = None, other_teams: Iterable[Any] = (),
-                      slots: int = 1) -> str:
+                      slots: int = 1, workspace_files: str = "") -> str:
     slots = max(1, int(slots))
     s = scope_block(other_teams)
     s += ("Job: prioritize this team's candidate tasks by how directly they advance the Mission.\n"
@@ -543,9 +546,14 @@ def prioritize_prompt(candidates: Iterable[Any], done_tasks: Iterable[Any],
          f"2. next_task_ids: the tasks approved to start now: up to {slots} slot(s) are free, so "
          f"approve up to {slots} task(s), highest priority first, each not rejected and meeting "
          "the Definition of Ready. Approve fewer only if fewer candidates qualify. "
-         "next_task_id: the first of them.\n"
+         "next_task_id: the first of them. If no candidate can start yet (for example it needs "
+         "work another team has not finished), approve none: \"next_task_ids\": [] and "
+         "\"next_task_id\": null. Those tasks stay Pending and you will be asked again when "
+         "more work is done.\n"
          "3. rejections: tasks that do not serve the Mission or the Vision, duplicate other "
-         "work, or belong to another team's Mission, each with a reason. Rejected ids must not be in next_task_ids.\n"
+         "work, or belong to another team's Mission, each with a reason. Rejected ids must not "
+         "be in next_task_ids. Never reject a task only because it cannot start yet: a rejected "
+         "task is gone for good, so leave it Pending instead.\n"
          "Copy task ids exactly as written.\n\n")
     if team_dor and team_dor.strip():
         s += f"Team Definition of Ready:\n{team_dor.strip()}\n\n"
@@ -554,8 +562,10 @@ def prioritize_prompt(candidates: Iterable[Any], done_tasks: Iterable[Any],
     for t in cands:
         s += _task_block(t) + "\n"
     s += f"\nDone tasks:\n{_task_list(done_tasks)}\n\n"
+    s += ("Files that exist now in the shared swarm workspace (all teams):\n"
+          f"{workspace_files.strip() or '(none yet)'}\n\n")
     s += (_JSON_ONLY + 'Contract: {"order": ["<task id>", ...], "next_task_ids": ["<task id>", ...], '
-          '"next_task_id": "<task id>", '
+          '"next_task_id": "<task id>" | null, '
           '"rejections": [{"task_id": "<task id>", "reason": "..."}]}\n'
           'Example: {"order": ["t2", "t1", "t3"], "next_task_ids": ["t2"], "next_task_id": "t2", '
           '"rejections": '
@@ -614,11 +624,14 @@ def parse_prioritize(obj: Any, valid_ids: Iterable[str], slots: int = 1) -> Prio
     for v in valid:  # tasks the model forgot go last, keeping the order total
         if v not in order:
             order.append(v)
-    if not chosen:  # the engine must always have something to approve unless all were rejected
+    # An explicit empty list approves nothing on purpose: the candidates wait (deferral).
+    deferred = not chosen and not raw_next and isinstance(ids_field, list)
+    if not chosen and not deferred:  # missing or conflicting answer: approve the first ones
         chosen = [v for v in order if v not in rejected][:slots]
     nxt = chosen[0] if chosen else None
     return PrioritizeResult(order=order, next_task_id=nxt, rejections=rejections,
-                            next_task_ids=chosen)
+                            next_task_ids=chosen,
+                            deferred=deferred and any(v not in rejected for v in order))
 
 
 # ---------------------------------------------------------------------------

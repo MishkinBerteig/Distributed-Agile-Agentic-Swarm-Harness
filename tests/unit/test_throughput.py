@@ -88,10 +88,36 @@ def test_parse_both_fields_dedupe():
     assert r.next_task_ids == ["t2"]
 
 
-def test_parse_fallback_first_non_rejected_in_order():
-    r = parse_prioritize({"order": ["t2", "t1", "t3"], "next_task_ids": [],
+def test_parse_missing_fields_fall_back_to_first_non_rejected_in_order():
+    r = parse_prioritize({"order": ["t2", "t1", "t3"],
                           "rejections": [{"task_id": "t2", "reason": "x"}]}, IDS, slots=2)
-    assert r.next_task_ids == ["t1", "t3"]
+    assert r.next_task_ids == ["t1", "t3"] and not r.deferred
+
+
+def test_parse_explicit_empty_list_defers_instead_of_approving():
+    r = parse_prioritize({"order": ["t2", "t1", "t3"], "next_task_ids": [], "next_task_id": None,
+                          "rejections": [{"task_id": "t2", "reason": "x"}]}, IDS, slots=2)
+    assert r.next_task_ids == [] and r.next_task_id is None and r.deferred
+    assert r.rejections == [("t2", "x")]
+
+
+def test_parse_empty_list_with_everything_rejected_is_not_a_deferral():
+    r = parse_prioritize({"order": ["t1"], "next_task_ids": [],
+                          "rejections": [{"task_id": "t1", "reason": "x"}]}, ["t1"], slots=1)
+    assert r.next_task_ids == [] and not r.deferred
+
+
+def test_parse_a_listed_task_is_approved_even_when_next_task_id_is_null():
+    r = parse_prioritize({"order": IDS, "next_task_ids": ["t1"], "next_task_id": None}, IDS)
+    assert r.next_task_ids == ["t1"] and not r.deferred
+
+
+def test_prompt_lets_mission_judgement_defer_and_shows_workspace_files():
+    p = prioritize_prompt([ptask("t1")], [], slots=1, workspace_files="calendar.md (10 bytes)")
+    assert '"next_task_ids": []' in p
+    assert "Never reject a task only because it cannot start yet" in p
+    assert "calendar.md (10 bytes)" in p
+    assert "(none yet)" in prioritize_prompt([ptask("t1")], [], slots=1)
 
 
 def test_parse_all_rejected_is_empty():

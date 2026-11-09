@@ -68,6 +68,7 @@ class Scenario:
     work_propose_team: str = ""          # one-shot: the next work reply also calls propose_team
     work_remember: bool = False          # the work reply also calls remember
     reject_names_containing: str = ""    # prioritize rejects candidates whose name has this
+    defer_prioritize: int = 0            # next N prioritize replies approve nothing ([])
     record_prompts: bool = False         # keep the system and first user prompt in call records
     complexity: str = "simple"           # answer to classification
     prompt_tokens: int = 100             # usage reported per call
@@ -432,6 +433,9 @@ class FakeLLM:
         rej_ids = {tid for tid, _ in rejected}
         order = [tid for tid, _ in cands]
         chosen = [tid for tid in order if tid not in rej_ids][:slots]
+        if s.defer_prioritize > 0:       # "nothing can start yet": the candidates stay Pending
+            s.defer_prioritize -= 1
+            chosen = []
         return self._json(request, {
             "order": order, "next_task_ids": chosen,
             "next_task_id": chosen[0] if chosen else None,

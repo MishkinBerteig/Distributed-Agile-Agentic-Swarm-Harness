@@ -18,7 +18,7 @@ import httpx
 from app import api_helpers as H
 from app import policy, services
 from app.embeddings import build_embedder
-from app.engine import Cooldowns, Engine
+from app.engine import Cooldowns, Deferrals, Engine
 from app.jobs import Jobs
 from app.llm import LLMClient
 from app.models import (CriterionCreate, CheckKind, Swarm, SwarmConfig, Task, TaskCreate,
@@ -100,6 +100,7 @@ class Harness:
         engine.pool = self.pool
         engine.bus = self.bus
         engine.cooldowns = Cooldowns(clock=self.clock)
+        engine.deferrals = Deferrals(clock=self.clock)
         engine.jobs = Jobs(self.pool, llm or self.llm, self.bus, self.embedder, self.settings)
         return engine
 

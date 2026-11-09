@@ -51,6 +51,16 @@ class SwarmNotActive(Exception):
     job ran. Its results were discarded; this is not a failure and is not retried."""
 
 
+class Deferred(Exception):
+    """Mission Judgement approved nothing on purpose: the team's candidates cannot start yet
+    (for example they need another team's work). Not a failure. The engine holds this job until
+    more work is Done in the swarm (`done_count` changes) or a few minutes pass."""
+
+    def __init__(self, done_count: int, detail: str = "") -> None:
+        super().__init__(detail)
+        self.done_count = done_count
+
+
 class RefCounts:
     """Running-job reference counts per key (agent id): BUSY while count > 0."""
 
@@ -652,7 +662,8 @@ class Jobs:
         ready_startable = sum(1 for t in ready if policy.deps_done(t, by_id))
         slots = prioritize_slots(len(await self._delivery_agents(swarm, team)), ready_startable)
         user = prompts.prioritize_prompt(candidates, done, team.definition_of_ready, others,
-                                         slots=slots)
+                                         slots=slots,
+                                         workspace_files=workspace_listing(self.workspace(swarm)))
         res = await self._json_job(
             swarm, mj, team, "prioritize", model, user,
             lambda o: prompts.parse_prioritize(o, valid, slots), query=team.mission_statement)
@@ -676,7 +687,7 @@ class Jobs:
         order = [tid for tid in res.order if tid not in rejected]
         approve = [tid for tid in dict.fromkeys(res.next_task_ids or [res.next_task_id])
                    if tid in cand_ids and tid in order][:slots]
-        if not approve:
+        if not approve and not res.deferred:
             first = next((tid for tid in order if tid in cand_ids), None)
             approve = [first] if first else []
         for tid in order:
@@ -691,6 +702,18 @@ class Jobs:
                     from_status=TaskStatus.PENDING.value, to_status=TaskStatus.READY.value,
                     detail=f"{mj.name} approved '{by_id[tid].name}' as next priority (#{rank}) "
                            f"out of {len(cand_ids)} candidate(s) for team '{team.name}'.")
+        waiting = [tid for tid in order if tid in cand_ids and tid not in approve]
+        if not approve and waiting:
+            names = ", ".join(f"'{by_id[tid].name}'" for tid in waiting[:3])
+            more = f" and {len(waiting) - 3} more" if len(waiting) > 3 else ""
+            await self.events.add(
+                swarm.id, "deferred", team_id=team.id, actor=mj.id,
+                detail=f"{mj.name} approved no task for team '{team.name}' yet: {names}{more} "
+                       f"cannot start yet and stay Pending. It will look again when more work "
+                       f"is done.")
+            swarm_tasks = await self.tasks.list(swarm_id=swarm.id)
+            raise Deferred(sum(1 for t in swarm_tasks if t.status == TaskStatus.DONE.value),
+                           f"team {team.name}: nothing can start yet")
 
     # -- work -------------------------------------------------------------------
 

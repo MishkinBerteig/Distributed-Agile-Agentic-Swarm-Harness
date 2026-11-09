@@ -75,6 +75,9 @@ Design: docs/DESIGN-0.2.md. (`v0.1` is tagged at f1e5526.)
 - Verified: unit 384 passed (~1 s); integration 99 passed (~45 s); e2e 8 passed (~2 min). Live on the gateway, a
   2-delivery-agent swarm had two tasks approved in one call and both agents committing in the same second; 4/4
   tasks Done on the first attempt, p90 cycle time 4.7 min (v0.1 runs: 11–13 min).
+- [x] B.6 deferral (after the tag): Mission Judgement can approve nothing when a task needs another team's work;
+  the task stays Pending and the engine re-asks when more work is Done (no rejection churn, no hot loop).
+  unit 390, integration 102.
 
 ### After 0.2 (in priority order)
 1. **Distributed, heterogeneous harnesses**: external CLI agents (OpenClaude, Claude Code, Codex) on any device
@@ -154,3 +157,5 @@ timeline, artifacts), metrics, activity feed. API docs: http://127.0.0.1:8000/do
   m3u512gb gateway.
 - **2026-11-08 — 0.2**: three-tier test harness with a scripted fake LLM; batch approval, concurrent judges,
   per-model LLM concurrency, cancel-on-pause and verification task closing. Tagged `v0.2`.
+- **2026-11-08 — 0.2 B.6**: deferral of not-yet-startable tasks (cross-team dependencies), found while re-running
+  First Garden.

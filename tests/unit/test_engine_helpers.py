@@ -1,7 +1,7 @@
 """Pure engine helpers: cooldown backoff, infra errors, dependency mapping, files, routing stats."""
 from datetime import datetime, timezone
 
-from app.engine import Cooldowns, backoff_seconds
+from app.engine import Cooldowns, Deferrals, backoff_seconds
 from app.jobs import (combine_feedback, dedupe_files, escalate_model, is_infrastructure_error,
                       map_depends, outcomes_from_tasks, read_deliverable_files, review_paths,
                       stats_from_tasks, workspace_listing)
@@ -23,6 +23,26 @@ def mk(id, status="Done", **kw):
 
 def test_backoff_doubles_and_caps():
     assert [backoff_seconds(n) for n in range(0, 7)] == [0, 30, 60, 120, 240, 300, 300]
+
+
+def test_deferrals_hold_until_timeout():
+    now = [100.0]
+    d = Deferrals(clock=lambda: now[0], seconds=300)
+    d.hold("prioritize:t", 2)
+    assert d.active_keys() == {"prioritize:t"}
+    assert d.release_on_progress(2) == []          # same Done count: still held
+    now[0] += 299
+    assert d.active_keys() == {"prioritize:t"}
+    now[0] += 2
+    assert d.active_keys() == set()
+
+
+def test_deferrals_release_when_more_work_is_done():
+    d = Deferrals(clock=lambda: 0.0, seconds=300)
+    d.hold("a", 2)
+    d.hold("b", 3)
+    assert d.release_on_progress(3) == ["a"]
+    assert d.active_keys() == {"b"}
 
 
 def test_cooldowns_track_time_and_reset():

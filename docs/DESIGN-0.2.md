@@ -80,3 +80,12 @@ Scenarios:
   went to verification before this task finished." This is done by one function, `services.close_open_tasks`.
 * **B.5 Convergence.** Already in place (DESIGN-0.1 §12): blocking verdicts and assessments must name concrete
   gaps. The integration tier verifies the re-ask path with the fake LLM.
+* **B.6 Deferral (post-tag fix, found in the First Garden re-run).** A team whose work needs another team's
+  artifacts (e.g. a care checklist that cross-references the guides) had its tasks rejected one by one
+  ("Definition of Ready not met"), re-planned, and used up its task budget, because the prioritize contract forced
+  an approval. Now Mission Judgement may answer `"next_task_ids": []`: the candidates stay Pending, a `deferred`
+  event is recorded, and `jobs.prioritize` raises `jobs.Deferred(done_count)`. The engine holds that job key
+  (`engine.Deferrals`) until the swarm's Done-task count changes or `DEFER_SECONDS` (300 s) pass, so there is no
+  hot loop. The prompt says a task is never rejected only because it cannot start yet, and lists the files that
+  exist in the shared workspace (all teams) so the judge can see whether a dependency is met. A missing
+  `next_task_ids` still falls back to approving the first candidates.

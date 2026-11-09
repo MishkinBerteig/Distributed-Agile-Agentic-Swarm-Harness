@@ -21,7 +21,7 @@ from app.bus import DecisionBus
 from app.config import Settings
 from app.db import create_pool
 from app.embeddings import build_embedder
-from app.jobs import Jobs, SwarmNotActive, is_infrastructure_error
+from app.jobs import Deferred, Jobs, SwarmNotActive, is_infrastructure_error
 from app.llm import LLMError
 from app.models import (Action, ActionKind, AgentRole, Swarm, SwarmSnapshot, SwarmStatus, Task,
                         TaskStatus, TeamStatus)
@@ -32,6 +32,9 @@ log = logging.getLogger("daash.engine")
 
 COOLDOWN_BASE_SECONDS = 30.0
 COOLDOWN_CAP_SECONDS = 300.0
+# A deferred prioritize (nothing could start yet) is asked again after this long, or
+# sooner when another task in the swarm reaches Done.
+DEFER_SECONDS = 300.0
 ESCALATE_AFTER = 3          # consecutive parse/protocol failures before trying a stronger model
 
 #: Actions the engine performs itself, without an LLM.
@@ -218,6 +221,35 @@ class Cooldowns:
         return {k for k, until in self._until.items() if until > now}
 
 
+class Deferrals:
+    """Jobs held after a deliberate "nothing to do yet" answer (jobs.Deferred).
+
+    A held key is not re-run until `seconds` pass or the swarm's Done-task count differs from
+    the count when it was held (other work finished, so the answer may change)."""
+
+    def __init__(self, clock: Callable[[], float] = time.monotonic,
+                 seconds: float = DEFER_SECONDS) -> None:
+        self._clock = clock
+        self.seconds = seconds
+        self._held: dict[str, tuple[float, int]] = {}
+
+    def hold(self, key: str, done_count: int) -> None:
+        self._held[key] = (self._clock() + self.seconds, done_count)
+
+    def release_on_progress(self, done_count: int) -> list[str]:
+        """Release every key held at a different Done count; returns the released keys."""
+        gone = [k for k, (_, n) in self._held.items() if n != done_count]
+        for k in gone:
+            del self._held[k]
+        return gone
+
+    def active_keys(self) -> set[str]:
+        now = self._clock()
+        for k in [k for k, (until, _) in self._held.items() if until <= now]:
+            del self._held[k]
+        return set(self._held)
+
+
 # ---------------------------------------------------------------------------
 # Executor
 # ---------------------------------------------------------------------------
@@ -230,6 +262,7 @@ class Engine:
         self.jobs: Optional[Jobs] = None
         self.running: dict[str, asyncio.Task] = {}
         self.cooldowns = Cooldowns()
+        self.deferrals = Deferrals()
         self.escalation: dict[str, int] = {}
         self._sem = asyncio.Semaphore(1)
         self._sem_limit = 0
@@ -309,10 +342,14 @@ class Engine:
                                                           SwarmStatus.LEARNING.value):
             return []
         self._sync_semaphore(swarm)
-        running = set(self.running) | self.cooldowns.active_keys()
+        running = set(self.running) | self.cooldowns.active_keys() | self.deferrals.active_keys()
         snap = await load_snapshot(self.pool, swarm.id, datetime.now(timezone.utc), running)
         if snap is None:
             return []
+        done_now = sum(1 for t in snap.tasks if t.status == TaskStatus.DONE.value)
+        for key in self.deferrals.release_on_progress(done_now):   # more work is Done: ask again
+            if key not in self.running and key not in self.cooldowns.active_keys():
+                snap.running_jobs.discard(key)
         actions = decide(snap)
         for action in actions:
             if action.kind in INLINE_ACTIONS:
@@ -364,6 +401,11 @@ class Engine:
             raise
         except SwarmNotActive:
             log.info("discarded %s: the swarm left the state this job needs", key)
+        except Deferred as d:
+            self.cooldowns.success(key)
+            self.escalation.pop(key, None)
+            self.deferrals.hold(key, d.done_count)
+            log.info("deferred %s (%s); held until more work is done", key, d)
         except Exception as exc:  # noqa: BLE001
             await self._on_failure(swarm, action, key, exc)
         finally:
