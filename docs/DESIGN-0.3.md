@@ -273,3 +273,31 @@ any device without a venv.
   remote job, the runner drops it, no fake-LLM calls while paused, resume completes.
 * live (manual, gateway): a swarm whose delivery agents are native + openclaude + claude-code + codex in the
   runner container.
+
+## 10. Vision review (vision-level Definition of Done)
+
+Found in the 0.3 live run (and in the First Garden retrospective): when every team finished, the swarm went
+straight to VERIFICATION. Nothing checked the **vision-level** Definition of Done or consistency across
+teams; a README team "accomplished" its mission before the module it documents existed. README: "DoD has a
+vision level and a team-mission level".
+
+* `ActionKind.REVIEW_VISION` (append to the enum). `decide()`: when the swarm is ACTIVE and every team is
+  terminal (accomplished/failed), emit `REVIEW_VISION` instead of `COMPLETE_SWARM`, unless the swarm already
+  used `MAX_VISION_REVIEWS = 3` reviews (then `COMPLETE_SWARM` as before).
+* Migration `f0a3c0d0e003_vision_review`: `swarms.vision_reviews int NOT NULL DEFAULT 0`.
+* Job `review_vision` (the Swarm Coordinator agent, its configured model; JSON job with the usual parse
+  re-ask): prompt = the Vision, the vision-level DoD, each team (name, mission, status, Done task names),
+  the workspace file list, and the deliverable files' contents (bounded as the review job does). Contract:
+  `{"verdict": "met" | "gaps", "confidence": 0..1, "summary": "...",
+    "gaps": [{"team": "<exact team name>", "focus": "what that team must change or add"}]}`.
+  Parser: `gaps` must be non-empty unless verdict is `met` with confidence ≥
+  `dod_thresholds.mission_confidence`; unknown team names are rejected (re-ask lists the valid names).
+* Outcome: increment `vision_reviews`. Met (≥ threshold) → event "Swarm Coordinator confirmed the vision-level
+  Definition of Done (confidence c): summary" then the COMPLETE_SWARM path (verification). Gaps → for each
+  named team: status `active`, `next_focus` = focus, event "Swarm Coordinator reopened team 'X': focus";
+  the team then plans (its tasks are Done and already assessed, so `decide()` emits PLAN_TASKS with the
+  focus). A failed team can be reopened only if it still has task budget; otherwise its gap is reported
+  in the event and ignored. If no named team can act, complete the swarm (event lists the open gaps).
+* The calibrated certainty scale applies (DESIGN-0.1 §12): a confidence below 1.0 must name a concrete gap.
+* Fake LLM (tests/fakes): answers `review_vision` with `met` by default; scenario `vision_gaps_first: N`
+  makes the first N reviews return a gap for the first team.
