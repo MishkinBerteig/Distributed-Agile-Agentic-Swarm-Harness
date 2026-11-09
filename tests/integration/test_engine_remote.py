@@ -138,12 +138,11 @@ async def test_engine_restart_reattaches_to_the_same_job(h, api, pool, monkeypat
     (before,) = await jobs_of(pool, task.id)
     assert before.status == "leased"
 
-    # "kill -9" the engine: its tasks end without the graceful job cancellation
-    async def no_cancel(self, job_id):
-        return None
-    with monkeypatch.context() as m:
-        m.setattr(RemoteJobRepo, "cancel", no_cancel)
-        await stop_engine(h)
+    # A graceful engine stop (deploy / restart) while the swarm stays ACTIVE must leave the
+    # remote job running: the runner keeps working and the next engine re-attaches.
+    await stop_engine(h)
+    (still,) = await jobs_of(pool, task.id)
+    assert still.status == "leased"
     await h.agents.reset_busy()
 
     engine2 = h.new_engine()
@@ -353,8 +352,8 @@ async def test_no_fallback_when_disabled(h, api, pool):
     await pool.execute("UPDATE remote_jobs SET created_at = now() - interval '5 days'")
     await asyncio.sleep(0.2)
     assert (await jobs_of(pool, task.id))[0].status == "queued"
-    await stop_engine(h)
-    assert (await jobs_of(pool, task.id))[0].status == "cancelled"  # engine stop cancels it
+    await stop_engine(h)                                           # swarm still ACTIVE:
+    assert (await jobs_of(pool, task.id))[0].status == "queued"    # kept for the next engine
 
 
 # -- misc ----------------------------------------------------------------------------------------

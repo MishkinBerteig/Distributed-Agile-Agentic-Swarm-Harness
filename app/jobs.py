@@ -26,7 +26,8 @@ from app.checks import is_deterministic, run_check, validate_check_spec
 from app.config import Settings
 from app.llm import LLMError, Usage
 from app.models import (Action, ActionKind, Agent, AgentRole, AgentState, CheckKind,
-                        CreatorKind, CriterionCreate, CriterionStatus, NATIVE_HARNESS, Swarm, Task, TaskCreate,
+                        CreatorKind, CriterionCreate, CriterionStatus, NATIVE_HARNESS, Swarm,
+                        SwarmStatus, Task, TaskCreate,
                         TaskStatus, Team, TeamStatus)
 from app.repo import (AgentRepo, CallRepo, EventRepo, LearningRepo, MemoryRepo, ProposalRepo,
                       RemoteJobRepo, RunnerRepo, SwarmRepo, TaskRepo, TeamRepo, VerdictRepo)
@@ -906,12 +907,19 @@ class Jobs:
                         return True
                 await asyncio.sleep(self.remote_poll_seconds)
         except asyncio.CancelledError:
-            # pause / verification (B.4): tell the runner through its next heartbeat
+            # Pause / verification (B.4): tell the runner through its next heartbeat. An engine
+            # shutdown or restart (swarm still ACTIVE) leaves the job alone, so the runner keeps
+            # working and the next engine re-attaches to the same job instead of redoing it.
             try:
-                await asyncio.shield(repo.cancel(job_id))
+                await asyncio.shield(self._cancel_remote_unless_active(repo, job_id, swarm.id))
             except BaseException as exc:  # noqa: BLE001 - best effort
                 log.warning("could not cancel remote job %s: %r", job_id, exc)
             raise
+
+    async def _cancel_remote_unless_active(self, repo, job_id: str, swarm_id: str) -> None:
+        fresh = await self.swarms.get(swarm_id)
+        if fresh is None or fresh.lifecycle_state != SwarmStatus.ACTIVE.value:
+            await repo.cancel(job_id)
 
     async def _apply_remote(self, swarm: Swarm, team: Team, agent: Agent, task: Task,
                             model: str, job) -> bool:
