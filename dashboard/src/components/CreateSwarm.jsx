@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { api } from '../api.js'
 import { useLoad } from '../hooks/usePolling.js'
-import { HARNESS_CHOICES, num } from '../util.js'
+import { HARNESS_CHOICES, OPTIONAL_CAPS, capLabel, defaultCaps, num, sameCaps } from '../util.js'
 import { Collapsible, ErrorNote, Spinner, useAction } from './Common.jsx'
 
 const ROLES = [
@@ -59,7 +59,7 @@ function HarnessMix({ cfg, setCfg, modelList }) {
         {rows.map((r, i) => (
           <div className="row" key={i}>
             <label>Harness for row {i + 1}
-              <select value={r.harness} onChange={(e) => setRow(i, { harness: e.target.value })}>
+              <select value={r.harness} onChange={(e) => setRow(i, { harness: e.target.value, capabilities: null })}>
                 {(choices.includes(r.harness) ? choices : [r.harness, ...choices]).map((h) => <option key={h} value={h}>{h}</option>)}
               </select></label>
             <label>Model
@@ -68,6 +68,19 @@ function HarnessMix({ cfg, setCfg, modelList }) {
                 {(r.model && !modelList.includes(r.model) ? [r.model, ...modelList] : modelList)
                   .map((m) => <option key={m} value={m}>{m}</option>)}
               </select></label>
+            <fieldset className="caps-pick">
+              <legend>Capabilities (default: {defaultCaps(r.harness).map(capLabel).join(', ')})</legend>
+              {OPTIONAL_CAPS.map((c) => {
+                const cur = r.capabilities || defaultCaps(r.harness)
+                return (
+                  <label key={c} className="check"><input type="checkbox" checked={cur.includes(c)}
+                    onChange={(e) => {
+                      const next = e.target.checked ? [...cur, c] : cur.filter((x) => x !== c)
+                      setRow(i, { capabilities: sameCaps(next, defaultCaps(r.harness)) ? null : next })
+                    }} /> {capLabel(c)}</label>
+                )
+              })}
+            </fieldset>
             <button type="button" className="btn small" aria-label={`Remove row ${i + 1}`}
               onClick={() => setCfg({ ...cfg, delivery_harnesses: rows.filter((_, j) => j !== i) })}>Remove</button>
           </div>

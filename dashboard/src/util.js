@@ -106,4 +106,16 @@ export function ago(iso) {
   return sec < 5 ? 'just now' : `${humanDuration(sec)} ago`
 }
 
+export const CAP_LABELS = { edit_files: 'edit files', run_code: 'run code', web_research: 'web research' }
+export const capLabel = (c) => CAP_LABELS[c] || String(c).replace(/_/g, ' ')
+export const OPTIONAL_CAPS = ['run_code', 'web_research']
+export const HARNESS_DEFAULT_CAPS = {
+  daash: ['edit_files'],
+  openclaude: ['edit_files', 'run_code'],
+  'claude-code': ['edit_files', 'run_code'],
+  codex: ['edit_files', 'run_code'],
+}
+export const defaultCaps = (h) => HARNESS_DEFAULT_CAPS[h] || ['edit_files']
+export const sameCaps = (a, b) => [...a].sort().join() === [...b].sort().join()
+
 export const HARNESS_CHOICES = ['daash', 'openclaude', 'claude-code', 'codex']

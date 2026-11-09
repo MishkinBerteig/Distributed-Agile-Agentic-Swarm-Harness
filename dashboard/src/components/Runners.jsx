@@ -13,8 +13,11 @@ const origin = () => {
 function Harnesses({ list }) {
   if (!list || !list.length) return <span className="muted">none</span>
   return list.map((h) => (
-    <span key={h.harness} className="chip" title={(h.models || []).length ? `models: ${h.models.join(', ')}` : 'any model'}>
+    <span key={h.harness} className="chip" title={((h.models || []).length ? `models: ${h.models.join(', ')}` : 'any model')
+      + ((h.capabilities || []).length ? `; capabilities: ${h.capabilities.map((c) => String(c).replace(/_/g, ' ')).join(', ')}` : '')}>
       {h.harness}{(h.models || []).length ? ` (${h.models.length})` : ''}
+      {(h.capabilities || []).includes('run_code') && <span className="muted"> · run code</span>}
+      {(h.capabilities || []).includes('web_research') && <span className="muted"> · web</span>}
     </span>
   ))
 }

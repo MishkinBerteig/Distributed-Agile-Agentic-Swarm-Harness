@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { TASK_COLUMNS, TERMINAL_COLUMNS, criteriaSummary, statusClass } from '../util.js'
+import { capLabel, TASK_COLUMNS, TERMINAL_COLUMNS, criteriaSummary, statusClass } from '../util.js'
 
 function Card({ task, agentName, onOpen }) {
   const c = criteriaSummary(task)
@@ -15,6 +15,10 @@ function Card({ task, agentName, onOpen }) {
             title="criteria green / total">{c.green}/{c.total}{c.red ? ` (${c.red} red)` : ''}</span>
         )}
       </div>
+      {(task.required_capabilities || []).length > 0 && (
+        <div className="kcard-needs"><span className="chip cap-chip needs-chip" title="capabilities an agent needs for this task">
+          needs: {task.required_capabilities.map(capLabel).join(', ')}</span></div>
+      )}
       {agentName && <div className="kcard-agent">{agentName}</div>}
     </button>
   )

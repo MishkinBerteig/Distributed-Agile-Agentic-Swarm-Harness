@@ -1,6 +1,6 @@
 import React, { useState } from 'react'
 import { api } from '../api.js'
-import { creatorLabel, fmtNum } from '../util.js'
+import { capLabel, creatorLabel, fmtNum } from '../util.js'
 import { Chip, Collapsible, ErrorNote, Spinner, useAction } from './Common.jsx'
 import Kanban from './Kanban.jsx'
 import AddTask from './AddTask.jsx'
@@ -17,7 +17,12 @@ function Roster({ agents, tasksById, onAgent }) {
             <td><button type="button" className="link" onClick={() => onAgent(a)}>{a.name}</button></td>
             <td>{a.model}{a.harness && a.harness !== 'daash' && (
               <> <span className="chip harness-badge" title={`harness: ${a.harness}`}>{a.harness}</span></>
-            )}</td>
+            )}
+              {(a.capabilities || []).length > 0 && (
+                <div className="caps" title={`capabilities: ${a.capabilities.map(capLabel).join(', ')}`}>
+                  {a.capabilities.map((c) => <span key={c} className="chip cap-chip">{capLabel(c)}</span>)}
+                </div>
+              )}</td>
             <td><Chip status={a.state} /></td>
             <td className="clip">{a.current_task_id ? (tasksById[a.current_task_id]?.name || a.current_task_id) : '-'}</td>
             <td>{fmtNum(a.tokens_used)}</td>

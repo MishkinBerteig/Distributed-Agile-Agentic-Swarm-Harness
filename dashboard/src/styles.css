@@ -236,3 +236,10 @@ label.inline input { width: auto; }
 .s-cancelled, .s-abandoned { background: var(--b-rejected); color: var(--c-rejected); }
 .runners .row, .runners .row > label { min-width: 0; }
 .runners label { display: flex; flex-direction: column; gap: 3px; font-weight: 600; font-size: 13px; }
+
+.caps { display: flex; flex-wrap: wrap; gap: 2px; margin-top: 2px; }
+.cap-chip { font-size: 0.75em; background: var(--accent-soft); color: var(--accent); }
+.needs-chip { background: transparent; border: 1px solid var(--accent); }
+.kcard-needs { margin-top: 4px; }
+.caps-pick { border: 0; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.caps-pick legend { font-size: 0.85em; }

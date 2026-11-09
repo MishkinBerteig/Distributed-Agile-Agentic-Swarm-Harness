@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import { api } from '../api.js'
 import { usePolling } from '../hooks/usePolling.js'
-import { fmtDateTime, fmtTime } from '../util.js'
+import { capLabel, fmtDateTime, fmtTime } from '../util.js'
 import { Chip, Empty, ErrorNote, Spinner, useAction } from './Common.jsx'
 import Modal from './Modal.jsx'
 
@@ -62,6 +62,9 @@ export default function TaskDrawer({ taskId, names, onClose, onChanged, onOpenTa
             {task.priority != null && <span>priority {task.priority}</span>}
             {task.complexity && <span>{task.complexity}</span>}
             <span>attempts {task.attempts}</span>
+            {(task.required_capabilities || []).length > 0 && (
+              <span className="chip cap-chip needs-chip">needs: {task.required_capabilities.map(capLabel).join(', ')}</span>
+            )}
             {task.assigned_agent_id && <span>agent {actor(task.assigned_agent_id)}</span>}
           </div>
           <ErrorNote error={error} />
