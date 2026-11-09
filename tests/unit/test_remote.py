@@ -47,7 +47,8 @@ def test_normalize_capabilities_drops_unknown_and_native():
     caps = remote.normalize_capabilities([
         {"harness": "codex", "models": ["fast", "", 3]}, {"harness": "daash"},
         {"harness": "nope", "models": []}, "junk", {"harness": "fake", "models": []}])
-    assert caps == [{"harness": "codex", "models": ["fast"]}, {"harness": "fake", "models": []}]
+    assert caps == [{"harness": "codex", "models": ["fast"], "capabilities": ["edit_files", "run_code"]},
+                    {"harness": "fake", "models": [], "capabilities": ["edit_files", "run_code"]}]
     assert remote.normalize_capabilities("x") == []
 
 
@@ -55,7 +56,7 @@ def test_normalize_capabilities_any_model_wins_and_merges():
     caps = remote.normalize_capabilities([
         {"harness": "codex", "models": ["a"]}, {"harness": "codex", "models": ["b"]},
         {"harness": "fake", "models": ["a"]}, {"harness": "fake", "models": []}])
-    assert caps == [{"harness": "codex", "models": ["a", "b"]}, {"harness": "fake", "models": []}]
+    assert [(c["harness"], c["models"]) for c in caps] == [("codex", ["a", "b"]), ("fake", [])]
 
 
 def test_job_matches():

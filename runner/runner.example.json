@@ -4,6 +4,7 @@
     "openclaude": {
       "command": "openclaude",
       "models": ["instant", "fast", "great", "amazing"],
+      "capabilities": ["edit_files"],
       "permission_mode": "acceptEdits",
       "env": {
         "CLAUDE_CODE_USE_OPENAI": "1",
@@ -15,6 +16,7 @@
     "claude-code": {
       "command": "claude",
       "models": ["instant", "fast", "great", "amazing"],
+      "capabilities": ["edit_files"],
       "permission_mode": "acceptEdits",
       "small_model": "instant",
       "env": {
@@ -26,6 +28,7 @@
     "codex": {
       "command": "codex",
       "models": ["instant", "fast", "great", "amazing"],
+      "capabilities": ["edit_files", "run_code"],
       "sandbox": "workspace-write",
       "env": {
         "DAASH_GATEWAY_URL": "http://m3u512gb.tail391a32.ts.net:12345/v1",

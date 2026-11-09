@@ -20,7 +20,7 @@ import asyncpg
 
 import types
 
-from app import policy, prompts, remote, services
+from app import models, policy, prompts, remote, services
 from app.bus import DecisionBus
 from app.checks import is_deterministic, run_check, validate_check_spec
 from app.config import Settings
@@ -624,15 +624,17 @@ class Jobs:
         if live is None or live.lifecycle_state != "ACTIVE":
             return
         now = _now()
-        res = policy.dor_check(task, team_tasks, team_agents,
-                               await self._p90(swarm.id), now)
+        idle = policy.idle_agents_for(task, team_agents, team_tasks)
+        if not idle:
+            log.info("commit of %r skipped: no idle agent with its required capabilities",
+                     task.name)
+            return
+        agent = next((a for a in idle if a.id == action.agent_id), idle[0])
+        res = policy.dor_check(task, policy.pool_for_agent(agent, team_tasks, team_agents),
+                               team_agents, await self._p90(swarm.id), now)
         if not res.ok:
             log.info("commit of %r skipped: %s", task.name, "; ".join(res.reasons))
             return
-        idle = policy.idle_delivery_agents(team_agents, team_tasks)
-        if not idle:
-            return
-        agent = next((a for a in idle if a.id == action.agent_id), idle[0])
         await self.tasks.update(task.id, status=TaskStatus.IN_PROGRESS.value,
                                 assigned_agent_id=agent.id, committed_at=now)
         await self.events.add(
@@ -640,6 +642,13 @@ class Jobs:
             from_status=TaskStatus.READY.value, to_status=TaskStatus.IN_PROGRESS.value,
             actor="engine",
             detail=f"{agent.name} committed to '{task.name}': the Definition of Ready is met.")
+        missing = policy.lacks(agent, task)
+        if missing:
+            await self.events.add(
+                swarm.id, "info", team_id=task.team_id, task_id=task.id, actor="engine",
+                detail=f"No agent on this team has {', '.join(missing)}, which '{task.name}' "
+                       f"needs; {agent.name} does it without (degraded) and must say what it "
+                       f"could not do.")
         await self.signal("task.committed", task.team_id, task.id, agent=agent.name)
 
     async def _p90(self, swarm_id: str) -> Optional[float]:
@@ -741,8 +750,11 @@ class Jobs:
         done = [t for t in tasks if t.status == TaskStatus.DONE.value]
         model = escalate_model(choose_model(DELIVERY, swarm.config), swarm.config, escalation)
         others = [t for t in await self.teams.list(swarm.id) if t.id != team.id]
-        user = prompts.plan_prompt(team.name, done, [], cap, team.next_focus,
-                                   workspace_listing(self.workspace(swarm)), others)
+        team_agents = await self.agents.list(swarm.id, team.id)
+        user = prompts.plan_prompt(
+            team.name, done, [], cap, team.next_focus, workspace_listing(self.workspace(swarm)),
+            others, agent_capabilities=[a.capabilities for a in team_agents
+                                        if a.role == AgentRole.MISSION_DELIVERY.value])
         planned = await self._json_job(
             swarm, agent, team, "plan_tasks", model, user,
             lambda o: prompts.parse_plan(o, cap), query=team.mission_statement)
@@ -756,7 +768,8 @@ class Jobs:
             data = TaskCreate(team_id=team.id, name=pt.name, description=pt.description,
                               artifact=pt.artifact, depends_on=map_depends(
                                   pt.depends_on, [t.id for t in created]),
-                              acceptance_criteria=pt.criteria)
+                              acceptance_criteria=pt.criteria,
+                              required_capabilities=pt.needs)
             created.append(await self.tasks.create(
                 swarm.id, data, created_by=agent.id,
                 embedding=self._embed(f"{pt.name}. {pt.description}")))
@@ -895,8 +908,10 @@ class Jobs:
         system = await services.agent_system_prompt(
             self.pool, swarm, agent, team, query=f"{task.name}. {task.description}",
             embedder=self.embedder)
+        caps = (agent.capabilities if agent.harness == NATIVE_HARNESS
+                else models.harness_capabilities(NATIVE_HARNESS))
         user = prompts.work_prompt(task, task.criteria, task.feedback,
-                                   workspace_listing(ws), pending)
+                                   workspace_listing(ws), pending, capabilities=caps)
         t0 = time.monotonic()
         try:
             loop = await self.llm.run_tool_loop(model, system, user, registry,
@@ -956,9 +971,10 @@ class Jobs:
             self.pool, swarm, agent, team, query=f"{task.name}. {task.description}",
             embedder=self.embedder)
         prompt = prompts.remote_work_prompt(task, task.criteria, task.feedback,
-                                            workspace_listing(ws))
+                                            workspace_listing(ws), capabilities=agent.capabilities)
         payload = {
             "system_prompt": system, "prompt": prompt,
+            "required_capabilities": list(task.required_capabilities),
             "limits": {"timeout_seconds": cfg.limits.remote_job_timeout_minutes * 60,
                        "max_files": remote.MAX_FILES, "max_file_bytes": remote.MAX_FILE_BYTES,
                        "max_total_bytes": remote.MAX_TOTAL_BYTES},
@@ -1099,6 +1115,7 @@ class Jobs:
                 detail=f"{agent.name} did not finish '{task.name}' (attempt {attempts} of "
                        f"{swarm.config.limits.max_attempts_per_task}): {why} Trying again.")
             await self.signal("task.rework", team.id, task.id)
+            await self._reassign_if_incapable(swarm, team, task)
 
     async def _classify(self, swarm: Swarm, agent: Agent, team: Team, task: Task) -> Task:
         model = choose_model("classifier", swarm.config)
@@ -1155,6 +1172,8 @@ class Jobs:
                 swarm.id, TaskCreate(team_id=team.id, name=name,
                                      description=sarg(args, "description", required=False),
                                      artifact=artifact, parent_id=task.id,
+                                     required_capabilities=models.required_capabilities(
+                                         args.get("required_capabilities")),
                                      acceptance_criteria=crits),
                 created_by=agent.id, embedding=self._embed(name))
             await self.events.add(
@@ -1229,7 +1248,9 @@ class Jobs:
                  "Pending until Mission Judgement approves it.",
                  obj({"name": s, "description": s, "artifact": {**s, "description":
                       "workspace path the subtask produces"},
-                      "acceptance_criteria": {"type": "array", "items": s}}, ["name"]),
+                      "acceptance_criteria": {"type": "array", "items": s},
+                      "required_capabilities": {"type": "array", "items": {
+                          "type": "string", "enum": ["run_code", "web_research"]}}}, ["name"]),
                  create_subtask),
             Tool("remember", "Save a short note to your persistent memory.",
                  obj({"content": s}, ["content"]), remember),
@@ -1319,6 +1340,9 @@ class Jobs:
         # 2. both judges (different agents, run concurrently)
         qj = await self._team_agent(swarm, team, QJ)
         mj = await self._team_agent(swarm, team, MJ)
+        author = (await self.agents.get(task.assigned_agent_id)
+                  if task.assigned_agent_id else None)
+        author_caps = author.capabilities if author is not None else None
         attempt = task.attempts + 1
         qkey, mkey = (task.id, attempt, "qj"), (task.id, attempt, "mj")
 
@@ -1329,7 +1353,7 @@ class Jobs:
             model = escalate_model(choose_model(QJ, cfg), cfg, escalation)
             out = await self._json_job(
                 swarm, qj, team, "review_quality", model,
-                prompts.quality_review_prompt(task, task.criteria, files),
+                prompts.quality_review_prompt(task, task.criteria, files, author_caps),
                 lambda o: prompts.parse_quality_review(o, ordinals), task_id=task.id,
                 query=task.name)
             self._partial[qkey] = out
@@ -1342,7 +1366,7 @@ class Jobs:
             out = await self._json_job(
                 swarm, mj, team, "review_mission", model,
                 prompts.mission_review_prompt(task, (task.deliverable or {}).get("summary", ""),
-                                              files),
+                                              files, author_caps),
                 prompts.parse_mission_review, task_id=task.id, query=task.name)
             self._partial[mkey] = out
             return out
@@ -1441,6 +1465,28 @@ class Jobs:
                 detail=f"'{task.name}' needs rework (attempt {attempt} of "
                        f"{cfg.limits.max_attempts_per_task}): {_clip(feedback, 300)}")
             await self.signal("task.rework", team.id, task.id)
+            await self._reassign_if_incapable(swarm, team, task)
+
+    async def _reassign_if_incapable(self, swarm: Swarm, team: Team, task: Task) -> None:
+        """Rework: if the assigned agent lacks a required capability while a capable agent is
+        idle, hand the task over (docs/DESIGN-0.3.md section 11)."""
+        if not task.required_capabilities or not task.assigned_agent_id:
+            return
+        agents = await self.agents.list(swarm.id, team.id)
+        current = next((a for a in agents if a.id == task.assigned_agent_id), None)
+        if current is None or not policy.lacks(current, task):
+            return
+        tasks = await self.tasks.list(team_id=team.id)
+        capable = [a for a in policy.idle_delivery_agents(agents, tasks)
+                   if not policy.lacks(a, task)]
+        if not capable:
+            return
+        new = capable[0]
+        await self.tasks.update(task.id, assigned_agent_id=new.id)
+        await self.events.add(
+            swarm.id, "info", team_id=team.id, task_id=task.id, actor="engine",
+            detail=f"'{task.name}' needs {', '.join(task.required_capabilities)}, which "
+                   f"{current.name} lacks; it was reassigned to {new.name} for the rework.")
 
     async def _learn_from_failure(self, swarm: Swarm, team: Team, task: Task,
                                   feedback: str) -> None:

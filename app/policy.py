@@ -200,6 +200,37 @@ def idle_delivery_agents(team_agents: list[Agent], team_tasks: list[Task]) -> li
                                        a.last_active_at or datetime.min, a.name))
 
 
+def lacks(agent: Agent, task: Task) -> list[str]:
+    """Capabilities the task requires that the agent does not have."""
+    have = set(agent.capabilities)
+    return [c for c in task.required_capabilities if c not in have]
+
+
+def capable_agent_exists(team_agents: list[Agent], task: Task) -> bool:
+    """Does any delivery agent of the team have every capability the task requires?"""
+    return any(a.role == AgentRole.MISSION_DELIVERY.value and not lacks(a, task)
+               for a in team_agents)
+
+
+def can_take(agent: Agent, task: Task, team_agents: list[Agent]) -> bool:
+    """May `agent` commit to `task`? Yes when it has the required capabilities, or (degraded)
+    when no delivery agent of the team has them, so the task is not stuck forever."""
+    return not lacks(agent, task) or not capable_agent_exists(team_agents, task)
+
+
+def idle_agents_for(task: Task, team_agents: list[Agent], team_tasks: list[Task]) -> list[Agent]:
+    """Idle delivery agents (rotation order) that may take `task`."""
+    return [a for a in idle_delivery_agents(team_agents, team_tasks)
+            if can_take(a, task, team_agents)]
+
+
+def pool_for_agent(agent: Agent, team_tasks: list[Task], team_agents: list[Agent]) -> list[Task]:
+    """The tasks as `agent` sees them for the priority rule: Ready tasks it cannot take are
+    left out (they wait for a capable agent, so they do not block the next task)."""
+    return [t for t in team_tasks
+            if t.status != TaskStatus.READY.value or can_take(agent, t, team_agents)]
+
+
 def overdue_in_progress(team_tasks: list[Task], p90_seconds: Optional[float],
                         now: datetime) -> list[Task]:
     """In-Progress tasks committed longer ago than the p90 cycle time."""
@@ -252,10 +283,14 @@ def dor_check(task: Task, team_tasks: list[Task], team_agents: list[Agent],
     """All four commitment-policy rules; `reasons` lists every rule that fails."""
     reasons: list[str] = []
 
-    # Rule 1: a free Mission Delivery agent.
+    # Rule 1: a free Mission Delivery agent with the required capabilities.
     if not idle_delivery_agents(team_agents, team_tasks):
         reasons.append("No Mission Delivery agent on this team is idle and free of "
                        "In-Progress work, so nobody can take the task.")
+    elif not idle_agents_for(task, team_agents, team_tasks):
+        reasons.append(
+            f"No idle Mission Delivery agent has the capabilities task '{task.name}' needs "
+            f"({', '.join(task.required_capabilities)}); it waits for a capable agent.")
 
     # Rule 2: nothing in the team is older than the trailing p90 cycle time.
     for t in overdue_in_progress(team_tasks, p90_seconds, now):

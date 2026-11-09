@@ -32,7 +32,8 @@ def test_available_harnesses_only_found_on_path():
         "codex": {"command": "definitely-not-installed-xyz", "models": [], "env": {}, "args": [], "timeout_seconds": 5},
         "weird": {"command": sys.executable, "models": [], "env": {}, "args": [], "timeout_seconds": 5},
     }
-    assert config.available_harnesses(cfg) == [{"harness": "fake", "models": ["m"]}]
+    assert config.available_harnesses(cfg) == [{"harness": "fake", "models": ["m"],
+                                                  "capabilities": ["edit_files", "run_code"]}]
 
 
 def test_cli_args_from_env_and_flags():

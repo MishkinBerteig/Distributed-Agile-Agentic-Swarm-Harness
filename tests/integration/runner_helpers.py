@@ -138,7 +138,8 @@ async def new_runner(api: httpx.AsyncClient, name: str, admin: Optional[dict] = 
 
 
 async def make_remote_job(h, pool, harness: str = "fake", model: str = "fast",
-                          task_name: str = "Remote task", team=None, artifact: str = "r.md"):
+                          task_name: str = "Remote task", team=None, artifact: str = "r.md",
+                          required: tuple = ()):
     """A swarm with one In-Progress task and a queued remote job for it, built without the
     engine. Returns (job, task). Reuses the swarm of `h` if one exists."""
     try:
@@ -154,6 +155,7 @@ async def make_remote_job(h, pool, harness: str = "fake", model: str = "fast",
     payload = {"system_prompt": "sys", "prompt": "do it",
                "limits": {"timeout_seconds": 1800, "max_files": 200, "max_file_bytes": 2_000_000,
                           "max_total_bytes": 20_000_000},
+               "required_capabilities": list(required),
                "task": {"name": task.name, "artifact": task.artifact}}
     job = await RemoteJobRepo(pool).ensure_active(
         task.swarm_id, team.id, task.id, agent.id, 0, harness, model, payload)

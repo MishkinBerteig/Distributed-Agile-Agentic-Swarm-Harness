@@ -69,6 +69,8 @@ class Scenario:
     work_remember: bool = False          # the work reply also calls remember
     reject_names_containing: str = ""    # prioritize rejects candidates whose name has this
     vision_gaps_first: int = 0           # first N vision reviews answer "gaps" for the first team
+    plan_needs: str = ""                 # capability ("run_code") put in "needs" of planned tasks
+    plan_needs_first: int = 1            # ... on the first N tasks of each plan reply
     defer_prioritize: int = 0            # next N prioritize replies approve nothing ([])
     record_prompts: bool = False         # keep the system and first user prompt in call records
     complexity: str = "simple"           # answer to classification
@@ -418,6 +420,8 @@ class FakeLLM:
                      "check_path": art, "check_arg": "Overview"},
                     {"text": "The content is clear and complete", "check_kind": "rubric"}],
                 "depends_on": [i - 1] if (s.plan_dependencies == "chain" and i > 0) else []})
+            if s.plan_needs and i < s.plan_needs_first:
+                tasks[-1]["needs"] = [s.plan_needs]
         return self._json(request, {"tasks": tasks})
 
     def _answer_prioritize(self, request, messages, user, fresh, rec):

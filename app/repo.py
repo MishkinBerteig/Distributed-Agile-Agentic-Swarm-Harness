@@ -16,7 +16,7 @@ import asyncpg
 from app.models import (
     Agent, AgentCall, AcceptanceCriterion, Feedback, GlobalConfig, Learning, Memory,
     RemoteJob, Runner, Swarm, SwarmConfig, SwarmSnapshot, Task, TaskCreate, TaskEvent,
-    Team, TeamProposal, Verdict,
+    Team, TeamProposal, Verdict, harness_capabilities, required_capabilities,
 )
 
 
@@ -85,10 +85,10 @@ SWARM_COLS = ("id, name, vision_statement, definition_of_done, lifecycle_state, 
 TEAM_COLS = ("id, swarm_id, name, mission_statement, status, creator_kind, creator_team_id, "
              "definition_of_ready, definition_of_done, generation, next_focus, "
              "last_assessed_at, created_at")
-AGENT_COLS = ("id, swarm_id, team_id, role, name, harness, provider, model, state, "
+AGENT_COLS = ("id, swarm_id, team_id, role, name, harness, capabilities, provider, model, state, "
               "current_task_id, tokens_used, calls, errors, created_at, last_active_at")
 TASK_COLS = ("id, swarm_id, team_id, parent_id, name, description, artifact, status, "
-             "priority, complexity, depends_on, assigned_agent_id, attempts, created_by, "
+             "priority, complexity, depends_on, required_capabilities, assigned_agent_id, attempts, created_by, "
              "rejection_reason, feedback, deliverable, created_at, updated_at, approved_at, "
              "committed_at, done_at")
 CRITERION_COLS = ("id, task_id, ordinal, text, check_kind, check_path, check_arg, status, "
@@ -109,7 +109,7 @@ TEAM_UPDATABLE = ("name", "mission_statement", "status", "definition_of_ready",
                   "definition_of_done", "generation", "next_focus", "last_assessed_at")
 TASK_UPDATABLE = ("status", "priority", "complexity", "assigned_agent_id", "attempts",
                   "rejection_reason", "feedback", "deliverable", "approved_at", "committed_at",
-                  "done_at", "name", "description", "artifact")
+                  "done_at", "name", "description", "artifact", "required_capabilities")
 
 
 # ---------------------------------------------------------------------------
@@ -213,11 +213,13 @@ class TeamRepo(_Repo):
 
 class AgentRepo(_Repo):
     async def create(self, swarm_id: str, team_id: Optional[str], role: str, name: str,
-                     model: str, harness: str = "daash", provider: str = "default") -> Agent:
+                     model: str, harness: str = "daash", provider: str = "default",
+                     capabilities: Optional[list[str]] = None) -> Agent:
+        caps = harness_capabilities(harness, capabilities)
         row = await self._pool.fetchrow(
-            f"INSERT INTO agents (id, swarm_id, team_id, role, name, model, harness, provider) "
-            f"VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING {AGENT_COLS}",
-            _uid(), swarm_id, team_id, _val(role), name, model, harness, provider)
+            f"INSERT INTO agents (id, swarm_id, team_id, role, name, model, harness, provider, "
+            f"capabilities) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING {AGENT_COLS}",
+            _uid(), swarm_id, team_id, _val(role), name, model, harness, provider, caps)
         return _to(Agent, row)
 
     async def get(self, agent_id: str) -> Optional[Agent]:
@@ -272,10 +274,11 @@ class TaskRepo(_Repo):
         async with self._pool.acquire() as conn, conn.transaction():
             await conn.execute(
                 "INSERT INTO tasks (id, swarm_id, team_id, parent_id, name, description, artifact, "
-                "depends_on, created_by, embedding) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::vector)",
+                "depends_on, required_capabilities, created_by, embedding) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::vector)",
                 task_id, swarm_id, data.team_id, data.parent_id, data.name, data.description,
-                data.artifact, list(data.depends_on), created_by, _vec_or_none(embedding))
+                data.artifact, list(data.depends_on), required_capabilities(data.required_capabilities),
+                created_by, _vec_or_none(embedding))
             for i, c in enumerate(data.acceptance_criteria, start=1):
                 await conn.execute(
                     "INSERT INTO acceptance_criteria (id, task_id, ordinal, text, check_kind, "
@@ -668,21 +671,24 @@ class RemoteJobRepo(_Repo):
         return int(res.split()[-1])
 
     async def lease_next(self, runner: Runner, harness_models: dict[str, list[str]],
-                         now: datetime, lease_seconds: int = 60) -> Optional[RemoteJob]:
+                         now: datetime, lease_seconds: int = 60,
+                         harness_caps: Optional[dict[str, list[str]]] = None
+                         ) -> Optional[RemoteJob]:
         """Lease the oldest queued job of an ACTIVE swarm that the runner can take.
 
         FOR UPDATE SKIP LOCKED: concurrent runners never wait for, or double-lease, a job."""
         from app.remote import first_match  # local import: keeps repo importable without it
+        harness_caps = harness_caps or {}
         if not harness_models:
             return None
         async with self._pool.acquire() as conn, conn.transaction():
             rows = await conn.fetch(
-                f"SELECT j.id, j.harness, j.model FROM remote_jobs j "
+                f"SELECT j.id, j.harness, j.model, j.payload FROM remote_jobs j "
                 f"JOIN swarms s ON s.id = j.swarm_id "
                 f"WHERE j.status = 'queued' AND s.lifecycle_state = 'ACTIVE' "
                 f"AND j.harness = ANY($1::text[]) ORDER BY j.created_at, j.id "
                 f"FOR UPDATE OF j SKIP LOCKED LIMIT {LEASE_CANDIDATES}", list(harness_models))
-            pick = first_match([dict(r) for r in rows], harness_models)
+            pick = first_match([dict(r) for r in rows], harness_models, harness_caps)
             if pick is None:
                 return None
             row = await conn.fetchrow(

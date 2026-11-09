@@ -718,13 +718,15 @@ async def runner_lease(req: LeaseRequest, runner: Runner = Depends(runner_auth))
     """Long-poll for a matching queued job: 200 {"job"} or 204."""
     repo = RemoteJobRepo(_p())
     caps = R.capability_map(runner.harnesses)
+    offered = R.harness_offered(runner.harnesses)
     deadline = time.monotonic() + req.wait_seconds
     while req.free_slots > 0:
         now = _now()
         await repo.requeue_expired(now)
         active = (await RunnerRepo(_p()).active_job_counts()).get(runner.id, 0)
         if active < runner.max_jobs:
-            job = await repo.lease_next(runner, caps, now, settings.RUNNER_LEASE_SECONDS)
+            job = await repo.lease_next(runner, caps, now, settings.RUNNER_LEASE_SECONDS,
+                                        harness_caps=offered)
             if job is not None:
                 return {"job": _job_for_runner(job)}
         remaining = deadline - time.monotonic()

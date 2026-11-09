@@ -4,6 +4,7 @@
     "openclaude": {
       "command": "openclaude",
       "models": ["instant", "fast", "great", "amazing"],
+      "capabilities": ["edit_files", "run_code"],
       "env": {
         "CLAUDE_CODE_USE_OPENAI": "1",
         "OPENAI_BASE_URL": "http://m3u512gb.tail391a32.ts.net:12345/v1",
@@ -13,6 +14,7 @@
     "claude-code": {
       "command": "claude",
       "models": ["instant", "fast", "great", "amazing"],
+      "capabilities": ["edit_files", "run_code"],
       "env": {
         "ANTHROPIC_BASE_URL": "http://m3u512gb.tail391a32.ts.net:12345",
         "ANTHROPIC_AUTH_TOKEN": "${DAASH_LLM_API_KEY}"
@@ -22,6 +24,7 @@
       "command": "codex",
       "sandbox": "bypass",
       "models": ["instant", "fast", "great", "amazing"],
+      "capabilities": ["edit_files", "run_code"],
       "env": {
         "DAASH_GATEWAY_URL": "http://m3u512gb.tail391a32.ts.net:12345/v1",
         "DAASH_LLM_API_KEY": "${DAASH_LLM_API_KEY}"
@@ -30,6 +33,7 @@
     "fake": {
       "command": "python3",
       "models": [],
+      "capabilities": ["edit_files", "run_code"],
       "env": {}
     }
   }

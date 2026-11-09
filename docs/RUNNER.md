@@ -58,6 +58,13 @@ A 401 at startup exits with code 2; later 401s and coordinator outages are retri
              "args": [], "timeout_seconds": 1800}}}
 ```
 * `models`: models this harness accepts; empty = any. Jobs for other models are not leased.
+* `capabilities`: what this harness can do for a job: `edit_files`, `run_code`, `web_research`. The
+  coordinator only leases a job to a harness entry that offers the job's `required_capabilities` (a task
+  that must run code never goes to an entry without `run_code`). Default when omitted: `edit_files` +
+  `run_code`, except `edit_files` only for a claude-code/openclaude entry whose `permission_mode` is
+  `acceptEdits`, `default` or `plan` (those modes cannot run shell commands unattended) and for codex with
+  `sandbox: "read-only"`. Hello announces it per harness: `{"harness", "models", "capabilities"}`; an old
+  runner that omits it is treated as the harness default.
 * `env`: extra environment; `${NAME}` expands from the runner's own environment (unset becomes empty).
 * `args`: extra CLI arguments inserted before the prompt. `timeout_seconds` caps a job (the job's own
   limit applies if smaller).

@@ -4,6 +4,7 @@
     "fake": {
       "command": "python3",
       "models": [],
+      "capabilities": ["edit_files", "run_code"],
       "env": {}
     }
   }

@@ -404,14 +404,52 @@ class PlannedTask:
     artifact: str
     criteria: list[models.CriterionCreate]
     depends_on: list[int] = field(default_factory=list)  # 0-based indexes of earlier planned tasks
+    needs: list[str] = field(default_factory=list)       # required capabilities beyond edit_files
+
+
+_CAP_DESCRIPTIONS = {
+    "edit_files": "create and edit workspace files",
+    "run_code": "run shell commands, scripts and tests",
+    "web_research": "search and fetch the web",
+}
+
+
+def capabilities_line(caps: Iterable[str]) -> str:
+    """'Your capabilities: ...; you cannot ...' (docs/DESIGN-0.3.md section 11)."""
+    have = [c for c in models.CAPABILITY_NAMES if c in set(caps)]
+    lack = [c for c in models.CAPABILITY_NAMES if c not in have]
+    s = "Your capabilities: " + (", ".join(f"{c} ({_CAP_DESCRIPTIONS[c]})" for c in have)
+                                 or "none") + "."
+    if lack:
+        s += (" You cannot " + ", ".join(f"{_CAP_DESCRIPTIONS[c]} ({c})" for c in lack)
+              + ". Never claim to have done what you cannot do; if a criterion needs it, say "
+                "plainly what you could not do and verify by reading instead.")
+    return s
+
+
+def team_capabilities_block(agent_caps: Iterable[Iterable[str]]) -> str:
+    """What the team's delivery agents can do, for the planner."""
+    lines = []
+    for i, caps in enumerate(agent_caps, start=1):
+        names = [c for c in models.CAPABILITY_NAMES if c in set(caps)]
+        lines.append(f"- Delivery agent {i}: {', '.join(names) or 'none'}")
+    if not lines:
+        return ""
+    return "\nCapabilities of this team's delivery agents:\n" + "\n".join(lines) + "\n"
 
 
 def plan_prompt(team_name: str, done_tasks: Iterable[Any], open_tasks: Iterable[Any],
                 max_new: int, next_focus: Optional[str], workspace_listing: str,
-                other_teams: Iterable[Any] = ()) -> str:
+                other_teams: Iterable[Any] = (),
+                agent_capabilities: Optional[Iterable[Iterable[str]]] = None) -> str:
     s = (f'Job: plan the next tasks for team "{team_name}" toward its Mission.\n'
          f"Plan 1 to {max_new} NEW tasks. Do not repeat existing work.\n")
     s += scope_block(other_teams)
+    needs_ok = True
+    if agent_capabilities is not None:
+        caps_list = [list(c) for c in agent_capabilities]
+        s += team_capabilities_block(caps_list)
+        needs_ok = any(c in set(cs) for cs in caps_list for c in ("run_code", "web_research"))
     if next_focus and next_focus.strip():
         s += f"Mission Judgement says to focus on: {next_focus.strip()}\n"
     s += (f"\nDone tasks:\n{_task_list(done_tasks)}\n\nOpen tasks:\n{_task_list(open_tasks)}\n\n"
@@ -426,10 +464,17 @@ def plan_prompt(team_name: str, done_tasks: Iterable[Any], open_tasks: Iterable[
           "- json_valid (check_path)\n"
           "- rubric (a judged quality criterion, no check_path needed)\n"
           "depends_on lists the 0-based positions of EARLIER tasks in your list that must be "
-          "done first (usually empty).\n")
+          "done first (usually empty).\n"
+          "needs (optional) lists capabilities beyond editing files: \"run_code\" when a "
+          "criterion needs a command, script or test run as evidence, \"web_research\" when it "
+          "needs the web. Leave it empty otherwise.\n")
+    if not needs_ok:
+        s += ("No delivery agent here can run code or use the web, so leave needs empty and plan "
+              "read-only verification instead (for example, check by reading the files).\n")
     s += (_JSON_ONLY + 'Contract: {"tasks": [{"name": "...", "description": "...", "artifact": '
           '"path/in/workspace.md", "acceptance_criteria": [{"text": "...", "check_kind": '
-          '"file_exists", "check_path": "...", "check_arg": null}], "depends_on": []}]}\n'
+          '"file_exists", "check_path": "...", "check_arg": null}], "depends_on": [], '
+          '"needs": []}]}\n'
           'Example: {"tasks": [{"name": "Write intro", "description": "Draft the introduction", '
           '"artifact": "intro.md", "acceptance_criteria": [{"text": "intro.md exists", '
           '"check_kind": "file_exists", "check_path": "intro.md"}, {"text": "intro.md has at '
@@ -522,7 +567,8 @@ def parse_plan(obj: Any, max_new: int) -> list[PlannedTask]:
             if di not in deps:
                 deps.append(di)
         out.append(PlannedTask(name=name[:255], description=_text(t.get("description")),
-                               artifact=artifact, criteria=crits, depends_on=deps))
+                               artifact=artifact, criteria=crits, depends_on=deps,
+                               needs=models.required_capabilities(t.get("needs"))))
     return out
 
 
@@ -710,11 +756,27 @@ def parse_classification(obj: Any) -> str:
 # Work (tool loop)
 # ---------------------------------------------------------------------------
 
+def _needs_line(task: Any, capabilities: Optional[Iterable[str]]) -> str:
+    """Capability statement for a work prompt ('' when capabilities are not given)."""
+    if capabilities is None:
+        return ""
+    caps = list(capabilities)
+    s = capabilities_line(caps) + "\n"
+    needs = [c for c in (_get(task, "required_capabilities") or []) if c not in caps]
+    if needs:
+        s += (f"This task needs {', '.join(needs)}, which you do not have. Do what you "
+              "can, state clearly in your summary what you could not do, and do not claim it "
+              "was done.\n")
+    return s
+
+
 def work_prompt(task: Any, criteria: Iterable[Any], feedback: Optional[str],
-                workspace_listing: str, pending_proposals: Iterable[Any] = ()) -> str:
+                workspace_listing: str, pending_proposals: Iterable[Any] = (),
+                capabilities: Optional[Iterable[str]] = None) -> str:
     s = ("Job: do this task. Produce the artifact in the shared workspace using your tools "
          "(write_file, append_file, read_file, list_files). Work for real: write the actual "
-         "content, never placeholders.\n\n")
+         "content, never placeholders.\n")
+    s += _needs_line(task, capabilities) + "\n"
     s += f"Task {_get(task, 'id', '')}: {_get(task, 'name', '')}\n"
     if _get(task, "description"):
         s += f"Description: {_get(task, 'description')}\n"
@@ -737,14 +799,16 @@ def work_prompt(task: Any, criteria: Iterable[Any], feedback: Optional[str],
 
 
 def remote_work_prompt(task: Any, criteria: Iterable[Any], feedback: Optional[str],
-                       workspace_listing: str) -> str:
+                       workspace_listing: str,
+                       capabilities: Optional[Iterable[str]] = None) -> str:
     """Prompt for an external agent CLI (docs/DESIGN-0.3.md 6.2). The CLI has its own tools and
     works on a private copy of the swarm workspace, so there is no submit tool: its final message
     is the summary."""
     s = ("Job: do this task. Your current directory is a copy of the shared swarm workspace. "
          "Work only inside it: create or edit files with your own tools, and write the actual "
          "content, never placeholders. You may run code and look things up if your tools allow. "
-         "Do not ask questions; decide and proceed.\n\n")
+         "Do not ask questions; decide and proceed.\n")
+    s += _needs_line(task, capabilities) + "\n"
     s += f"Task {_get(task, 'id', '')}: {_get(task, 'name', '')}\n"
     if _get(task, "description"):
         s += f"Description: {_get(task, 'description')}\n"
@@ -781,8 +845,19 @@ def _files_block(files: dict[str, str]) -> str:
     return "\n".join(f"--- {p} ---\n{_clip(c, _FILE_CLIP)}\n" for p, c in files.items())
 
 
+def _author_line(agent_capabilities: Optional[Iterable[str]]) -> str:
+    if agent_capabilities is None:
+        return ""
+    caps = [c for c in models.CAPABILITY_NAMES if c in set(agent_capabilities)]
+    lack = [c for c in models.CAPABILITY_NAMES if c not in caps]
+    return ("The delivering agent's capabilities: " + (", ".join(caps) or "none")
+            + (f". It could not use: {', '.join(lack)}; reject any claim of having done that "
+               f"(for example running tests) that the files cannot support.\n" if lack else ".\n"))
+
+
 def quality_review_prompt(task: Any, criteria_with_det_results: Iterable[Any],
-                          deliverable_files: dict[str, str]) -> str:
+                          deliverable_files: dict[str, str],
+                          agent_capabilities: Optional[Iterable[str]] = None) -> str:
     lines, rubric = [], []
     for c in criteria_with_det_results:
         kind = _get(c, "check_kind", "rubric")
@@ -798,6 +873,7 @@ def quality_review_prompt(task: Any, criteria_with_det_results: Iterable[Any],
             lines.append(f"{o}. [{kind}: automatically checked, result {str(st).upper()}"
                          + (f" - {ev}" if ev else "") + f"] {_get(c, 'text', '')}")
     s = (f"Job: review the delivered work for this task against the Definition of Done.\n"
+         f"{_author_line(agent_capabilities)}"
          f"{_task_block(task, with_criteria=False)}\n\nCriteria:\n" + ("\n".join(lines) or "(none)")
          + f"\n\nDeliverable files:\n{_files_block(deliverable_files)}\n"
          "Each acceptance criterion is green or red with certainty. Score each RUBRIC criterion "
@@ -874,10 +950,12 @@ class MissionReview:
 
 
 def mission_review_prompt(task: Any, deliverable_summary: str,
-                          deliverable_files: dict[str, str]) -> str:
+                          deliverable_files: dict[str, str],
+                          agent_capabilities: Optional[Iterable[str]] = None) -> str:
     return ("Job: judge whether this delivered work meets the expected value of the task for the "
             "team's Mission and the Vision. Ignore formatting nitpicks (another judge covers "
-            "quality); decide if the work actually advances the Mission.\n\n"
+            "quality); decide if the work actually advances the Mission.\n"
+            f"{_author_line(agent_capabilities)}\n"
             f"{_task_block(task)}\n\nAgent's summary:\n{_clip(deliverable_summary, 2000) or '(none)'}\n\n"
             f"Deliverable files:\n{_files_block(deliverable_files)}\n"
             "confidence is your probability (0 to 1) that the expected value is met. If you "

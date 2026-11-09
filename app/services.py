@@ -13,7 +13,8 @@ from typing import Any, Optional
 import asyncpg
 
 from app.config import Settings
-from app.models import Agent, AgentRole, AgentState, CreatorKind, Swarm, TaskStatus, Team
+from app.models import (Agent, AgentRole, AgentState, CreatorKind, Swarm, TaskStatus, Team,
+                        harness_capabilities)
 from app.prompts import compose_system_prompt, parse_standards, standards_prompt
 from app.repo import (AgentRepo, CallRepo, ConfigRepo, EventRepo, FeedbackRepo, LearningRepo,
                       MemoryRepo, TeamRepo)
@@ -34,6 +35,15 @@ def delivery_spec(cfg, index: int) -> tuple[str, str]:
         spec = cfg.delivery_harnesses[(index - 1) % len(cfg.delivery_harnesses)]
         return spec.harness, spec.provider
     return cfg.allowed_harnesses[0], cfg.allowed_providers[0]
+
+
+def delivery_capabilities(cfg, index: int) -> list[str]:
+    """Capabilities of Delivery-`index`: the HarnessSpec override, else the harness default."""
+    harness, _ = delivery_spec(cfg, index)
+    override = None
+    if cfg.delivery_harnesses:
+        override = cfg.delivery_harnesses[(index - 1) % len(cfg.delivery_harnesses)].capabilities
+    return harness_capabilities(harness, override)
 
 
 # -- workspaces ---------------------------------------------------------------
@@ -70,7 +80,8 @@ async def ensure_coordinator(pool: asyncpg.Pool, swarm: Swarm):
         swarm.id, None, AgentRole.SWARM_COORDINATOR.value,
         ROLE_NAMES[AgentRole.SWARM_COORDINATOR.value],
         model=choose_model(AgentRole.SWARM_COORDINATOR.value, swarm.config),
-        harness=spec.harness, provider=spec.provider)
+        harness=spec.harness, provider=spec.provider,
+        capabilities=harness_capabilities(spec.harness, spec.capabilities))
 
 
 async def ensure_team_agents(pool: asyncpg.Pool, swarm: Swarm, team: Team) -> list:
@@ -80,18 +91,21 @@ async def ensure_team_agents(pool: asyncpg.Pool, swarm: Swarm, team: Team) -> li
     have = {(a.role, a.name) for a in existing}
     cfg = swarm.config
     native = (cfg.allowed_harnesses[0], cfg.allowed_providers[0])
-    wanted: list[tuple[str, str, str, str]] = [
-        (AgentRole.MISSION_JUDGEMENT.value, ROLE_NAMES[AgentRole.MISSION_JUDGEMENT.value], *native),
-        (AgentRole.QUALITY_JUDGEMENT.value, ROLE_NAMES[AgentRole.QUALITY_JUDGEMENT.value], *native),
-    ] + [(AgentRole.MISSION_DELIVERY.value, f"Delivery-{i}", *delivery_spec(cfg, i))
+    wanted: list[tuple[str, str, str, str, Optional[list[str]]]] = [
+        (AgentRole.MISSION_JUDGEMENT.value, ROLE_NAMES[AgentRole.MISSION_JUDGEMENT.value],
+         *native, None),
+        (AgentRole.QUALITY_JUDGEMENT.value, ROLE_NAMES[AgentRole.QUALITY_JUDGEMENT.value],
+         *native, None),
+    ] + [(AgentRole.MISSION_DELIVERY.value, f"Delivery-{i}", *delivery_spec(cfg, i),
+          delivery_capabilities(cfg, i))
          for i in range(1, cfg.delivery_agents_per_team + 1)]
     created = []
-    for role, name, harness, provider in wanted:
+    for role, name, harness, provider, caps in wanted:
         if (role, name) in have:
             continue
         created.append(await agents.create(
             swarm.id, team.id, role, name, model=choose_model(role, cfg),
-            harness=harness, provider=provider))
+            harness=harness, provider=provider, capabilities=caps))
     return existing + created
 
 

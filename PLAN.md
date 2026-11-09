@@ -192,4 +192,6 @@ timeline, artifacts), metrics, activity feed. API docs: http://127.0.0.1:8000/do
   First Garden.
 - **2026-11-08 — post-run fixes**: task budget ignores rejected-before-start tasks; DoR rules may not forbid files.
 - **2026-11-09 — 0.3**: distributed heterogeneous harnesses (runner, OpenClaude/Claude Code/Codex adapters, runner
-  container, auth, remote work in the engine, dashboard), vision review, live-run fixes. Not tagged.
+  container, auth, remote work in the engine, dashboard), vision review, agent capabilities (`edit_files` /
+  `run_code` / `web_research` per harness; capability-aware assignment, rework reassignment and leasing),
+  live-run fixes. Not tagged.

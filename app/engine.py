@@ -130,10 +130,11 @@ def decide(snap: SwarmSnapshot) -> list[Action]:
         # One commit per idle delivery agent per tick, never the same task twice.
         committed: set[str] = set()
         for agent in policy.idle_delivery_agents(agents, tasks):
-            pool = [t for t in tasks if t.id not in committed]
+            pool = policy.pool_for_agent(agent, [t for t in tasks if t.id not in committed],
+                                         agents)
             cand = policy.next_ready_task(pool)
             if cand is None:
-                break
+                continue
             if policy.dor_check(cand, pool, agents, snap.p90_cycle_seconds, snap.now).ok:
                 committed.add(cand.id)
                 emit(Action(kind=ActionKind.COMMIT_TASK, team_id=team.id, task_id=cand.id,

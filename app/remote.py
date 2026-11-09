@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Optional
 
+from app import models
 from app.models import KNOWN_HARNESSES, NATIVE_HARNESS
 
 TOKEN_PREFIX = "daash_rt_"
@@ -84,15 +85,23 @@ def heartbeat_seconds_for(lease_seconds: int) -> float:
 # -- capabilities and lease matching ------------------------------------------------------
 
 def normalize_capabilities(raw: Any) -> list[dict[str, Any]]:
-    """Runner-announced `[{"harness", "models"}]` cleaned up: unknown or native harness names and
-    malformed entries are ignored (not an error), duplicate harnesses merged."""
+    """Runner-announced `[{"harness", "models", "capabilities"}]` cleaned up: unknown or native
+    harness names and malformed entries are ignored (not an error), duplicate harnesses merged.
+    `capabilities` (docs/DESIGN-0.3.md section 11) keeps known values only; missing = the
+    harness default; merged duplicates offer the union."""
     if not isinstance(raw, list):
         return []
     models_by: dict[str, Optional[list[str]]] = {}   # None = any model
+    caps_by: dict[str, list[str]] = {}
     for item in raw:
         if not isinstance(item, dict) or item.get("harness") not in REMOTE_HARNESSES:
             continue
         name = item["harness"]
+        if isinstance(item.get("capabilities"), list):
+            offered = models.normalize_capabilities(item["capabilities"])
+        else:
+            offered = models.harness_capabilities(name)
+        caps_by[name] = models.normalize_capabilities(caps_by.get(name, []) + offered)
         ms = item.get("models")
         ms = [m for m in ms if isinstance(m, str) and m] if isinstance(ms, list) else []
         if not ms or (name in models_by and models_by[name] is None):
@@ -100,7 +109,8 @@ def normalize_capabilities(raw: Any) -> list[dict[str, Any]]:
         else:
             cur = models_by.setdefault(name, [])
             cur.extend(m for m in ms if m not in cur)
-    return [{"harness": h, "models": ms or []} for h, ms in models_by.items()]
+    return [{"harness": h, "models": ms or [], "capabilities": caps_by.get(h, [])}
+            for h, ms in models_by.items()]
 
 
 def capability_map(capabilities: Iterable[dict[str, Any]]) -> dict[str, list[str]]:
@@ -109,18 +119,43 @@ def capability_map(capabilities: Iterable[dict[str, Any]]) -> dict[str, list[str
             if isinstance(c, dict) and c.get("harness")}
 
 
-def job_matches(job_harness: str, job_model: str, caps: dict[str, list[str]]) -> bool:
-    """A runner can take a job if it offers the harness and (offers any model or this one)."""
+def harness_offered(capabilities: Iterable[dict[str, Any]]) -> dict[str, list[str]]:
+    """harness -> capabilities the runner offers (missing = the harness default)."""
+    out: dict[str, list[str]] = {}
+    for c in capabilities:
+        if isinstance(c, dict) and c.get("harness"):
+            caps = c.get("capabilities")
+            out[c["harness"]] = (models.normalize_capabilities(caps) if isinstance(caps, list)
+                                 else models.harness_capabilities(c["harness"]))
+    return out
+
+
+def job_matches(job_harness: str, job_model: str, caps: dict[str, list[str]],
+                required: Iterable[str] = (),
+                offered: Optional[dict[str, list[str]]] = None) -> bool:
+    """A runner can take a job if it offers the harness and (offers any model or this one) and,
+    when `offered` is given, the harness entry covers the job's required capabilities."""
     if job_harness not in caps:
         return False
-    models = caps[job_harness]
-    return not models or job_model in models
+    ms = caps[job_harness]
+    if ms and job_model not in ms:
+        return False
+    need = set(models.required_capabilities(list(required)))
+    if need:
+        have = (offered or {}).get(job_harness)
+        if have is None:
+            have = models.harness_capabilities(job_harness)
+        return need <= set(have)
+    return True
 
 
-def first_match(jobs: Iterable[Any], caps: dict[str, list[str]]) -> Optional[Any]:
+def first_match(jobs: Iterable[Any], caps: dict[str, list[str]],
+                offered: Optional[dict[str, list[str]]] = None) -> Optional[Any]:
     """The first job (callers pass them oldest first) a runner with `caps` can take."""
     for j in jobs:
-        if job_matches(_attr(j, "harness"), _attr(j, "model"), caps):
+        payload = _attr(j, "payload") if (isinstance(j, dict) and "payload" in j) else {}
+        req = (payload or {}).get("required_capabilities", []) if isinstance(payload, dict) else []
+        if job_matches(_attr(j, "harness"), _attr(j, "model"), caps, req, offered):
             return j
     return None
 

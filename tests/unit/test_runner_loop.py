@@ -166,7 +166,8 @@ def test_one_job_end_to_end(stub, tmp_path):
     assert res["usage"]["total_tokens"] > 0
     hello = stub.hellos[0]
     assert hello["host"] == "testhost" and hello["max_jobs"] == 1
-    assert hello["harnesses"] == [{"harness": "fake", "models": []}]
+    assert hello["harnesses"] == [{"harness": "fake", "models": [],
+                                   "capabilities": ["edit_files", "run_code"]}]
     # the job folder is kept, with the extracted workspace and logs
     assert (tmp_path / "work" / "jobs" / "j1" / "ws" / "README.md").exists()
     assert (tmp_path / "work" / "jobs" / "j1" / "stdout.log").exists()

@@ -57,6 +57,29 @@ def load_config(path: str | None, environ: Mapping[str, str] | None = None) -> d
     return cfg
 
 
+CAPABILITIES = ("edit_files", "run_code", "web_research")
+
+
+def default_capabilities(name: str, h: Mapping[str, Any]) -> list[str]:
+    """What a harness entry can do when `capabilities` is not set: edit_files + run_code, except
+    where the CLI is configured so it cannot run commands unattended (docs/DESIGN-0.3.md 11)."""
+    if name in ("claude-code", "openclaude") and h.get("permission_mode") in (
+            "acceptEdits", "default", "plan"):
+        return ["edit_files"]
+    if name == "codex" and h.get("sandbox") == "read-only":
+        return ["edit_files"]
+    return ["edit_files", "run_code"]
+
+
+def capabilities_of(name: str, h: Mapping[str, Any]) -> list[str]:
+    """The entry's `capabilities` (known names only, vocabulary order) or the default."""
+    raw = h.get("capabilities")
+    if isinstance(raw, list):
+        have = {str(c).strip().lower() for c in raw}
+        return [c for c in CAPABILITIES if c in have]
+    return default_capabilities(name, h)
+
+
 def available_harnesses(cfg: dict) -> list[dict]:
     """Harnesses announced in hello: known names whose command is on PATH."""
     found = []
@@ -64,5 +87,6 @@ def available_harnesses(cfg: dict) -> list[dict]:
         if name not in KNOWN_HARNESSES:
             continue
         if shutil.which(h["command"]):
-            found.append({"harness": name, "models": list(h["models"])})
+            found.append({"harness": name, "models": list(h["models"]),
+                          "capabilities": capabilities_of(name, h)})
     return found

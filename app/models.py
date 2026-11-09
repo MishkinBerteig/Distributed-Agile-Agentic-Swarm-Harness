@@ -171,10 +171,51 @@ NATIVE_HARNESS = "daash"
 KNOWN_HARNESSES: tuple[str, ...] = ("daash", "openclaude", "claude-code", "codex", "fake")
 
 
+#: What an agent can do (docs/DESIGN-0.3.md section 11). `edit_files` is implied for every task.
+class Capability(str, Enum):
+    EDIT_FILES = "edit_files"      # create / modify workspace files
+    RUN_CODE = "run_code"          # execute shell commands, scripts and tests
+    WEB_RESEARCH = "web_research"  # search / fetch the web
+
+
+CAPABILITY_NAMES: tuple[str, ...] = tuple(c.value for c in Capability)
+
+#: Default capabilities per harness; HarnessSpec.capabilities overrides one delivery slot.
+HARNESS_CAPABILITIES: dict[str, list[str]] = {
+    "daash": ["edit_files"],
+    "openclaude": ["edit_files", "run_code"],
+    "claude-code": ["edit_files", "run_code"],
+    "codex": ["edit_files", "run_code"],
+    "fake": ["edit_files", "run_code"],
+}
+
+
+def normalize_capabilities(raw: Any) -> list[str]:
+    """Known capability names only, de-duplicated, in vocabulary order; anything else dropped."""
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple, set)):
+        return []
+    have = {str(x).strip().lower() for x in raw}
+    return [c for c in CAPABILITY_NAMES if c in have]
+
+
+def harness_capabilities(harness: str, override: Optional[list[str]] = None) -> list[str]:
+    if override is not None:
+        return normalize_capabilities(override)
+    return list(HARNESS_CAPABILITIES.get(harness, ["edit_files"]))
+
+
+def required_capabilities(raw: Any) -> list[str]:
+    """Capabilities a task needs: known values only; `edit_files` is implied, so not stored."""
+    return [c for c in normalize_capabilities(raw) if c != Capability.EDIT_FILES.value]
+
+
 class HarnessSpec(BaseModel):
     harness: str = "daash"      # "daash" = native OpenAI-compatible tool loop (see KNOWN_HARNESSES)
     provider: str = "default"   # the endpoint configured by DAASH_LLM_ENDPOINT
     model: str = "amazing"      # "" = use routing (the ladder) for delivery_harnesses entries
+    capabilities: Optional[list[str]] = None   # None = the harness default (HARNESS_CAPABILITIES)
 
 
 class RoleModels(BaseModel):
@@ -274,6 +315,7 @@ class Agent(BaseModel):
     role: str
     name: str                       # e.g. "Delivery-1"
     harness: str = "daash"
+    capabilities: list[str] = Field(default_factory=list)   # see Capability
     provider: str = "default"
     model: str                      # base model for this role
     state: str = AgentState.IDLE.value
@@ -348,6 +390,7 @@ class Task(BaseModel):
     priority: Optional[int] = None  # lower = higher priority; set by Mission Judgement
     complexity: Optional[str] = None
     depends_on: list[str] = Field(default_factory=list)  # task ids that must be Done first
+    required_capabilities: list[str] = Field(default_factory=list)  # beyond edit_files
     assigned_agent_id: Optional[str] = None
     attempts: int = 0               # completed work attempts (each review or failed loop)
     created_by: str = "user"        # agent id or "user"
@@ -540,6 +583,7 @@ class TaskCreate(BaseModel):
     artifact: str = ""
     parent_id: Optional[str] = None
     depends_on: list[str] = Field(default_factory=list)
+    required_capabilities: list[str] = Field(default_factory=list)
     acceptance_criteria: list[CriterionCreate] = Field(default_factory=list)
 
 

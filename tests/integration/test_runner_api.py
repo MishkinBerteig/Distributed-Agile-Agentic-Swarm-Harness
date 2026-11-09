@@ -153,8 +153,9 @@ async def test_hello_stores_capabilities(api):
                         "heartbeat_seconds": 15, "lease_seconds": 60}
     (listed,) = (await api.get("/runners")).json()["runners"]
     assert listed["host"] == "mini" and listed["version"] == "0.3" and listed["max_jobs"] == 2
-    assert listed["harnesses"] == [{"harness": "codex", "models": ["fast"]},
-                                   {"harness": "fake", "models": []}]
+    both = ["edit_files", "run_code"]
+    assert listed["harnesses"] == [{"harness": "codex", "models": ["fast"], "capabilities": both},
+                                   {"harness": "fake", "models": [], "capabilities": both}]
     assert listed["online"] is True and listed["last_seen_at"]
     bad = await api.post("/runner/hello", headers=bearer(token), json={"max_jobs": 0})
     assert bad.status_code == 422
