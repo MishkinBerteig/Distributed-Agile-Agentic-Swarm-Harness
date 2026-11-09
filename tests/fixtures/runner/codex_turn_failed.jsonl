@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"t"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Model metadata for `fast` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."}}
+{"type":"turn.started"}
+{"type":"error","message":"{\"error\":{\"code\":\"invalid_request_error\",\"message\":\"only function tools are supported, not 'web_search'\",\"type\":\"invalid_request_error\"}}"}
+{"type":"turn.failed","error":{"message":"{\"error\":{\"code\":\"invalid_request_error\",\"message\":\"only function tools are supported, not 'web_search'\",\"type\":\"invalid_request_error\"}}"}}

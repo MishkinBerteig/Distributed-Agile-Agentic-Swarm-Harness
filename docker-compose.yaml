@@ -112,6 +112,26 @@ services:
     networks:
       - frontend
 
+  # DAASH runner (docs/DESIGN-0.3.md section 7, docs/RUNNER.md): runs the external agent CLIs
+  # (OpenClaude, Claude Code, Codex) inside this container so agent-executed code stays off the host.
+  # Not started by default: `docker compose --profile runner up --build -d runner`.
+  # Needs DAASH_RUNNER_BOOTSTRAP_TOKEN set for the coordinator too (the same value) and DAASH_LLM_API_KEY.
+  runner:
+    profiles: ["runner"]
+    build:
+      context: .
+      dockerfile: Dockerfile.runner
+    restart: unless-stopped
+    environment:
+      - DAASH_COORDINATOR_URL=http://coordinator:8000
+      - DAASH_RUNNER_TOKEN=${DAASH_RUNNER_BOOTSTRAP_TOKEN:-}
+      - DAASH_LLM_API_KEY=${DAASH_LLM_API_KEY:-}
+      - DAASH_RUNNER_MAX_JOBS=${DAASH_RUNNER_MAX_JOBS:-2}
+    volumes:
+      - runner-work:/work
+    networks:
+      - frontend
+
   # Unit tests: `docker compose --profile test run --rm --build test`.
   # Fast and isolated: no database, Redis or network (docs/DESIGN-0.1.md §11).
   # Integration tests have their own service (`integration`); e2e: scripts/e2e.sh.
@@ -155,3 +175,4 @@ volumes:
   pg-data:
   daash-workspaces:
   dashboard-node-modules:
+  runner-work:

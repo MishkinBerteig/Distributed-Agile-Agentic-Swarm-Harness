@@ -1,0 +1,36 @@
+{
+  "name": "docker-runner",
+  "harnesses": {
+    "openclaude": {
+      "command": "openclaude",
+      "models": ["instant", "fast", "great", "amazing"],
+      "env": {
+        "CLAUDE_CODE_USE_OPENAI": "1",
+        "OPENAI_BASE_URL": "http://m3u512gb.tail391a32.ts.net:12345/v1",
+        "OPENAI_API_KEY": "${DAASH_LLM_API_KEY}"
+      }
+    },
+    "claude-code": {
+      "command": "claude",
+      "models": ["instant", "fast", "great", "amazing"],
+      "env": {
+        "ANTHROPIC_BASE_URL": "http://m3u512gb.tail391a32.ts.net:12345",
+        "ANTHROPIC_AUTH_TOKEN": "${DAASH_LLM_API_KEY}"
+      }
+    },
+    "codex": {
+      "command": "codex",
+      "sandbox": "bypass",
+      "models": ["instant", "fast", "great", "amazing"],
+      "env": {
+        "DAASH_GATEWAY_URL": "http://m3u512gb.tail391a32.ts.net:12345/v1",
+        "DAASH_LLM_API_KEY": "${DAASH_LLM_API_KEY}"
+      }
+    },
+    "fake": {
+      "command": "python3",
+      "models": [],
+      "env": {}
+    }
+  }
+}

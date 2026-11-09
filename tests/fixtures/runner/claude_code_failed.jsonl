@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","cwd":"/work/s1","session_id":"s","tools":[],"mcp_servers":[],"model":"fast","permissionMode":"bypassPermissions"}
+{"type":"result","subtype":"error_max_turns","is_error":true,"api_error_status":null,"result":"","num_turns":50,"total_cost_usd":0.4,"usage":{"input_tokens":9000,"output_tokens":800,"cache_creation_input_tokens":0,"cache_read_input_tokens":1000},"terminal_reason":"max_turns","session_id":"s"}

@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"t"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_1","type":"reasoning","text":"thinking"}}
+{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":5}}

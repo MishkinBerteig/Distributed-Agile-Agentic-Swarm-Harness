@@ -1,0 +1,121 @@
+"""Job workspace handling: safe tar extraction, snapshots, change detection, result files."""
+from __future__ import annotations
+
+import base64
+import hashlib
+import os
+import tarfile
+from typing import Iterable
+
+IGNORED_DIRS = (".git", ".claude", ".codex", ".openclaude", "node_modules", ".daash")
+MAX_EXTRACT_BYTES = 500 * 1024 * 1024
+
+
+class UnsafeArchive(Exception):
+    pass
+
+
+class LimitExceeded(Exception):
+    pass
+
+
+def _check_name(name: str) -> str:
+    if not name or "\x00" in name:
+        raise UnsafeArchive(f"bad member name {name!r}")
+    if name.startswith("/") or name.startswith("\\") or (len(name) > 1 and name[1] == ":"):
+        raise UnsafeArchive(f"absolute path in archive: {name}")
+    parts = name.replace("\\", "/").split("/")
+    if ".." in parts:
+        raise UnsafeArchive(f"'..' in archive path: {name}")
+    clean = "/".join(p for p in parts if p not in ("", "."))
+    return clean
+
+
+def safe_extract(tar_path: str, dest: str, max_bytes: int = MAX_EXTRACT_BYTES) -> int:
+    """Extract a tar(.gz) into dest accepting only regular files and directories.
+
+    Rejects absolute paths, '..', symlinks, hardlinks and devices. Returns the file count.
+    """
+    os.makedirs(dest, exist_ok=True)
+    root = os.path.realpath(dest)
+    count = 0
+    total = 0
+    with tarfile.open(tar_path, "r:*") as tf:
+        for m in tf:
+            name = _check_name(m.name)
+            if m.issym() or m.islnk():
+                raise UnsafeArchive(f"link in archive: {m.name}")
+            if not (m.isfile() or m.isdir()):
+                raise UnsafeArchive(f"special file in archive: {m.name}")
+            if not name:
+                continue
+            target = os.path.realpath(os.path.join(root, name))
+            if target != root and not target.startswith(root + os.sep):
+                raise UnsafeArchive(f"path escapes workspace: {m.name}")
+            if m.isdir():
+                os.makedirs(target, exist_ok=True)
+                continue
+            total += m.size
+            if total > max_bytes:
+                raise UnsafeArchive("archive too large")
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            src = tf.extractfile(m)
+            assert src is not None
+            with open(target, "wb") as out:
+                while True:
+                    chunk = src.read(1 << 20)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+            count += 1
+    return count
+
+
+def _walk(root: str) -> Iterable[str]:
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in IGNORED_DIRS]
+        for fn in filenames:
+            full = os.path.join(dirpath, fn)
+            if os.path.islink(full) or not os.path.isfile(full):
+                continue
+            yield os.path.relpath(full, root).replace(os.sep, "/")
+
+
+def _sha(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def snapshot(root: str) -> dict[str, str]:
+    """path (posix, relative) -> sha256 of every regular file, skipping CLI state folders."""
+    return {rel: _sha(os.path.join(root, rel)) for rel in _walk(root)}
+
+
+def diff(before: dict[str, str], after: dict[str, str]) -> tuple[list[str], list[str]]:
+    """(changed_or_new, deleted), both sorted."""
+    changed = sorted(p for p, h in after.items() if before.get(p) != h)
+    deleted = sorted(p for p in before if p not in after)
+    return changed, deleted
+
+
+def encode_files(root: str, paths: list[str], limits: dict) -> list[dict]:
+    """Base64-encode files for the result upload, enforcing the job limits (LimitExceeded)."""
+    max_files = int(limits.get("max_files", 200))
+    max_file = int(limits.get("max_file_bytes", 2_000_000))
+    max_total = int(limits.get("max_total_bytes", 20_000_000))
+    if len(paths) > max_files:
+        raise LimitExceeded(f"the agent changed {len(paths)} files; the limit is {max_files}")
+    out, total = [], 0
+    for rel in paths:
+        size = os.path.getsize(os.path.join(root, rel))
+        if size > max_file:
+            raise LimitExceeded(f"{rel} is {size} bytes; the per-file limit is {max_file}")
+        total += size
+        if total > max_total:
+            raise LimitExceeded(f"changed files total over {max_total} bytes")
+        with open(os.path.join(root, rel), "rb") as fh:
+            out.append({"path": rel, "content_b64": base64.b64encode(fh.read()).decode("ascii")})
+    return out

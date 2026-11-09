@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","cwd":"/work/s1","session_id":"s","tools":[],"mcp_servers":[],"model":"fast","permissionMode":"bypassPermissions"}
+{"type":"system","subtype":"api_retry","attempt":1,"max_retries":10,"retry_delay_ms":508,"error_status":401,"error":"authentication_failed","session_id":"s"}
+{"type":"assistant","message":{"model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"API Error: 401 authentication_failed"}],"usage":{"input_tokens":0,"output_tokens":0}}}
+{"type":"result","subtype":"success","is_error":true,"api_error_status":401,"result":"API Error: 401 authentication_failed","stop_reason":"stop_sequence","total_cost_usd":0,"usage":{"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"terminal_reason":"api_error","session_id":"s"}

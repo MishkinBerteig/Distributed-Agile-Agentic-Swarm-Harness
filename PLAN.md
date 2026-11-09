@@ -21,7 +21,7 @@ human-readable task database with p90 cycle time, error rates and team failure r
   `great`, `amazing`; reasoning models with tool calling), reached at `m3u512gb.tail391a32.ts.net:12345`
   because `m3u512gb.local` (mDNS) does not resolve inside containers. Key lives in the gitignored `.env`.
 - **Harness**: native `daash` harness (OpenAI-compatible tool-calling loop in `app/llm.py`). External CLI harnesses
-  (OpenClaude, Claude Code, Codex…) via the host runner (`app/runner.py`) are deferred to after 0.1.
+  (OpenClaude, Claude Code, Codex…) via the pull-based runner (`daash_runner/`) are deferred to after 0.1.
 - **DAASHboard**: Vite + React.
 
 ## 3. Architecture
@@ -87,7 +87,7 @@ Design: docs/DESIGN-0.2.md. (`v0.1` is tagged at f1e5526.)
 
 ### After 0.2 (in priority order)
 1. **Distributed, heterogeneous harnesses**: external CLI agents (OpenClaude, Claude Code, Codex) on any device
-   through the host runner (`app/runner.py`), plus authentication. These harnesses bring their own code execution
+   through the pull-based runner (`daash_runner/`), plus authentication. These harnesses bring their own code execution
    and web research, so this item largely covers items 2 and 3.
 2. Sandboxed code execution for the native harness (learning mechanism 2: run agent-written automation scripts;
    test-based deterministic checks).
@@ -124,7 +124,7 @@ timeline, artifacts), metrics, activity feed. API docs: http://127.0.0.1:8000/do
 `models.py` contract · `policy.py` / `routing.py` / `metrics.py` pure rules · `checks.py` deterministic criteria ·
 `llm.py` + `tools.py` native harness · `prompts.py` prompt hierarchy + parsers · `repo.py` data access ·
 `services.py` shared team/agent/prompt/accounting helpers · `engine.py` (`decide()` + loop) and `jobs.py` ·
-`main.py` + `api_helpers.py` API · `bus.py` Decision Bus · `embeddings.py` · `runner.py` (experimental, unwired).
+`main.py` + `api_helpers.py` API · `bus.py` Decision Bus · `embeddings.py` · `daash_runner/` (stdlib pull runner for external CLI harnesses; 0.3).
 
 ### Defaults worth knowing
 - Role models: coordinator `amazing`, judges `great`, delivery `fast` (escalates up `instant→fast→great→amazing`

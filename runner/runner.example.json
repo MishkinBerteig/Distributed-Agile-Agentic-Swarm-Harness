@@ -1,0 +1,37 @@
+{
+  "name": "my-device",
+  "harnesses": {
+    "openclaude": {
+      "command": "openclaude",
+      "models": ["instant", "fast", "great", "amazing"],
+      "permission_mode": "acceptEdits",
+      "env": {
+        "CLAUDE_CODE_USE_OPENAI": "1",
+        "OPENAI_BASE_URL": "http://m3u512gb.tail391a32.ts.net:12345/v1",
+        "OPENAI_API_KEY": "${DAASH_LLM_API_KEY}"
+      },
+      "timeout_seconds": 1800
+    },
+    "claude-code": {
+      "command": "claude",
+      "models": ["instant", "fast", "great", "amazing"],
+      "permission_mode": "acceptEdits",
+      "small_model": "instant",
+      "env": {
+        "ANTHROPIC_BASE_URL": "http://m3u512gb.tail391a32.ts.net:12345",
+        "ANTHROPIC_AUTH_TOKEN": "${DAASH_LLM_API_KEY}"
+      },
+      "timeout_seconds": 1800
+    },
+    "codex": {
+      "command": "codex",
+      "models": ["instant", "fast", "great", "amazing"],
+      "sandbox": "workspace-write",
+      "env": {
+        "DAASH_GATEWAY_URL": "http://m3u512gb.tail391a32.ts.net:12345/v1",
+        "DAASH_LLM_API_KEY": "${DAASH_LLM_API_KEY}"
+      },
+      "timeout_seconds": 1800
+    }
+  }
+}
