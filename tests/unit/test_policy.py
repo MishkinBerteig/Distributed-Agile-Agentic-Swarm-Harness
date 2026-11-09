@@ -467,3 +467,11 @@ def test_too_many_rejections_still_exhaust_the_budget():
     assert policy.task_budget_used(tasks) == 0
     assert policy.task_budget_left(tasks, 3) == 0          # runaway guard
     assert policy.task_budget_left(tasks, 4) == 4
+
+
+def test_idle_delivery_agents_least_recently_active_first():
+    a1, a2, a3 = mk_agent("a1"), mk_agent("a2"), mk_agent("a3")
+    a1 = a1.model_copy(update={"name": "Delivery-1", "last_active_at": T0 + timedelta(minutes=5)})
+    a2 = a2.model_copy(update={"name": "Delivery-2", "last_active_at": T0})
+    a3 = a3.model_copy(update={"name": "Delivery-3", "last_active_at": None})
+    assert [a.id for a in policy.idle_delivery_agents([a1, a2, a3], [])] == ["a3", "a2", "a1"]

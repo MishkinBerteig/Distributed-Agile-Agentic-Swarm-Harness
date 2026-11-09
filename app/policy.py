@@ -186,14 +186,18 @@ def work_in_flight(team_id: str, teams: list, tasks: list[Task]) -> bool:
 
 
 def idle_delivery_agents(team_agents: list[Agent], team_tasks: list[Task]) -> list[Agent]:
-    """Delivery agents that are idle and own no In-Progress/Review task."""
+    """Delivery agents that are idle and own no In-Progress/Review task, least recently active
+    first (never-active agents first, then by name), so work rotates across a team's agents and
+    therefore across its harnesses instead of always going to Delivery-1."""
     busy_ids = {t.assigned_agent_id for t in team_tasks
                 if t.assigned_agent_id
                 and t.status in (TaskStatus.IN_PROGRESS.value, TaskStatus.REVIEW.value)}
-    return [a for a in team_agents
+    idle = [a for a in team_agents
             if a.role == AgentRole.MISSION_DELIVERY.value
             and a.state == AgentState.IDLE.value
             and a.id not in busy_ids]
+    return sorted(idle, key=lambda a: (a.last_active_at is not None,
+                                       a.last_active_at or datetime.min, a.name))
 
 
 def overdue_in_progress(team_tasks: list[Task], p90_seconds: Optional[float],
