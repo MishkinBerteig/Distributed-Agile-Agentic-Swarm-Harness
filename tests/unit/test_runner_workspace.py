@@ -104,3 +104,12 @@ def test_encode_limits(tmp_path):
     with pytest.raises(workspace.LimitExceeded, match="total"):
         workspace.encode_files(str(tmp_path), names, {"max_total_bytes": 25})
     assert len(workspace.encode_files(str(tmp_path), names, {"max_total_bytes": 30})) == 3
+
+
+def test_snapshot_ignores_generated_python_caches(tmp_path):
+    from daash_runner.workspace import snapshot
+    (tmp_path / "__pycache__").mkdir()
+    (tmp_path / "__pycache__" / "m.cpython-311.pyc").write_bytes(b"\x00")
+    (tmp_path / "stray.pyc").write_bytes(b"\x00")
+    (tmp_path / "m.py").write_text("x = 1\n")
+    assert set(snapshot(str(tmp_path))) == {"m.py"}

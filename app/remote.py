@@ -33,6 +33,19 @@ PROMPT_LISTING_CLIP = 2000
 STAGING_DIR = ".daash/staging"
 #: Folders an agent CLI keeps its own state in; never part of a deliverable.
 CLI_STATE_DIRS = (".git", ".claude", ".codex", ".openclaude", "node_modules")
+#: Generated files an agent's tooling leaves behind (running Python, tests, editors). They are
+#: dropped from results silently: never deliverables, and binary caches must not reach prompts.
+GENERATED_DIRS = ("__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".venv", "venv",
+                  ".tox", ".ipynb_checkpoints")
+GENERATED_SUFFIXES = (".pyc", ".pyo")
+GENERATED_NAMES = (".DS_Store",)
+
+
+def is_generated(rel: str) -> bool:
+    """True for build/cache junk (see GENERATED_*) that is never a deliverable."""
+    parts = rel.split("/")
+    return (any(p in GENERATED_DIRS for p in parts) or parts[-1] in GENERATED_NAMES
+            or parts[-1].endswith(GENERATED_SUFFIXES))
 OUTCOMES = ("submitted", "failed", "error")
 #: Remote harness names a runner may offer (the native one never goes through a runner).
 REMOTE_HARNESSES = tuple(h for h in KNOWN_HARNESSES if h != NATIVE_HARNESS)
@@ -190,6 +203,8 @@ def validate_result(body: Any, max_files: int = MAX_FILES, max_file_bytes: int =
         if not isinstance(item, dict):
             raise ResultError("each file must be an object with path and content_b64")
         rel = validate_rel_path(item.get("path"))
+        if is_generated(rel):
+            continue
         if rel in seen:
             raise ResultError(f"path {rel!r} appears twice")
         seen.add(rel)
@@ -209,7 +224,7 @@ def validate_result(body: Any, max_files: int = MAX_FILES, max_file_bytes: int =
     deleted = []
     for d in deleted_in:
         rel = validate_rel_path(d)
-        if rel not in deleted:
+        if rel not in deleted and not is_generated(rel):
             deleted.append(rel)
     usage_in = body.get("usage") if isinstance(body.get("usage"), dict) else {}
     usage = {k: _int(usage_in.get(k)) for k in ("prompt_tokens", "completion_tokens", "total_tokens")}

@@ -195,9 +195,13 @@ def read_deliverable_files(root: Path, paths: Iterable[str],
             p = safe_path(root, rel)
             if not p.is_file():
                 continue
-            text = p.read_text(encoding="utf-8", errors="replace")
+            data = p.read_bytes()
         except (ToolError, OSError):
             continue
+        if b"\x00" in data[:8192]:   # binary (e.g. a compiled .pyc): PostgreSQL text rejects NUL
+            out[rel] = f"[binary file, {len(data)} bytes; not shown]"
+            continue
+        text = data.decode("utf-8", errors="replace").replace("\x00", "")
         if len(text) > limit:
             text = text[:limit] + f"\n... [truncated, {len(text) - limit} more characters]"
         out[rel] = text

@@ -239,3 +239,18 @@ def test_lease_seconds_setting_and_heartbeat_follow():
     assert remote.heartbeat_seconds_for(60) == 15            # default heartbeat unchanged
     assert remote.heartbeat_seconds_for(5) < 5               # always inside the lease
     assert remote.heartbeat_seconds_for(0) == 0.5
+
+
+def test_generated_files_are_dropped_from_results_silently():
+    import base64
+    from app.remote import is_generated, validate_result
+    assert is_generated("__pycache__/tempconv.cpython-311.pyc")
+    assert is_generated("pkg/.pytest_cache/v/cache/nodeids") and is_generated(".DS_Store")
+    assert not is_generated("tempconv.py") and not is_generated("docs/pycache.md")
+    body = {"outcome": "submitted", "summary": "ok", "files": [
+        {"path": "tempconv.py", "content_b64": base64.b64encode(b"x = 1\n").decode()},
+        {"path": "__pycache__/tempconv.cpython-311.pyc",
+         "content_b64": base64.b64encode(b"\x00\x01binary").decode()}],
+        "deleted": ["__pycache__/old.pyc"]}
+    v = validate_result(body)
+    assert [rel for rel, _ in v.files] == ["tempconv.py"] and v.deleted == []

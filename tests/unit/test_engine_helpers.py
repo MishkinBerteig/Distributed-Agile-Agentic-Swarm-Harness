@@ -150,3 +150,11 @@ def test_combine_feedback_includes_failures():
                             ["a.md exists (missing)"])
     assert "Rubric criterion 1" in text and "too short" in text and "fine" not in text
     assert "Add a conclusion" in text and "Check failed" in text
+
+
+def test_binary_deliverables_are_never_inlined(tmp_path):
+    (tmp_path / "a.pyc").write_bytes(b"\x00\x01\x02binary")
+    (tmp_path / "ok.md").write_text("hello")
+    out = read_deliverable_files(tmp_path, ["a.pyc", "ok.md"])
+    assert out["a.pyc"].startswith("[binary file, ") and "\x00" not in out["a.pyc"]
+    assert out["ok.md"] == "hello"
