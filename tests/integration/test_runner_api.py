@@ -94,6 +94,16 @@ async def test_auth_on_admin_endpoints_need_bearer(api, settings):
     assert created.status_code == 201
 
 
+async def test_online_help_is_open_even_with_auth_on(api, settings):
+    """DAASHboard opens the help in a new tab, which cannot send the bearer token; the page
+    holds sample data only."""
+    settings.API_TOKEN = ADMIN
+    r = await api.get("/help/prompts")
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/html")
+    assert "<title>DAASH Agent Prompts</title>" in r.text and "How DAASH prompts its agents" in r.text
+    assert (await api.get("/swarms")).status_code == 401    # auth is really on
+
+
 async def test_runner_endpoints_use_runner_tokens_not_admin_token(api, settings):
     settings.API_TOKEN = ADMIN
     _, token = await new_runner(api, "r1", admin=AUTH)

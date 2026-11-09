@@ -110,7 +110,13 @@ Design: docs/DESIGN-0.3.md. Runner guide: docs/RUNNER.md.
 - [x] Command checks (§12): `command` acceptance criteria (e.g. `python3 -m unittest`) run by the runner after
   the agent finishes; exit 0 = green, with the real output shown to the judges as DAASH-produced evidence
 - [x] Work prompts keep each agent inside its own task (external agents had been writing other tasks' files)
-- [x] Tests: unit 568 (~6 s), integration 174, e2e 12
+- [x] Prompt review with the user (2026-11-09): wording fixes (command criteria shown without `path=None`; judges
+  told exactly what the author could not do; no-rubric reviews ask for an empty `criteria`; `delete_file` listed);
+  a planned check that cannot run goes back to the planner once with the reason, then becomes a judged criterion
+  with an event saying so
+- [x] DAASHboard online help: "How DAASH prompts its agents" (`GET /help/prompts`, `app/help.py`, Help link in
+  the top bar), rendered live from `app/prompts.py` with sample data so it cannot drift; open without a token
+- [x] Tests: unit 578 (~6 s), integration 176, e2e 12
 - Live on the local gateway, all agent CLIs in the runner container (logs in `agents-workspace/coordinator/live-run/`):
   - *Tempconv* (OpenClaude): 3/3 tasks Done first attempt, vision review passed, 36 min; its suite (8 tests) passes.
   - *Textkit* (OpenClaude + Claude Code + Codex + native, rotation): 6 utilities/tests/README Done first attempt;
@@ -119,16 +125,30 @@ Design: docs/DESIGN-0.3.md. Runner guide: docs/RUNNER.md.
     attempt, every task proven by a runner-executed command (`Ran 15 tests ... OK`), each agent touched only its
     own file, vision review passed, ~16 min, p90 5.3 min.
 
-### After 0.3 (in priority order)
-1. Harden remote runs: per-harness model/cost accounting in metrics, per-runner concurrency vs gateway capacity,
+### After 0.3 (in priority order; 1 and 2 are the user's direction from the 2026-11-09 prompt review)
+1. DAASH tools for every agent it calls, as an MCP server (or skill) that external agents can use immediately:
+   memory (`remember`/`recall`), subtasks, team proposals and votes, and messages to team members. Memory is a
+   critical part of the system; today only native agents have these tools, and no agent has used `remember` yet.
+2. Self-organizing teams: routing becomes dynamic, with team members aware of each other and able to message one
+   another. "Escalate to a stronger model" only works where DAASH picks the model (native, Claude Code,
+   OpenClaude, Codex); for agents DAASH reaches only by messages (e.g. OpenClaw) escalation should mean handing
+   the work to another team member.
+3. Harden remote runs: per-harness model/cost accounting in metrics, per-runner concurrency vs gateway capacity,
    runner auto-update, HTTPS/Tailscale deployment notes; enable `DAASH_API_TOKEN` by default when the coordinator
    is published beyond localhost. Capability-aware Mission Judgement approval; keep external agents inside their
    task's scope (a Claude Code agent also wrote the next task's tests); more harness adapters (e.g. OpenClaw).
-2. Run agent-written automation scripts (learning mechanism 2) on runners, building on command checks; a
+4. Run agent-written automation scripts (learning mechanism 2) on runners, building on command checks; a
    command-check scenario in e2e; let the native harness request runner execution.
-3. Research tools for the native harness (web fetch/search with required citations) so fact-checking is grounded.
-4. Long soak run at README scale (10M+ tokens); real embedding model by default; richer RAG over transcripts;
+5. Research tools for the native harness (web fetch/search with required citations) so fact-checking is grounded.
+6. Long soak run at README scale (10M+ tokens); real embedding model by default; richer RAG over transcripts;
    multiple providers per swarm; push updates (SSE) instead of polling.
+7. Later: manage learnings shared across swarms (sharing across projects is intended); cap the swarm feedback
+   injected into prompts.
+
+Decisions from the prompt review (2026-11-09):
+- Global learnings deliberately reach every future swarm, including unrelated projects.
+- User feedback exists only at the swarm level and goes into every agent's system message for that swarm; there is
+  no feedback to individual teams or agents.
 
 ## 6. Risks
 - **Local model reliability** (malformed JSON, missing tool calls): tolerant extraction, one re-ask, bounded tool
@@ -163,7 +183,8 @@ timeline, artifacts), metrics, activity feed. API docs: http://127.0.0.1:8000/do
 `llm.py` + `tools.py` native harness · `prompts.py` prompt hierarchy + parsers · `repo.py` data access ·
 `services.py` shared team/agent/prompt/accounting helpers · `engine.py` (`decide()` + loop) and `jobs.py` ·
 `main.py` + `api_helpers.py` API (incl. `/runner/*`) · `remote.py` runner protocol helpers · `bus.py` Decision Bus ·
-`embeddings.py` · `daash_runner/` (stdlib pull runner + CLI adapters, outside `app/`).
+`embeddings.py` · `help.py` DAASHboard online help (live-rendered prompt guide) · `daash_runner/` (stdlib pull
+runner + CLI adapters, outside `app/`).
 
 ### Defaults worth knowing
 - Role models: coordinator `amazing`, judges `great`, delivery `fast` (escalates up `instant→fast→great→amazing`
@@ -187,6 +208,8 @@ timeline, artifacts), metrics, activity feed. API docs: http://127.0.0.1:8000/do
 - Native-harness agents can only edit workspace files; running code comes from the external harnesses (runner) and
   command checks. Automation scripts are recorded, not run.
 - Judges are LLMs: verdicts are good but not infallible; "tests pass" is only proven by a command check.
+- External agents have no DAASH memory, subtask, proposal or vote tools; learnings and memories are matched by word
+  hashes unless `DAASH_EMBEDDING_USE_MODEL=true`.
 - Admin auth is off unless `DAASH_API_TOKEN` is set (the coordinator is published on 127.0.0.1 only by default).
 - Dashboard polls (no SSE). No harness offers `web_research` by default (the local gateway cannot serve hosted
   web tools), so research tasks run degraded.
@@ -212,3 +235,5 @@ timeline, artifacts), metrics, activity feed. API docs: http://127.0.0.1:8000/do
   container, auth, remote work in the engine, dashboard), vision review, agent capabilities (`edit_files` /
   `run_code` / `web_research` per harness; capability-aware assignment, rework reassignment and leasing),
   live-run fixes. Not tagged.
+- **2026-11-09 — prompt review**: prompt wording fixes, invalid planned checks reported to the planner, DAASHboard
+  online help for agent prompts (also published as a web page).

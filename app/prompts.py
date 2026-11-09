@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional
 
 from app import models
-from app.checks import validate_command
+from app.checks import validate_check_spec, validate_command
 
 # ---------------------------------------------------------------------------
 # System prompt hierarchy
@@ -206,7 +206,9 @@ def _crit_lines(criteria: Iterable[Any]) -> str:
         kind = getattr(kind, "value", kind)
         line = f"{_get(c, 'ordinal', '?')}. {_get(c, 'text', '')}"
         path, arg = _get(c, "check_path"), _get(c, "check_arg")
-        if kind and kind != "rubric":
+        if kind == "command":
+            line += f" [command check: {arg}]"
+        elif kind and kind != "rubric":
             line += f" [{kind} path={path}" + (f" arg={arg}" if arg else "") + "]"
         elif path:
             line += f" [rubric file={path}]"
@@ -406,6 +408,8 @@ class PlannedTask:
     criteria: list[models.CriterionCreate]
     depends_on: list[int] = field(default_factory=list)  # 0-based indexes of earlier planned tasks
     needs: list[str] = field(default_factory=list)       # required capabilities beyond edit_files
+    # Checks that could not run and became judged (rubric) criteria, one message each.
+    check_problems: list[str] = field(default_factory=list)
 
 
 _CAP_DESCRIPTIONS = {
@@ -502,7 +506,9 @@ def _safe_rel(p: Any) -> Optional[str]:
     return p
 
 
-def _parse_criterion(c: Any, where: str) -> models.CriterionCreate:
+def _parse_criterion(c: Any, where: str) -> tuple[models.CriterionCreate, Optional[str]]:
+    """The criterion, and a message if its check cannot run (it then becomes a judged rubric
+    criterion; parse_plan(strict=True) sends the message back to the planner instead)."""
     if isinstance(c, str):
         c = {"text": c}
     if not isinstance(c, dict):
@@ -511,7 +517,8 @@ def _parse_criterion(c: Any, where: str) -> models.CriterionCreate:
     if not text:
         raise ValueError(f'{where} needs a non-empty "text"')
     kind = str(c.get("check_kind") or "rubric").strip().lower()
-    path = _safe_rel(c.get("check_path"))
+    raw_path = c.get("check_path")
+    path = _safe_rel(raw_path)
     arg = c.get("check_arg")
     if str(c.get("check") or "").strip().lower() == "command" or (
             kind == "command" and arg in (None, "")):
@@ -519,10 +526,14 @@ def _parse_criterion(c: Any, where: str) -> models.CriterionCreate:
         arg = c.get("command") if c.get("command") not in (None, "") else arg
     arg = None if arg is None or str(arg).strip() == "" else str(arg).strip()
     valid = {k.value for k in models.CheckKind}
+    problem: Optional[str] = None
     if kind not in valid:
+        problem = (f'unknown check_kind "{kind}"; valid kinds are: '
+                   + ", ".join(sorted(valid)))
         kind = "rubric"
     if kind == "command":
-        if validate_command(arg):  # unusable command: downgrade to a judged rubric criterion
+        problem = validate_command(arg)
+        if problem:
             kind, arg = "rubric", None
         path = None
     elif kind != "rubric":
@@ -539,21 +550,30 @@ def _parse_criterion(c: Any, where: str) -> models.CriterionCreate:
                 arg = str(int(float(arg))) if ok else arg
             except ValueError:
                 ok = False
-        if not ok:  # downgrade: invalid check spec becomes a judged rubric criterion
+        if not ok:
+            problem = (validate_check_spec(kind, raw_path if isinstance(raw_path, str) else None,
+                                           arg)
+                       or f"the {kind} check is not valid")
             kind = "rubric"
     if kind in ("file_exists", "json_valid"):
         arg = None
     if kind == "rubric":
         arg = None
-    return models.CriterionCreate(text=text, check_kind=models.CheckKind(kind),
+    crit = models.CriterionCreate(text=text, check_kind=models.CheckKind(kind),
                                   check_path=path, check_arg=arg)
+    return crit, problem
 
 
-def parse_plan(obj: Any, max_new: int) -> list[PlannedTask]:
+def parse_plan(obj: Any, max_new: int, strict: bool = False) -> list[PlannedTask]:
+    """Planned tasks. A check that cannot run becomes a judged rubric criterion and is listed in
+    the task's `check_problems`; with `strict`, such checks raise ValueError instead, so the
+    planner is told what is wrong and can fix them (jobs.plan_tasks is strict on the first
+    reply only, so a planner that cannot fix a check never stalls planning)."""
     raw = _as_list(obj, "tasks", "each item is a task object")
     if not raw:
         raise ValueError('"tasks" is empty: plan at least one task')
     out: list[PlannedTask] = []
+    problems: list[str] = []
     for i, t in enumerate(raw[:max_new]):
         w = f"tasks[{i}]"
         if not isinstance(t, dict):
@@ -564,7 +584,14 @@ def parse_plan(obj: Any, max_new: int) -> list[PlannedTask]:
         crits_raw = t.get("acceptance_criteria", t.get("criteria"))
         if not isinstance(crits_raw, list) or not crits_raw:
             raise ValueError(f'{w} ("{name}") needs "acceptance_criteria": a non-empty array')
-        crits = [_parse_criterion(c, f"{w}.acceptance_criteria[{j}]") for j, c in enumerate(crits_raw)]
+        crits, task_problems = [], []
+        for j, c in enumerate(crits_raw):
+            crit, problem = _parse_criterion(c, f"{w}.acceptance_criteria[{j}]")
+            crits.append(crit)
+            if problem:
+                task_problems.append(f'"{_clip(crit.text, 80)}": {problem}')
+                problems.append(f'{w}.acceptance_criteria[{j}] ("{_clip(crit.text, 80)}"): '
+                                f"{problem}")
         artifact = _safe_rel(t.get("artifact")) or ""
         if artifact and not any(c.check_kind.value in models.DETERMINISTIC_CHECKS
                                 and c.check_kind != models.CheckKind.COMMAND for c in crits):
@@ -586,7 +613,13 @@ def parse_plan(obj: Any, max_new: int) -> list[PlannedTask]:
                 deps.append(di)
         out.append(PlannedTask(name=name[:255], description=_text(t.get("description")),
                                artifact=artifact, criteria=crits, depends_on=deps,
-                               needs=models.required_capabilities(t.get("needs"))))
+                               needs=models.required_capabilities(t.get("needs")),
+                               check_problems=task_problems))
+    if strict and problems:
+        raise ValueError(
+            "these acceptance criteria have checks that cannot run:\n"
+            + "\n".join(f"- {p}" for p in problems)
+            + '\nFix each check, or make it a judged criterion with "check_kind": "rubric".')
     return out
 
 
@@ -798,7 +831,7 @@ def work_prompt(task: Any, criteria: Iterable[Any], feedback: Optional[str],
                 workspace_listing: str, pending_proposals: Iterable[Any] = (),
                 capabilities: Optional[Iterable[str]] = None) -> str:
     s = ("Job: do this task. Produce the artifact in the shared workspace using your tools "
-         "(write_file, append_file, read_file, list_files). Work for real: write the actual "
+         "(write_file, append_file, read_file, list_files, delete_file). Work for real: write the actual "
          "content, never placeholders.\n" + SCOPE_RULE)
     s += _needs_line(task, capabilities) + "\n"
     s += f"Task {_get(task, 'id', '')}: {_get(task, 'name', '')}\n"
@@ -874,9 +907,12 @@ def _author_line(agent_capabilities: Optional[Iterable[str]]) -> str:
         return ""
     caps = [c for c in models.CAPABILITY_NAMES if c in set(agent_capabilities)]
     lack = [c for c in models.CAPABILITY_NAMES if c not in caps]
-    return ("The delivering agent's capabilities: " + (", ".join(caps) or "none")
-            + (f". It could not use: {', '.join(lack)}; reject any claim of having done that "
-               f"(for example running tests) that the files cannot support.\n" if lack else ".\n"))
+    s = "The delivering agent's capabilities: " + (", ".join(caps) or "none") + "."
+    if lack:
+        s += (" It could not " + " or ".join(f"{_CAP_DESCRIPTIONS[c]} ({c})" for c in lack)
+              + ". Do not accept any claim that it did, unless the deliverable files "
+                "themselves show it.")
+    return s + "\n"
 
 
 def quality_review_prompt(task: Any, criteria_with_det_results: Iterable[Any],
@@ -916,14 +952,19 @@ def quality_review_prompt(task: Any, criteria_with_det_results: Iterable[Any],
          "criterion is fully met and nothing in the Definition of Done is violated). passed is "
          "true only if the work is complete and meets the Definition of Done. If not passed, "
          "feedback must list concrete fixes.\n")
-    ex_ord = rubric[0] if rubric else 1
     s += (_JSON_ONLY + 'Contract: {"passed": true|false, "quality_score": 0.0-1.0, "criteria": '
           '[{"ordinal": <int>, "passed": true|false, "score": 0.0-1.0, "reason": "..."}], '
-          '"feedback": "..."}\n'
-          f'Include one entry in "criteria" for each RUBRIC ordinal ({", ".join(map(str, rubric)) or "none"}).\n'
-          f'Example: {{"passed": true, "quality_score": 1.0, "criteria": [{{"ordinal": {ex_ord}, '
-          '"passed": true, "score": 1.0, "reason": "Section 2 states the rule clearly"}], '
-          '"feedback": ""}')
+          '"feedback": "..."}\n')
+    if rubric:
+        s += (f'Include one entry in "criteria" for each RUBRIC ordinal '
+              f'({", ".join(map(str, rubric))}).\n'
+              f'Example: {{"passed": true, "quality_score": 1.0, "criteria": [{{"ordinal": '
+              f'{rubric[0]}, "passed": true, "score": 1.0, "reason": "Section 2 states the rule '
+              'clearly"}], "feedback": ""}')
+    else:
+        s += ('This task has no RUBRIC criteria, so "criteria" is an empty array; judge the '
+              'work as a whole in quality_score and passed.\n'
+              'Example: {"passed": true, "quality_score": 1.0, "criteria": [], "feedback": ""}')
     return s
 
 

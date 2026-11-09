@@ -68,6 +68,8 @@ export default function App() {
       <nav className="topbar">
         <span className="brand">DAASHboard</span>
         <span className="muted">Distributed Agile Agentic Swarm Harness</span>
+        <a className="btn small help-link" href="/api/help/prompts" target="_blank" rel="noreferrer"
+          title="How DAASH prompts its agents (opens in a new tab)">Help: agent prompts</a>
         {showSignOut && <button type="button" className="btn small signout" onClick={signOut}>Sign out</button>}
       </nav>
       {auth === 'checking' ? (

@@ -198,6 +198,16 @@ def assess_clip(n_files: int) -> int:
     return max(1500, min(4000, ASSESS_TOTAL_CHARS // n))
 
 
+def assess_context(listing: str, excerpts: dict[str, str]) -> str:
+    """What the mission assessment sees before its prompt: every file that exists (a capped
+    excerpt list once hid a README that was there) and the deliverable excerpts."""
+    ctx = f"All files in the shared workspace now:\n{listing}\n\n" if listing else ""
+    if excerpts:
+        ctx += ("Current deliverable files (excerpts):\n"
+                + "\n".join(f"--- {p} ---\n{c}\n" for p, c in excerpts.items()) + "\n")
+    return ctx
+
+
 def read_deliverable_files(root: Path, paths: Iterable[str],
                            limit: int = FILE_CLIP) -> dict[str, str]:
     """Contents of existing workspace files, each truncated to `limit` characters."""
@@ -756,9 +766,17 @@ class Jobs:
             team.name, done, [], cap, team.next_focus, workspace_listing(self.workspace(swarm)),
             others, agent_capabilities=[a.capabilities for a in team_agents
                                         if a.role == AgentRole.MISSION_DELIVERY.value])
+        replies = 0
+
+        def parse(o):
+            # The first reply is strict: a check that cannot run goes back to the planner to fix.
+            # After that it becomes a judged criterion (reported below), so planning never stalls.
+            nonlocal replies
+            replies += 1
+            return prompts.parse_plan(o, cap, strict=replies == 1)
+
         planned = await self._json_job(
-            swarm, agent, team, "plan_tasks", model, user,
-            lambda o: prompts.parse_plan(o, cap), query=team.mission_statement)
+            swarm, agent, team, "plan_tasks", model, user, parse, query=team.mission_statement)
         # Re-check just before writing: another job may have changed the team.
         tasks = await self.tasks.list(team_id=team.id)
         room = policy.task_budget_left(tasks, lim.max_tasks_per_team)
@@ -779,6 +797,13 @@ class Jobs:
             swarm.id, "created", team_id=team.id, actor=agent.id,
             detail=f"{agent.name} planned {len(created)} new task(s) for team '{team.name}': "
                    f"{names}.")
+        for pt, t in zip(planned, created):
+            if pt.check_problems:
+                await self.events.add(
+                    swarm.id, "created", team_id=team.id, task_id=t.id, actor=agent.id,
+                    detail=f"{len(pt.check_problems)} check(s) planned for '{t.name}' could not "
+                           "run, so Quality Judgement will judge them instead: "
+                           + "; ".join(_clip(p, 200) for p in pt.check_problems))
 
     async def prioritize(self, swarm: Swarm, action: Action, escalation: int = 0) -> None:
         team = await self.teams.get(action.team_id)
@@ -1523,12 +1548,7 @@ class Jobs:
         ws = self.workspace(swarm)
         excerpts = read_deliverable_files(ws, paths[:ASSESS_MAX_FILES],
                                           limit=assess_clip(len(paths)))
-        listing = workspace_listing(ws)
-        # Every file that exists (a capped excerpt list once hid a README that was there).
-        context = (f"All files in the shared workspace now:\n{listing}\n\n" if listing else "")
-        if excerpts:
-            context += ("Current deliverable files (excerpts):\n"
-                        + "\n".join(f"--- {p} ---\n{c}\n" for p, c in excerpts.items()) + "\n")
+        context = assess_context(workspace_listing(ws), excerpts)
         res = await self._json_job(
             swarm, mj, team, "assess_mission", model,
             context + prompts.assess_prompt(

@@ -140,7 +140,8 @@ def test_review_prompts_state_author_capabilities():
     q = prompts.quality_review_prompt(t, t.criteria, {}, NATIVE)
     m = prompts.mission_review_prompt(t, "s", {}, NATIVE)
     for p in (q, m):
-        assert "delivering agent's capabilities: edit_files" in p and "could not use: run_code" in p
+        assert "delivering agent's capabilities: edit_files" in p
+        assert "could not run shell commands, scripts and tests (run_code)" in p
     assert "delivering agent" not in prompts.quality_review_prompt(t, t.criteria, {})
 
 

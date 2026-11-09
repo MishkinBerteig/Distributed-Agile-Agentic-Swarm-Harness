@@ -134,3 +134,28 @@ async def test_plan_emits_command_criterion_and_run_code(h, fake):
     assert not [c for c in second.criteria if c.check_kind == "command"]
     assert second.required_capabilities == []
     _ = swarm_config
+
+
+async def test_plan_with_unrunnable_check_is_sent_back_then_judged(h, fake):
+    """An invalid check goes back to the planner once (a re-ask naming the problem); if the
+    second reply still has it, it becomes a judged criterion and an event says so."""
+    too_long = "echo " + "x" * 400
+    fake.configure({"plan_command_check": too_long, "tasks_per_plan": 2})
+    await h.create_swarm(VISION, config=cfg_for(["daash", "fake"]), dod="- d")
+    await h.seed_team("Team A")
+    await h.transition("start")
+
+    async def planned():
+        return bool(await h.task_list())
+    await h.run_until(planned, label="planned")
+    await stop_engine(h)
+    plan_calls = fake.calls_for("plan")
+    assert [c["reask"] for c in plan_calls[:2]] == [False, True]
+    first = (await h.task_list())[0]
+    assert not [c for c in first.criteria if c.check_kind == "command"]
+    judged = [c for c in first.criteria if c.text.startswith("`echo x")]
+    assert len(judged) == 1 and judged[0].check_kind == "rubric"
+    assert first.required_capabilities == []
+    notes = [e.detail for e in await h.event_list(kind="created")
+             if "could not run, so Quality Judgement will judge them instead" in e.detail]
+    assert len(notes) == 1 and "is too long" in notes[0] and first.name in notes[0]

@@ -148,6 +148,41 @@ def test_plan_happy_and_downgrades():
     # no deterministic criterion left -> a file_exists on the artifact is added
     assert b.criteria[-1].check_kind == models.CheckKind.FILE_EXISTS and b.criteria[-1].check_path == "b.md"
     assert b.depends_on == [0]
+    # every downgrade is reported (not the plain criteria, which were rubric all along)
+    assert a.check_problems == []
+    assert len(b.check_problems) == 5
+    joined = "\n".join(b.check_problems)
+    for s in ('"bad words": Check \'min_words\' needs check_arg to be a positive integer',
+              '"bad regex": Check \'file_contains\' has an invalid regular expression',
+              '"no path": Check \'file_exists\' needs a valid path: no path was given',
+              '"escape": Check \'json_valid\' needs a valid path',
+              '"unknown kind": unknown check_kind "telepathy"'):
+        assert s in joined, s
+    assert "plain string" not in joined
+
+
+def test_plan_strict_sends_invalid_checks_back_to_the_planner():
+    bad = {"tasks": [
+        {"name": "A", "artifact": "a.py", "acceptance_criteria": [
+            {"text": "a.py exists", "check_kind": "file_exists", "check_path": "a.py"},
+            {"text": "defines f", "check_kind": "file_contains", "check_path": "a.py",
+             "check_arg": "def f("},
+            {"text": "tests pass", "check_kind": "command", "check_arg": "x" * 400}]}]}
+    with pytest.raises(ValueError) as e:
+        parse_plan(bad, 4, strict=True)
+    msg = str(e.value)
+    assert 'tasks[0].acceptance_criteria[1] ("defines f"): Check \'file_contains\' has an invalid regular expression' in msg
+    assert 'tasks[0].acceptance_criteria[2] ("tests pass"): Check \'command\' is too long' in msg
+    assert '"check_kind": "rubric"' in msg
+    assert "acceptance_criteria[0]" not in msg
+    # the same reply, parsed leniently (the second reply), downgrades and reports
+    (t,) = parse_plan(bad, 4)
+    assert [c.check_kind.value for c in t.criteria] == ["file_exists", "rubric", "rubric"]
+    assert len(t.check_problems) == 2 and t.check_problems[0].startswith('"defines f": ')
+    # a valid plan passes strict parsing unchanged
+    ok = {"tasks": [{"name": "A", "acceptance_criteria": [
+        {"text": "x", "check_kind": "command", "check_arg": "python3 -m unittest"}, "plain"]}]}
+    assert parse_plan(ok, 4, strict=True)[0].check_problems == []
 
 
 def test_plan_limits_and_bare_list():
@@ -387,3 +422,48 @@ def test_work_prompts_keep_agents_inside_their_task():
     t = task()
     for p in (work_prompt(t, [], None, ""), remote_work_prompt(t, [], None, "")):
         assert "Do only this task" in p and "never create or rewrite their files" in p
+
+
+# ------------------------------------------------------------ wording fixes (2026-11-09 prompt review)
+
+def test_command_criterion_renders_without_path():
+    t = task(criteria=[crit(1, "tests pass", "command", None, "python3 -m unittest"),
+                       crit(2, "a.md exists", "file_exists", "a.md")])
+    for p in (classify_prompt(t), work_prompt(t, t.criteria, None, ""),
+              prioritize_prompt([t], [])):
+        assert "1. tests pass [command check: python3 -m unittest]" in p
+        assert "path=None" not in p
+        assert "2. a.md exists [file_exists path=a.md]" in p
+
+
+def test_quality_review_without_rubric_asks_for_empty_criteria():
+    t = task(criteria=[crit(1, "intro.md exists", "file_exists", "intro.md", status="green")])
+    p = quality_review_prompt(t, t.criteria, {"intro.md": "x"})
+    assert '"criteria" is an empty array' in p
+    assert '"criteria": []' in p and '"ordinal": 1' not in p
+    assert "(none)." not in p
+    r = parse_quality_review({"passed": True, "quality_score": 1.0, "criteria": [],
+                              "feedback": ""}, [])
+    assert r.passed and r.quality_score == 1.0
+    # with rubric criteria the example scores the first rubric ordinal
+    t2 = task()
+    p2 = quality_review_prompt(t2, t2.criteria, {})
+    assert "for each RUBRIC ordinal (2)" in p2 and '"ordinal": 2,' in p2
+
+
+def test_author_line_names_exactly_what_the_author_could_not_do():
+    t = task()
+    only_web = quality_review_prompt(t, t.criteria, {}, ["edit_files", "run_code"])
+    assert "It could not search and fetch the web (web_research)." in only_web
+    assert "running tests" not in only_web and "run_code)" not in only_web.split("could not")[1].split("\n")[0]
+    native = mission_review_prompt(t, "s", {}, ["edit_files"])
+    assert ("It could not run shell commands, scripts and tests (run_code) or search and fetch "
+            "the web (web_research). Do not accept any claim that it did, unless the "
+            "deliverable files themselves show it.") in native
+    full = quality_review_prompt(t, t.criteria, {}, ["edit_files", "run_code", "web_research"])
+    assert "could not" not in full
+
+
+def test_work_prompt_lists_delete_file():
+    t = task()
+    assert "list_files, delete_file)" in work_prompt(t, t.criteria, None, "")
