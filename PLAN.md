@@ -85,12 +85,31 @@ Design: docs/DESIGN-0.2.md. (`v0.1` is tagged at f1e5526.)
   the same limit as a runaway guard); Quality Judgement's Definition of Ready may not forbid a file from
   existing (it blocked the team's own refinement tasks).
 
-### After 0.2 (in priority order)
-1. **Distributed, heterogeneous harnesses**: external CLI agents (OpenClaude, Claude Code, Codex) on any device
-   through the pull-based runner (`daash_runner/`), plus authentication. These harnesses bring their own code execution
-   and web research, so this item largely covers items 2 and 3.
+### Milestone 0.3 — Distributed, heterogeneous harnesses (built overnight 2026-11-08/09; not tagged)
+Design: docs/DESIGN-0.3.md. Runner guide: docs/RUNNER.md.
+- [x] Pull-based runner `daash_runner/` (stdlib only; any device): hello, long-poll lease, heartbeat, workspace
+  sync, result upload; adapters for **OpenClaude**, **Claude Code**, **Codex** (all verified on the local gateway,
+  with private config dirs so the user's own accounts are never used) and a scripted `fake`
+- [x] Runner container (`Dockerfile.runner`, compose profile `runner`): agent CLIs execute code inside it, not on the host
+- [x] Coordinator: `runners` + `remote_jobs`, runner tokens, optional admin token (`DAASH_API_TOKEN`), bootstrap
+  runner, `/runner/*` protocol; delivery agents cycle through `delivery_harnesses`; remote work re-attaches after
+  an engine restart, requeues on lease expiry, falls back to native after `remote_fallback_minutes`
+- [x] DAASHboard: sign-in when auth is on, Runners panel (add/disable/delete, token shown once), delivery-harness
+  mix in the create form, harness badges, remote jobs list
+- [x] Vision review (§10): the Swarm Coordinator checks the vision-level DoD before verification and reopens teams
+  with a focus when there are gaps (max 3 reviews)
+- [x] Fixes found in the live runs: deferral of not-yet-startable tasks (and only while other work can finish;
+  never over a task's own wording; reason shown); rejected-before-start tasks don't use the task budget; DoR rules
+  apply per task and may not forbid existing files; binary build junk never becomes a deliverable
+- [x] Tests: unit 518, integration 159, e2e 12 (4 runner scenarios with runner containers + fake CLI)
+- Live: LIVE_RESULT_PLACEHOLDER
+
+### After 0.3 (in priority order)
+1. Harden remote runs: per-harness model/cost accounting in metrics, per-runner concurrency vs gateway capacity,
+   runner auto-update, HTTPS/Tailscale deployment notes; enable `DAASH_API_TOKEN` by default when the coordinator
+   is published beyond localhost.
 2. Sandboxed code execution for the native harness (learning mechanism 2: run agent-written automation scripts;
-   test-based deterministic checks).
+   test-based deterministic checks such as "`python3 -m unittest` passes", run in the runner container).
 3. Research tools for the native harness (web fetch/search with required citations) so fact-checking is grounded.
 4. Long soak run at README scale (10M+ tokens); real embedding model by default; richer RAG over transcripts;
    multiple providers per swarm; push updates (SSE) instead of polling.
@@ -102,13 +121,14 @@ Design: docs/DESIGN-0.2.md. (`v0.1` is tagged at f1e5526.)
 - **State consistency**: PostgreSQL is the only source of record; Redis holds only expiring signals; the engine is
   restart-safe (BUSY agents reset, open tasks resumed).
 
-## 7. Current System State (0.1 prototype, on `main`)
+## 7. Current System State (0.3, on `main`)
 
 ### Run it
 ```bash
 cp .env.example .env            # set DAASH_LLM_API_KEY (and DAASH_LLM_ENDPOINT if not the m3u512gb gateway)
 docker compose up --build -d    # db, redis, coordinator :8000, engine, dashboard :7173
-docker compose --profile test run --rm --build test   # unit tests
+# optional: external agent CLIs (set DAASH_RUNNER_BOOTSTRAP_TOKEN in .env first; see docs/RUNNER.md)
+docker compose --profile runner up --build -d runner
 ```
 DAASHboard: http://127.0.0.1:7173 — create a swarm (vision; optional teams, else the Swarm Coordinator forms them;
 advanced config for role models and limits), press ▶ Start, watch teams, Kanban, task drawers (criteria, verdicts,
@@ -119,12 +139,15 @@ timeline, artifacts), metrics, activity feed. API docs: http://127.0.0.1:8000/do
 - **engine** — `python -m app.engine`; restart-safe; `DAASH_ENGINE_ENABLED=false` idles it.
 - **db** (PostgreSQL 17 + pgvector, volume `pg-data`), **redis** (Decision Bus), **dashboard** (Vite dev server).
 - Volume `daash-workspaces` holds each swarm's artifacts at `/workspaces/<swarm_id>/`.
+- **runner** (profile `runner`) — `daash_runner` with OpenClaude, Claude Code and Codex installed; pulls remote
+  delivery jobs from the coordinator. Runners on other devices: `python3 -m daash_runner` (docs/RUNNER.md).
 
 ### Code map (`app/`)
 `models.py` contract · `policy.py` / `routing.py` / `metrics.py` pure rules · `checks.py` deterministic criteria ·
 `llm.py` + `tools.py` native harness · `prompts.py` prompt hierarchy + parsers · `repo.py` data access ·
 `services.py` shared team/agent/prompt/accounting helpers · `engine.py` (`decide()` + loop) and `jobs.py` ·
-`main.py` + `api_helpers.py` API · `bus.py` Decision Bus · `embeddings.py` · `daash_runner/` (stdlib pull runner for external CLI harnesses; 0.3).
+`main.py` + `api_helpers.py` API (incl. `/runner/*`) · `remote.py` runner protocol helpers · `bus.py` Decision Bus ·
+`embeddings.py` · `daash_runner/` (stdlib pull runner + CLI adapters, outside `app/`).
 
 ### Defaults worth knowing
 - Role models: coordinator `amazing`, judges `great`, delivery `fast` (escalates up `instant→fast→great→amazing`
@@ -135,19 +158,21 @@ timeline, artifacts), metrics, activity feed. API docs: http://127.0.0.1:8000/do
 - Only one live swarm at a time; archive or delete it to create the next.
 
 ### Tests (three tiers, docs/DESIGN-0.2.md)
-- **unit** — `docker compose --profile test run --rm --build test` — pure logic, ~1 s.
+- **unit** — `docker compose --profile test run --rm --build test` — pure logic incl. runner adapters, ~12 s.
 - **integration** — `docker compose --profile integration run --rm --build integration` — real PostgreSQL/Redis
   (`daash_test`, Redis DB 15), API and engine in-process against the scripted fake LLM (`tests/fakes/`).
 - **e2e** — `scripts/e2e.sh` — separate compose project `daash-e2e` (no published ports, safe beside the dev
-  stack): real coordinator/engine containers + fake-LLM container; includes engine restart mid-run.
+  stack): real coordinator/engine containers + fake-LLM container + runner containers (fake CLI); includes engine
+  restart and runner death mid-run.
 - New fake-LLM scenario: add a field to `Scenario` in `tests/fakes/fake_llm.py`, read it in the job's `_answer_*`
   method, then `fake.configure({...})` in a test.
 
-### Known limitations (0.1)
-- Agents can only read/write files in their swarm workspace; no code execution (automation scripts are recorded,
-  not run). External CLI harnesses are not wired.
-- Judges are LLMs: verdicts are good but not infallible (e.g. minor factual slips can pass a rubric).
-- Dashboard polls every 3s; no auth; CORS open — local prototype only.
+### Known limitations (0.3)
+- Native-harness agents can only read/write workspace files; code execution and web research come from the
+  external harnesses (runner). Automation scripts are recorded, not run.
+- Judges are LLMs: verdicts are good but not infallible; they read code but do not run tests.
+- Admin auth is off unless `DAASH_API_TOKEN` is set (the coordinator is published on 127.0.0.1 only by default).
+- Dashboard polls (no SSE). Unit tier is ~12 s (runner loop tests use a real HTTP stub).
 - The pre-0.1 dev database was replaced by the new schema (a dump of the old data is in
   `agents-workspace/coordinator/db-backup/`).
 
@@ -165,3 +190,6 @@ timeline, artifacts), metrics, activity feed. API docs: http://127.0.0.1:8000/do
   per-model LLM concurrency, cancel-on-pause and verification task closing. Tagged `v0.2`.
 - **2026-11-08 — 0.2 B.6**: deferral of not-yet-startable tasks (cross-team dependencies), found while re-running
   First Garden.
+- **2026-11-08 — post-run fixes**: task budget ignores rejected-before-start tasks; DoR rules may not forbid files.
+- **2026-11-09 — 0.3**: distributed heterogeneous harnesses (runner, OpenClaude/Claude Code/Codex adapters, runner
+  container, auth, remote work in the engine, dashboard), vision review, live-run fixes. Not tagged.
