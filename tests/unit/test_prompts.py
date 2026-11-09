@@ -380,3 +380,10 @@ def test_standards_prompt_says_rules_apply_to_each_task_alone():
     from app.prompts import standards_prompt
     assert "never require one task to name or cover all of the team's deliverables" in \
         standards_prompt()
+
+
+def test_work_prompts_keep_agents_inside_their_task():
+    from app.prompts import remote_work_prompt, work_prompt
+    t = task()
+    for p in (work_prompt(t, [], None, ""), remote_work_prompt(t, [], None, "")):
+        assert "Do only this task" in p and "never create or rewrite their files" in p

@@ -788,12 +788,18 @@ def _needs_line(task: Any, capabilities: Optional[Iterable[str]]) -> str:
     return s
 
 
+SCOPE_RULE = ("Do only this task: change only the files it needs (its artifact and anything it "
+              "cannot work without). Other tasks of your team cover the rest of the Mission and may "
+              "run at the same time, so never create or rewrite their files. Delete any scratch "
+              "files you made for your own checks.\n")
+
+
 def work_prompt(task: Any, criteria: Iterable[Any], feedback: Optional[str],
                 workspace_listing: str, pending_proposals: Iterable[Any] = (),
                 capabilities: Optional[Iterable[str]] = None) -> str:
     s = ("Job: do this task. Produce the artifact in the shared workspace using your tools "
          "(write_file, append_file, read_file, list_files). Work for real: write the actual "
-         "content, never placeholders.\n")
+         "content, never placeholders.\n" + SCOPE_RULE)
     s += _needs_line(task, capabilities) + "\n"
     s += f"Task {_get(task, 'id', '')}: {_get(task, 'name', '')}\n"
     if _get(task, "description"):
@@ -825,7 +831,7 @@ def remote_work_prompt(task: Any, criteria: Iterable[Any], feedback: Optional[st
     s = ("Job: do this task. Your current directory is a copy of the shared swarm workspace. "
          "Work only inside it: create or edit files with your own tools, and write the actual "
          "content, never placeholders. You may run code and look things up if your tools allow. "
-         "Do not ask questions; decide and proceed.\n")
+         "Do not ask questions; decide and proceed.\n" + SCOPE_RULE)
     s += _needs_line(task, capabilities) + "\n"
     s += f"Task {_get(task, 'id', '')}: {_get(task, 'name', '')}\n"
     if _get(task, "description"):
