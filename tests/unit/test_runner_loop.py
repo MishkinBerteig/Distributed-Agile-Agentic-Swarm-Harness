@@ -76,7 +76,7 @@ def make_server(stub: Stub):
                         return self._send(500, {"detail": "boom"})
                     stub.hellos.append(body)
                     return self._send(200, {"runner_id": "r1", "name": "stub", "poll_seconds": 1,
-                                            "heartbeat_seconds": 0.3, "lease_seconds": 60})
+                                            "heartbeat_seconds": 0.05, "lease_seconds": 60})
                 if path == "/runner/lease":
                     stub.lease_calls += 1
                     if stub.fail_lease > 0:
@@ -94,7 +94,7 @@ def make_server(stub: Stub):
             self._send(404, {"detail": "nope"})
 
     srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
     return srv
 
 
@@ -115,17 +115,20 @@ def stub():
     s.url = f"http://127.0.0.1:{srv.server_address[1]}"
     yield s
     srv.shutdown()
+    srv.server_close()
 
 
 def start_runner(stub, tmp_path, mode="ok", max_jobs=1, token=TOKEN, extra_env=None):
-    env = {"DAASH_FAKE_MODE": mode, "DAASH_FAKE_SLOW_SECONDS": "0.2"}
+    env = {"DAASH_FAKE_MODE": mode, "DAASH_FAKE_SLOW_SECONDS": "0.1"}
     env.update(extra_env or {})
     cfg = {"harnesses": {"fake": {"command": sys.executable, "models": [], "env": env, "args": [],
                                   "timeout_seconds": 60}}}
     r = Runner(Client(stub.url, token, timeout=5), cfg, str(tmp_path / "work"), max_jobs, host="testhost", environ={})
     r.lease_wait = 0
-    r.initial_backoff = 0.1
-    r.max_backoff = 0.3
+    r.initial_backoff = 0.02
+    r.max_backoff = 0.05
+    r.poll_interval = 0.02
+    r.idle_wait = 0.05
     r.upload_attempts = 3
     t = threading.Thread(target=r.run, daemon=True)
     t.start()
@@ -143,7 +146,7 @@ def wait_for(cond, timeout=25.0):
     while time.time() < end:
         if cond():
             return True
-        time.sleep(0.05)
+        time.sleep(0.01)
     return False
 
 
@@ -206,7 +209,7 @@ def test_cancelled_heartbeat_kills_hanging_job(stub, tmp_path):
 
 
 def test_timeout_reports_failed(stub, tmp_path):
-    stub.jobs.append(job(timeout=1))
+    stub.jobs.append(job(timeout=0.4))
     r, t = start_runner(stub, tmp_path, "hang")
     try:
         assert wait_for(lambda: "j1" in stub.results)
@@ -241,7 +244,7 @@ def test_coordinator_down_then_up(tmp_path):
     s = Stub()
     s.url = "http://127.0.0.1:9"      # nothing listens here
     r, t = start_runner(s, tmp_path)
-    time.sleep(0.8)
+    time.sleep(0.2)
     assert t.is_alive()
     stop_runner(r, t)
 
@@ -249,7 +252,7 @@ def test_coordinator_down_then_up(tmp_path):
 def test_bad_token_keeps_running_but_does_not_lease(stub, tmp_path):
     stub.jobs.append(job())
     r, t = start_runner(stub, tmp_path, token="wrong")
-    time.sleep(0.6)
+    time.sleep(0.2)
     assert t.is_alive() and stub.results == {} and len(stub.jobs) == 1
     stop_runner(r, t)
     with pytest.raises(AuthError):

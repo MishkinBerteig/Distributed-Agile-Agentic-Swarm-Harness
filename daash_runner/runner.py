@@ -83,6 +83,8 @@ class Runner:
         self.rehello_seconds = REHELLO_SECONDS
         self.initial_backoff = 1.0
         self.max_backoff = 60.0
+        self.poll_interval = 0.1      # supervise loop tick (tests shorten it)
+        self.idle_wait = 1.0          # pause when nothing to lease (tests shorten it)
         self.upload_attempts = 6
         self._lock = threading.Lock()
         self._active: dict[str, threading.Thread] = {}
@@ -117,14 +119,14 @@ class Runner:
                     prune_jobs(self.jobs_dir)
                 free = self.max_jobs - self.active_count()
                 if free <= 0:
-                    self.stop.wait(1.0)
+                    self.stop.wait(self.idle_wait)
                     continue
                 job = self.client.lease(self.lease_wait, free)
                 backoff = self.initial_backoff
                 if job:
                     self._start(job)
                 elif self.lease_wait <= 0:
-                    self.stop.wait(1.0)
+                    self.stop.wait(self.idle_wait)
             except AuthError as exc:
                 log.error("coordinator rejected the runner token (401): %s", str(exc)[:200])
                 backoff = self._sleep_backoff(backoff, minimum=10.0)
@@ -303,7 +305,7 @@ class Runner:
                         return "cancelled"
                 except Exception as exc:  # noqa: BLE001 - a bad heartbeat must not kill the job
                     log.warning("heartbeat for %s failed: %s", jid, exc)
-            self.stop.wait(0.1)
+            self.stop.wait(self.poll_interval)
         return "done"
 
     def upload(self, jid: str, payload: dict) -> None:

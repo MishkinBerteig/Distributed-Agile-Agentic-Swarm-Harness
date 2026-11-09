@@ -206,10 +206,10 @@ def test_fake_fail_and_error_modes(tmp_path):
 
 
 def test_fake_slow_mode(tmp_path):
-    r = run_fake(tmp_path, "Artifact: a.md", "slow", {"DAASH_FAKE_SLOW_SECONDS": "0.3"})
+    r = run_fake(tmp_path, "Artifact: a.md", "slow", {"DAASH_FAKE_SLOW_SECONDS": "0.1"})
     assert r.returncode == 0 and (tmp_path / "a.md").exists()
 
 
 def test_fake_hang_mode_does_not_finish(tmp_path):
     with pytest.raises(subprocess.TimeoutExpired):
-        run_fake(tmp_path, "Artifact: a.md", "hang", timeout=1.5)
+        run_fake(tmp_path, "Artifact: a.md", "hang", timeout=0.6)
