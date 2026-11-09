@@ -301,3 +301,46 @@ vision level and a team-mission level".
 * The calibrated certainty scale applies (DESIGN-0.1 §12): a confidence below 1.0 must name a concrete gap.
 * Fake LLM (tests/fakes): answers `review_vision` with `met` by default; scenario `vision_gaps_first: N`
   makes the first N reviews return a gap for the first team.
+
+## 11. Agent capabilities (user request, 2026-11-09)
+
+Found live: rotation gave "verify the test suites pass with `python3 -m unittest`" to a native agent that
+cannot run code; it "verified" by reading, and the judges rightly sent it back (no evidence). The user asked
+that each team member have a basic capabilities list that depends on its harness.
+
+* Vocabulary (`app/models.py` `Capability`): `edit_files` (create/modify workspace files — every harness),
+  `run_code` (execute shell commands, scripts and tests), `web_research` (search/fetch the web).
+* **Defaults per harness** (`HARNESS_CAPABILITIES`): `daash` → [edit_files]; `openclaude`, `claude-code`,
+  `codex` → [edit_files, run_code]; `fake` → [edit_files, run_code]. (Web research is off by default: the
+  runner configs disable hosted web tools the local gateway cannot serve.) `HarnessSpec.capabilities:
+  Optional[list[str]]` overrides the default for that delivery slot. Future harnesses (e.g. OpenClaw) add an
+  adapter plus a default entry.
+* **Runners announce** per harness: hello `harnesses: [{"harness", "models", "capabilities"}]`, from
+  `runner.json` (`"capabilities": [...]`) or the adapter default: container config → edit_files+run_code;
+  host example with `acceptEdits` permission mode → edit_files only. A job is leased only by a runner whose
+  harness entry offers the job's `required_capabilities` (missing `capabilities` in an old hello = harness
+  default).
+* **Agents**: migration `f0a3c0d0e004_capabilities`: `agents.capabilities jsonb NOT NULL DEFAULT '[]'`
+  (set by `ensure_team_agents` from the spec/default; existing rows backfilled from harness defaults), and
+  `tasks.required_capabilities jsonb NOT NULL DEFAULT '[]'`; `remote_jobs` payload carries them.
+* **Tasks**: the plan contract gains optional `"needs": ["run_code" | "web_research"]` per task (the prompt
+  explains: ask for `run_code` when a criterion needs a command, script or test run as evidence). The
+  planner sees which capabilities the team's delivery agents have (do not plan needs nobody has; plan
+  read-only verification instead). `edit_files` is implied. Unknown values are dropped. `create_subtask` and
+  `POST /tasks` accept `required_capabilities` too.
+* **Assignment** (`decide()`): an idle delivery agent commits only to a Ready task whose
+  `required_capabilities ⊆ agent.capabilities` (still least-recently-active first). The DoR "idle delivery
+  agent" rule becomes "an idle delivery agent with the required capabilities". If **no** delivery agent of the
+  team has them, the task is not stuck forever: it is assigned to any idle agent and the work prompt says
+  which capabilities it lacks (degraded), with a one-time event.
+* **Rework**: when a task returns to In-Progress and its assigned agent lacks a required capability while a
+  capable idle agent exists, it is reassigned (event).
+* **Prompts**: every delivery agent's work prompt states "Your capabilities: …; you cannot …" so it never
+  claims to have run code it could not run; review prompts tell the judges which capabilities the delivering
+  agent had.
+* **Dashboard**: capability chips on the roster (e.g. `run code`), task cards/drawer show `needs`, the create
+  form's delivery rows allow overriding capabilities, the runners panel shows per-harness capabilities.
+* **Tests**: unit (defaults, subset assignment, degraded fallback, plan parsing of needs, prompt text, lease
+  matching with capabilities); integration (a `run_code` task goes to the remote agent, never the native one;
+  degraded fallback when no agent can; rework reassignment); fake LLM: scenario `plan_needs` to mark planned
+  tasks with needs; e2e unchanged but must pass.
