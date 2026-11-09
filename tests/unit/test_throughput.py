@@ -363,3 +363,8 @@ def test_parse_keeps_the_defer_reason_only_for_a_deferral():
     r = parse_prioritize({"order": ["t1"], "next_task_ids": ["t1"],
                           "defer_reason": "ignored"}, ["t1"], slots=1)
     assert not r.deferred and r.defer_reason == ""
+
+
+def test_prompt_says_task_wording_is_never_a_reason_to_wait():
+    p = prioritize_prompt([ptask("t1")], [], slots=1)
+    assert "about the task's own wording is never a reason to wait" in p

@@ -558,7 +558,9 @@ def prioritize_prompt(candidates: Iterable[Any], done_tasks: Iterable[Any],
               "finished), approve none: \"next_task_ids\": [] and \"next_task_id\": null, and say "
               "in \"defer_reason\" exactly what you are waiting for (a file, a task or another "
               "team's work). Those tasks stay Pending and you will be asked again when more work "
-              "is done.\n")
+              "is done. Defer only for work that is not finished yet: a Definition of Ready rule "
+              "about the task's own wording is never a reason to wait, because nothing will change "
+              "the wording; approve such a task if it serves the Mission.\n")
     else:
         s += (" No other work is in progress anywhere in this swarm, so waiting cannot change "
               "anything: approve at least one candidate that advances the Mission, or reject the "
