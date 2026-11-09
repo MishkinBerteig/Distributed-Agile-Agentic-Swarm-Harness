@@ -745,8 +745,9 @@ class Jobs:
             await self.events.add(
                 swarm.id, "deferred", team_id=team.id, actor=mj.id,
                 detail=f"{mj.name} approved no task for team '{team.name}' yet: {names}{more} "
-                       f"cannot start yet and stay Pending. It will look again when more work "
-                       f"is done.")
+                       f"cannot start yet and stay Pending"
+                       + (f" (waiting for: {res.defer_reason})" if res.defer_reason else "")
+                       + ". It will look again when more work is done.")
             swarm_tasks = await self.tasks.list(swarm_id=swarm.id)
             raise Deferred(sum(1 for t in swarm_tasks if t.status == TaskStatus.DONE.value),
                            f"team {team.name}: nothing can start yet")

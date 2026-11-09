@@ -354,3 +354,12 @@ def test_prompt_without_can_wait_offers_no_deferral():
     p = prioritize_prompt([ptask("t1")], [], slots=1, can_wait=False)
     assert "waiting cannot change anything" in p
     assert '"next_task_ids": []' not in p and "Never reject a task only because" not in p
+
+
+def test_parse_keeps_the_defer_reason_only_for_a_deferral():
+    r = parse_prioritize({"order": ["t1"], "next_task_ids": [], "next_task_id": None,
+                          "defer_reason": "tempconv.py from team Core"}, ["t1"], slots=1)
+    assert r.deferred and r.defer_reason == "tempconv.py from team Core"
+    r = parse_prioritize({"order": ["t1"], "next_task_ids": ["t1"],
+                          "defer_reason": "ignored"}, ["t1"], slots=1)
+    assert not r.deferred and r.defer_reason == ""

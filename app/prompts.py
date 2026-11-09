@@ -305,7 +305,9 @@ def standards_prompt(dor_guidance: str = "", dod_guidance: str = "") -> str:
          "acceptance criterion, dependencies done), so do not repeat them. Each rule must be "
          "checkable before work starts, from the task text and the files that exist. Never "
          "require that a file does not exist yet: later tasks of this team refine its own files. "
-         "A rule may require another team's artifact to exist; Mission Judgement waits for it.\n"
+         "A rule may require another team's artifact to exist; Mission Judgement waits for it. "
+         "Every rule applies to each task on its own, so never require one task to name or cover "
+         "all of the team's deliverables.\n"
          "- definition_of_done: the bar every task of this team must clear, aligned with the "
          "Mission and the vision-level Definition of Done. Make each item checkable.\n")
     if dor_guidance.strip():
@@ -537,6 +539,7 @@ class PrioritizeResult:
     # Mission Judgement approved nothing on purpose (`"next_task_ids": []`): the remaining
     # candidates belong to the Mission but cannot start yet, so they stay Pending.
     deferred: bool = False
+    defer_reason: str = ""
 
 
 def prioritize_prompt(candidates: Iterable[Any], done_tasks: Iterable[Any],
@@ -552,8 +555,10 @@ def prioritize_prompt(candidates: Iterable[Any], done_tasks: Iterable[Any],
          "next_task_id: the first of them.")
     if can_wait:
         s += (" If no candidate can start yet (for example it needs work another team has not "
-              "finished), approve none: \"next_task_ids\": [] and \"next_task_id\": null. Those "
-              "tasks stay Pending and you will be asked again when more work is done.\n")
+              "finished), approve none: \"next_task_ids\": [] and \"next_task_id\": null, and say "
+              "in \"defer_reason\" exactly what you are waiting for (a file, a task or another "
+              "team's work). Those tasks stay Pending and you will be asked again when more work "
+              "is done.\n")
     else:
         s += (" No other work is in progress anywhere in this swarm, so waiting cannot change "
               "anything: approve at least one candidate that advances the Mission, or reject the "
@@ -576,7 +581,8 @@ def prioritize_prompt(candidates: Iterable[Any], done_tasks: Iterable[Any],
           f"{workspace_files.strip() or '(none yet)'}\n\n")
     s += (_JSON_ONLY + 'Contract: {"order": ["<task id>", ...], "next_task_ids": ["<task id>", ...], '
           '"next_task_id": "<task id>" | null, '
-          '"rejections": [{"task_id": "<task id>", "reason": "..."}]}\n'
+          '"rejections": [{"task_id": "<task id>", "reason": "..."}], '
+          '"defer_reason": "<only when next_task_ids is empty>"}\n'
           'Example: {"order": ["t2", "t1", "t3"], "next_task_ids": ["t2"], "next_task_id": "t2", '
           '"rejections": '
           '[{"task_id": "t3", "reason": "Unrelated to the Mission"}]}')
@@ -640,9 +646,11 @@ def parse_prioritize(obj: Any, valid_ids: Iterable[str], slots: int = 1,
     if not chosen and not deferred:  # missing or conflicting answer: approve the first ones
         chosen = [v for v in order if v not in rejected][:slots]
     nxt = chosen[0] if chosen else None
+    deferred = deferred and any(v not in rejected for v in order)
     return PrioritizeResult(order=order, next_task_id=nxt, rejections=rejections,
-                            next_task_ids=chosen,
-                            deferred=deferred and any(v not in rejected for v in order))
+                            next_task_ids=chosen, deferred=deferred,
+                            defer_reason=_clip(_text(o.get("defer_reason")), 300) if deferred
+                            else "")
 
 
 # ---------------------------------------------------------------------------

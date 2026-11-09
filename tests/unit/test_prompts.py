@@ -374,3 +374,9 @@ def test_standards_prompt_forbids_self_blocking_readiness_rules():
     p = standards_prompt()
     assert "Never require that a file does not exist yet" in p
     assert "checkable before work starts" in p
+
+
+def test_standards_prompt_says_rules_apply_to_each_task_alone():
+    from app.prompts import standards_prompt
+    assert "never require one task to name or cover all of the team's deliverables" in \
+        standards_prompt()
