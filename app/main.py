@@ -7,17 +7,21 @@ globals created by the lifespan; tests may replace them with fakes before issuin
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import shutil
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 import asyncpg
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import Body, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from app import api_helpers as H
+from app import remote as R
 from app import services
 from app.bus import DecisionBus, ProposalError
 from app.config import Settings
@@ -26,13 +30,13 @@ from app.embeddings import build_embedder
 from app.llm import LLMError
 from app.metrics import compute_metrics
 from app.models import (
-    FeedbackCreate, GlobalConfig, QualityGenerateRequest, Swarm, SwarmCreate, SwarmStatus,
+    FeedbackCreate, GlobalConfig, QualityGenerateRequest, RemoteJob, Runner, Swarm, SwarmCreate, SwarmStatus,
     SwarmUpdate, TaskCreate, TaskUpdate, TeamCreate, TeamUpdate,
 )
 from app.policy import transition as policy_transition
 from app.repo import (
     AgentRepo, CallRepo, ConfigRepo, EventRepo, FeedbackRepo, LearningRepo, ProposalRepo,
-    SwarmRepo, TaskRepo, TeamRepo, VerdictRepo,
+    RemoteJobRepo, RunnerRepo, SwarmRepo, TaskRepo, TeamRepo, VerdictRepo,
 )
 from app.routing import validate_config
 
@@ -44,6 +48,7 @@ bus: DecisionBus = DecisionBus(settings.REDIS_URL, ttl_seconds=settings.BUS_TTL_
                                signals_max=settings.BUS_SIGNALS_MAX)
 llm: Any = services.build_llm(settings)
 embedder: Any = build_embedder(settings.EMBEDDING_MODEL, settings.EMBEDDING_USE_MODEL)
+BOOTSTRAP_RUNNER = "local-runner"
 
 
 @asynccontextmanager
@@ -54,6 +59,12 @@ async def lifespan(app: FastAPI):
                       signals_max=settings.BUS_SIGNALS_MAX)
     llm = services.build_llm(settings)
     embedder = build_embedder(settings.EMBEDDING_MODEL, settings.EMBEDDING_USE_MODEL)
+    if settings.RUNNER_BOOTSTRAP_TOKEN:
+        await RunnerRepo(pool).ensure_bootstrap(
+            BOOTSTRAP_RUNNER, R.hash_token(settings.RUNNER_BOOTSTRAP_TOKEN))
+    if not settings.API_TOKEN:
+        log.warning("DAASH_API_TOKEN is not set: the admin API and DAASHboard are OPEN. "
+                    "Set it before exposing the coordinator beyond this machine.")
     log.info("Coordinator ready (LLM endpoint %s).", settings.LLM_ENDPOINT)
     try:
         yield
@@ -63,7 +74,37 @@ async def lifespan(app: FastAPI):
         pool = None
 
 
-app = FastAPI(title="DAASH", lifespan=lifespan)
+# -- authentication (docs/DESIGN-0.3.md section 4) ------------------------------------------------
+
+_WWW_AUTH = {"WWW-Authenticate": "Bearer"}
+
+
+async def require_admin(request: Request) -> None:
+    """Admin bearer auth for every endpoint except /health and /runner/* (runner tokens).
+    Open when DAASH_API_TOKEN is empty (local prototype)."""
+    expected = settings.API_TOKEN
+    if not expected:
+        return
+    path = request.url.path
+    if path == "/health" or path.startswith("/runner/"):
+        return
+    if not R.tokens_match(R.bearer_token(request.headers.get("authorization")), expected):
+        raise HTTPException(401, "Authentication required", headers=_WWW_AUTH)
+
+
+async def runner_auth(request: Request) -> Runner:
+    """The enabled runner owning the bearer token, else 401. Every authenticated call counts
+    as being seen."""
+    token = R.bearer_token(request.headers.get("authorization"))
+    runner = await RunnerRepo(_p()).by_token_hash(R.hash_token(token)) if token else None
+    if (runner is None or not runner.enabled
+            or not R.tokens_match(R.hash_token(token), runner.token_hash)):
+        raise HTTPException(401, "Invalid runner token", headers=_WWW_AUTH)
+    await RunnerRepo(_p()).touch(runner.id)
+    return runner
+
+
+app = FastAPI(title="DAASH", lifespan=lifespan, dependencies=[Depends(require_admin)])
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
@@ -128,7 +169,7 @@ async def _hard_delete(swarm: Swarm) -> None:
 
 @app.get("/health")
 async def health() -> dict:
-    return {"status": "ok"}
+    return {"status": "ok", "auth_required": bool(settings.API_TOKEN)}
 
 
 @app.get("/config")
@@ -557,3 +598,210 @@ async def cast_vote(proposal_id: str, req: VoteRequest) -> dict:
                                "vote": "approve" if req.approve else "reject",
                                "status": proposal.status})
     return proposal.model_dump()
+
+
+# -- runners: admin management (docs/DESIGN-0.3.md section 4) ------------------------------------------
+
+class RunnerCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+
+
+class RunnerPatchRequest(BaseModel):
+    enabled: bool
+
+
+def _runner_json(r: Runner, active: dict[str, int], now: datetime) -> dict:
+    online = bool(r.enabled and r.last_seen_at is not None
+                  and (now - r.last_seen_at).total_seconds() <= R.ONLINE_SECONDS)
+    return {**r.model_dump(mode="json"), "online": online,
+            "active_jobs": active.get(r.id, 0)}
+
+
+async def _runner_view(r: Runner) -> dict:
+    return _runner_json(r, await RunnerRepo(_p()).active_job_counts(), _now())
+
+
+@app.post("/runners", status_code=201)
+async def create_runner(req: RunnerCreateRequest) -> dict:
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(422, "name must not be blank")
+    token = R.new_runner_token()
+    try:
+        runner = await RunnerRepo(_p()).create(name, R.hash_token(token))
+    except asyncpg.UniqueViolationError:
+        raise HTTPException(409, f"A runner named '{name}' already exists.")
+    return {"runner": await _runner_view(runner), "token": token}
+
+
+@app.get("/runners")
+async def list_runners() -> dict:
+    active = await RunnerRepo(_p()).active_job_counts()
+    now = _now()
+    return {"runners": [_runner_json(r, active, now) for r in await RunnerRepo(_p()).list()]}
+
+
+@app.patch("/runners/{runner_id}")
+async def patch_runner(runner_id: str, req: RunnerPatchRequest) -> dict:
+    runner = await RunnerRepo(_p()).update(runner_id, enabled=req.enabled)
+    if runner is None:
+        raise HTTPException(404, "runner not found")
+    return await _runner_view(runner)
+
+
+@app.delete("/runners/{runner_id}", status_code=204)
+async def delete_runner(runner_id: str) -> Response:
+    if not await RunnerRepo(_p()).delete(runner_id):
+        raise HTTPException(404, "runner not found")
+    return Response(status_code=204)
+
+
+@app.get("/remote-jobs")
+async def list_remote_jobs(swarm_id: Optional[str] = None) -> dict:
+    """Remote jobs for the dashboard, long prompt bodies clipped; each carries the runner's
+    and the task's name."""
+    jobs = await RemoteJobRepo(_p()).list(swarm_id)
+    runner_names = {r.id: r.name for r in await RunnerRepo(_p()).list()}
+    task_ids = list({j.task_id for j in jobs})
+    rows = await _p().fetch("SELECT id, name FROM tasks WHERE id = ANY($1::text[])", task_ids)
+    task_names = {r["id"]: r["name"] for r in rows}
+    out = []
+    for j in jobs:
+        d = R.clip_for_listing(_j(j))
+        d["runner_name"] = runner_names.get(j.runner_id) if j.runner_id else None
+        d["task_name"] = task_names.get(j.task_id)
+        out.append(d)
+    return {"jobs": out}
+
+
+# -- runner protocol (docs/DESIGN-0.3.md section 5; runner bearer token) ------------------------------
+
+#: Seconds between checks while a /runner/lease long-poll waits (tests shrink it).
+LEASE_POLL_SECONDS = 1.0
+
+
+class HelloRequest(BaseModel):
+    host: str = ""
+    version: str = ""
+    max_jobs: int = Field(1, ge=1, le=64)
+    harnesses: list[Any] = Field(default_factory=list)
+
+
+class LeaseRequest(BaseModel):
+    wait_seconds: float = Field(0, ge=0, le=R.MAX_WAIT_SECONDS)
+    free_slots: int = Field(1, ge=0, le=64)
+
+
+class HeartbeatRequest(BaseModel):
+    note: Optional[str] = None
+
+
+def _job_for_runner(job: RemoteJob) -> dict:
+    """What the runner receives: the stored payload plus identity fields."""
+    return {**job.payload, "id": job.id, "swarm_id": job.swarm_id, "task_id": job.task_id,
+            "attempt": job.attempt, "harness": job.harness, "model": job.model,
+            "workspace_url": f"/runner/jobs/{job.id}/workspace"}
+
+
+@app.post("/runner/hello")
+async def runner_hello(req: HelloRequest, runner: Runner = Depends(runner_auth)) -> dict:
+    caps = R.normalize_capabilities(req.harnesses)
+    await RunnerRepo(_p()).update(runner.id, host=req.host[:200], version=req.version[:80],
+                                  max_jobs=req.max_jobs, harnesses=caps)
+    return {"runner_id": runner.id, "name": runner.name, "poll_seconds": R.POLL_SECONDS,
+            "heartbeat_seconds": R.HEARTBEAT_SECONDS, "lease_seconds": R.LEASE_SECONDS}
+
+
+@app.post("/runner/lease")
+async def runner_lease(req: LeaseRequest, runner: Runner = Depends(runner_auth)):
+    """Long-poll for a matching queued job: 200 {"job"} or 204."""
+    repo = RemoteJobRepo(_p())
+    caps = R.capability_map(runner.harnesses)
+    deadline = time.monotonic() + req.wait_seconds
+    while req.free_slots > 0:
+        now = _now()
+        await repo.requeue_expired(now)
+        active = (await RunnerRepo(_p()).active_job_counts()).get(runner.id, 0)
+        if active < runner.max_jobs:
+            job = await repo.lease_next(runner, caps, now, R.LEASE_SECONDS)
+            if job is not None:
+                return {"job": _job_for_runner(job)}
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        await asyncio.sleep(min(LEASE_POLL_SECONDS, remaining))
+    return Response(status_code=204)
+
+
+async def _own_job(job_id: str, runner: Runner) -> RemoteJob:
+    """The job if it exists and this runner holds/held it, else 404."""
+    job = await RemoteJobRepo(_p()).get(job_id)
+    if job is None or job.runner_id != runner.id:
+        raise HTTPException(404, "job not found for this runner")
+    return job
+
+
+@app.get("/runner/jobs/{job_id}/workspace")
+async def runner_workspace(job_id: str, runner: Runner = Depends(runner_auth)) -> Response:
+    job = await _own_job(job_id, runner)
+    if job.status != "leased":
+        raise HTTPException(404, "job is not leased by this runner")
+    root = services.workspace_dir(settings, job.swarm_id)
+    data = await asyncio.to_thread(R.build_workspace_tar, root)
+    return Response(content=data, media_type="application/gzip")
+
+
+async def _job_still_wanted(job: RemoteJob) -> bool:
+    """False once the swarm left ACTIVE or the task is no longer In-Progress."""
+    swarm = await SwarmRepo(_p()).get(job.swarm_id)
+    if swarm is None or swarm.lifecycle_state != SwarmStatus.ACTIVE.value:
+        return False
+    task = await TaskRepo(_p()).get(job.task_id)
+    return task is not None and task.status == "In-Progress"
+
+
+@app.post("/runner/jobs/{job_id}/heartbeat")
+async def runner_heartbeat(job_id: str, req: Optional[HeartbeatRequest] = None,
+                           runner: Runner = Depends(runner_auth)) -> dict:
+    repo = RemoteJobRepo(_p())
+    job = await _own_job(job_id, runner)
+    if job.status != "leased":
+        return {"status": "cancelled"}
+    if not await _job_still_wanted(job):
+        await repo.cancel(job.id)
+        return {"status": "cancelled"}
+    beat = await repo.heartbeat(job.id, runner.id, _now(), R.LEASE_SECONDS)
+    return {"status": "leased" if beat is not None and beat.status == "leased" else "cancelled"}
+
+
+@app.post("/runner/jobs/{job_id}/result")
+async def runner_result(job_id: str, request: Request,
+                        runner: Runner = Depends(runner_auth)) -> dict:
+    repo = RemoteJobRepo(_p())
+    job = await repo.get(job_id)
+    if job is None:
+        raise HTTPException(404, "job not found")
+    raw = await request.body()
+    if len(raw) > R.MAX_BODY_BYTES:
+        raise HTTPException(413, "result body too large")
+    if job.runner_id != runner.id or job.status != "leased":
+        raise HTTPException(409, "job is not leased by this runner (cancelled or expired)")
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        raise HTTPException(400, "result is not valid JSON")
+    limits = job.payload.get("limits") or {}
+    try:
+        result = R.validate_result(
+            body, max_files=limits.get("max_files", R.MAX_FILES),
+            max_file_bytes=limits.get("max_file_bytes", R.MAX_FILE_BYTES),
+            max_total_bytes=limits.get("max_total_bytes", R.MAX_TOTAL_BYTES))
+    except R.ResultError as exc:
+        raise HTTPException(400, str(exc))
+    root = services.ensure_workspace(settings, job.swarm_id)
+    await asyncio.to_thread(R.stage_files, root, job.id, result.files)
+    done = await repo.complete(job.id, runner.id, R.stored_result(result))
+    if done is None:   # lost the lease while we validated
+        await asyncio.to_thread(shutil.rmtree, R.staging_dir(root, job.id), True)
+        raise HTTPException(409, "job is not leased by this runner (cancelled or expired)")
+    return {"status": "completed"}

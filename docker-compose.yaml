@@ -4,7 +4,8 @@
 #   frontend - regular bridge: coordinator, engine and dashboard. Carries the published ports,
 #              the dashboard's /api proxy to the coordinator, npm installs, and the
 #              coordinator's egress to the LLM endpoint on the host.
-# Published ports bind to 127.0.0.1 only:
+# Published ports bind to 127.0.0.1 by default (set DAASH_BIND_ADDR=0.0.0.0, or a Tailscale IP, to
+# let runners on other devices reach the coordinator; then ALSO set DAASH_API_TOKEN):
 #   8000 - coordinator API (docs at /docs)
 #   7173 - DAASHboard (Vite dev server)
 services:
@@ -13,7 +14,7 @@ services:
       context: .
       target: runtime
     ports:
-      - "127.0.0.1:8000:8000"
+      - "${DAASH_BIND_ADDR:-127.0.0.1}:8000:8000"
     environment:
       - DAASH_DATABASE_URL=postgresql://daash:daash@db:5432/daash
       - DAASH_ALEMBIC_DATABASE_URL=postgresql+psycopg://daash:daash@db:5432/daash
@@ -24,6 +25,8 @@ services:
       - DAASH_LLM_MAX_CONCURRENCY=${DAASH_LLM_MAX_CONCURRENCY:-4}
       - DAASH_LLM_MODEL_CONCURRENCY=${DAASH_LLM_MODEL_CONCURRENCY:-{}}
       - DAASH_WORKSPACE_ROOT=/workspaces
+      - DAASH_API_TOKEN=${DAASH_API_TOKEN:-}
+      - DAASH_RUNNER_BOOTSTRAP_TOKEN=${DAASH_RUNNER_BOOTSTRAP_TOKEN:-}
     extra_hosts:
       - host.docker.internal:host-gateway
     depends_on:

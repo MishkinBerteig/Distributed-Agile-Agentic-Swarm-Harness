@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Iterable, Optional
 
-from app.models import AgentRole, Complexity, SwarmConfig
+from app.models import KNOWN_HARNESSES, AgentRole, Complexity, SwarmConfig
 
 CLASSIFIER_ROLE = "classifier"
 MIN_STATS_SAMPLES = 5
@@ -139,6 +139,19 @@ def validate_config(config: SwarmConfig) -> list[str]:
     if config.allowed_harnesses and config.coordinator.harness not in config.allowed_harnesses:
         errors.append(f"coordinator.harness '{config.coordinator.harness}' is not in "
                       f"allowed_harnesses ({', '.join(config.allowed_harnesses)}).")
+    for h in config.allowed_harnesses:
+        if h not in KNOWN_HARNESSES:
+            errors.append(f"allowed_harnesses contains unknown harness '{h}' "
+                          f"(known: {', '.join(KNOWN_HARNESSES)}).")
+    for i, spec in enumerate(config.delivery_harnesses, 1):
+        if spec.harness not in KNOWN_HARNESSES:
+            errors.append(f"delivery_harnesses[{i}] harness '{spec.harness}' is unknown "
+                          f"(known: {', '.join(KNOWN_HARNESSES)}).")
+        elif config.allowed_harnesses and spec.harness not in config.allowed_harnesses:
+            errors.append(f"delivery_harnesses[{i}] harness '{spec.harness}' is not in "
+                          f"allowed_harnesses ({', '.join(config.allowed_harnesses)}).")
+    if config.remote_fallback_minutes is not None and config.remote_fallback_minutes < 1:
+        errors.append("remote_fallback_minutes must be at least 1 (or null to wait for a runner).")
     if config.allowed_providers and config.coordinator.provider not in config.allowed_providers:
         errors.append(f"coordinator.provider '{config.coordinator.provider}' is not in "
                       f"allowed_providers ({', '.join(config.allowed_providers)}).")

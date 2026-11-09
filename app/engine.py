@@ -416,8 +416,11 @@ class Engine:
         delay, n = self.cooldowns.fail(key)
         label = JOB_LABELS.get(action.kind, action.kind.value)
         if isinstance(exc, LLMError):
-            reason = ("the language model gateway is unreachable or overloaded"
-                      if is_infrastructure_error(exc) else "the model gave an unusable answer")
+            if exc.code == "remote":
+                reason = "the remote runner had an infrastructure problem"
+            else:
+                reason = ("the language model gateway is unreachable or overloaded"
+                          if is_infrastructure_error(exc) else "the model gave an unusable answer")
             detail = str(exc)[:200]
             log.warning("%s failed (%s: %s); cooldown %.0fs (failure %d)", key, exc.code,
                         detail, delay, n)

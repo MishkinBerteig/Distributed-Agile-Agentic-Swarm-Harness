@@ -42,7 +42,7 @@ def task_body(team_id, name="T1", criteria=None, **kw):
 
 async def test_health(api):
     r = await api.get("/health")
-    assert r.status_code == 200 and r.json() == {"status": "ok"}
+    assert r.status_code == 200 and r.json() == {"status": "ok", "auth_required": False}
 
 
 async def test_config_get_put_and_validation(api):

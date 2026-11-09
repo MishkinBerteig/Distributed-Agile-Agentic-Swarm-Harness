@@ -697,6 +697,30 @@ def work_prompt(task: Any, criteria: Iterable[Any], feedback: Optional[str],
     return s
 
 
+def remote_work_prompt(task: Any, criteria: Iterable[Any], feedback: Optional[str],
+                       workspace_listing: str) -> str:
+    """Prompt for an external agent CLI (docs/DESIGN-0.3.md 6.2). The CLI has its own tools and
+    works on a private copy of the swarm workspace, so there is no submit tool: its final message
+    is the summary."""
+    s = ("Job: do this task. Your current directory is a copy of the shared swarm workspace. "
+         "Work only inside it: create or edit files with your own tools, and write the actual "
+         "content, never placeholders. You may run code and look things up if your tools allow. "
+         "Do not ask questions; decide and proceed.\n\n")
+    s += f"Task {_get(task, 'id', '')}: {_get(task, 'name', '')}\n"
+    if _get(task, "description"):
+        s += f"Description: {_get(task, 'description')}\n"
+    if _get(task, "artifact"):
+        s += f"Artifact to create or change: {_get(task, 'artifact')}\n"
+    s += f"\nAcceptance criteria (each must be green):\n{_crit_lines(criteria)}\n"
+    if feedback and feedback.strip():
+        s += f"\nThe previous attempt was rejected. Fix every point:\n{feedback.strip()}\n"
+    s += f"\nExisting workspace files:\n{workspace_listing.strip() or '(empty)'}\n"
+    s += ("\nBefore finishing, re-read your files and check EVERY acceptance criterion one by "
+          "one; fix what is not met. When finished, reply with a short summary of what you did "
+          "and how each criterion is met.")
+    return s
+
+
 # ---------------------------------------------------------------------------
 # Quality review (Quality Judgement)
 # ---------------------------------------------------------------------------

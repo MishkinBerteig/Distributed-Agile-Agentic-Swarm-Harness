@@ -9,24 +9,27 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
 import asyncpg
 
-from app import policy, prompts, services
+import types
+
+from app import policy, prompts, remote, services
 from app.bus import DecisionBus
 from app.checks import is_deterministic, run_check, validate_check_spec
 from app.config import Settings
-from app.llm import LLMError
+from app.llm import LLMError, Usage
 from app.models import (Action, ActionKind, Agent, AgentRole, AgentState, CheckKind,
-                        CreatorKind, CriterionCreate, CriterionStatus, Swarm, Task, TaskCreate,
+                        CreatorKind, CriterionCreate, CriterionStatus, NATIVE_HARNESS, Swarm, Task, TaskCreate,
                         TaskStatus, Team, TeamStatus)
 from app.repo import (AgentRepo, CallRepo, EventRepo, LearningRepo, MemoryRepo, ProposalRepo,
-                      SwarmRepo, TaskRepo, TeamRepo, VerdictRepo)
+                      RemoteJobRepo, RunnerRepo, SwarmRepo, TaskRepo, TeamRepo, VerdictRepo)
 from app.routing import choose_model, ladder, routing_stats
 from app.tools import Tool, ToolError, ToolRegistry, safe_path, workspace_tools
 
@@ -35,6 +38,7 @@ log = logging.getLogger("daash.jobs")
 FILE_CLIP = 12_000          # characters of each deliverable file shown to the judges
 LISTING_LIMIT = 80          # workspace files listed in prompts
 BUS_TIMEOUT = 2.0           # seconds; the bus is best-effort
+MAX_LEASE_EXPIRIES = 3      # a remote job whose runner vanished this often is given up on
 
 DELIVERY = AgentRole.MISSION_DELIVERY.value
 MJ = AgentRole.MISSION_JUDGEMENT.value
@@ -59,6 +63,15 @@ class Deferred(Exception):
     def __init__(self, done_count: int, detail: str = "") -> None:
         super().__init__(detail)
         self.done_count = done_count
+
+
+class RemoteError(LLMError):
+    """A remote attempt that says nothing about the work: the runner reported an infrastructure
+    `error`, or kept vanishing. An LLMError with code "remote" so the engine treats it like gateway
+    trouble: cooldown and retry, no attempt counted (docs/DESIGN-0.3.md section 6)."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, code="remote")
 
 
 class RefCounts:
@@ -95,7 +108,7 @@ def is_infrastructure_error(exc: BaseException) -> bool:
     """Gateway trouble that says nothing about the work: connection, timeout, 5xx, 429."""
     if not isinstance(exc, LLMError):
         return False
-    if exc.code in ("connection", "timeout"):
+    if exc.code in ("connection", "timeout", "remote"):
         return True
     return exc.code == "http" and exc.status is not None and (exc.status >= 500 or exc.status == 429)
 
@@ -151,6 +164,18 @@ def escalate_model(base: str, config, steps: int) -> str:
     return lad[min(idx + steps, len(lad) - 1)]
 
 
+def delivery_spec_model(cfg, agent_name: str) -> str:
+    """The `model` of the agent's delivery_harnesses entry ("" = use routing), found from its
+    name 'Delivery-<i>' (cycled like services.delivery_spec)."""
+    if not cfg.delivery_harnesses:
+        return ""
+    try:
+        i = int(agent_name.rsplit("-", 1)[1])
+    except (IndexError, ValueError):
+        return ""
+    return cfg.delivery_harnesses[(i - 1) % len(cfg.delivery_harnesses)].model or ""
+
+
 def review_paths(task: Task) -> list[str]:
     """Workspace paths the judges should see: deliverable files, artifact, check paths."""
     paths: list[str] = list((task.deliverable or {}).get("files") or [])
@@ -183,7 +208,8 @@ def workspace_listing(root: Path, limit: int = LISTING_LIMIT) -> str:
     if not root.is_dir():
         return ""
     lines = []
-    files = sorted(p for p in root.rglob("*") if p.is_file())
+    files = sorted(p for p in root.rglob("*")
+                   if p.is_file() and p.relative_to(root).parts[0] != ".daash")
     for p in files[:limit]:
         lines.append(f"{p.relative_to(root).as_posix()} ({p.stat().st_size} bytes)")
     if len(files) > limit:
@@ -282,6 +308,8 @@ class Jobs:
         self._refs = RefCounts()
         # judge replies already paid for in a review that later failed (infra error)
         self._partial: dict[tuple, Any] = {}
+        # seconds between checks of a remote job's state (tests shrink it)
+        self.remote_poll_seconds = 2.0
 
     # -- plumbing -------------------------------------------------------------
 
@@ -743,75 +771,212 @@ class Jobs:
             all_tasks = await self.tasks.list(swarm_id=swarm.id)
             stats = stats_from_tasks(all_tasks)
             model = choose_model(DELIVERY, cfg, task.complexity, task.attempts, stats)
+            if agent.harness != NATIVE_HARNESS:
+                spec_model = delivery_spec_model(cfg, agent.name)
+                if spec_model:
+                    model = escalate_model(spec_model, cfg, task.attempts)
+                if await self._remote_work(swarm, team, agent, task, model):
+                    return
+                # nobody picked the job up in time: run this attempt on the built-in harness
+                model = choose_model(DELIVERY, cfg, task.complexity, task.attempts, stats)
+            await self._native_work(swarm, team, agent, task, model)
 
-            ws = self.workspace(swarm)
-            registry = ToolRegistry()
-            for tool in workspace_tools(ws, registry):
-                registry.add(tool)
-            submitted: dict[str, str] = {}
-            pending = await self._pending_proposals(swarm, team, agent)
-            for tool in self._engine_tools(swarm, team, agent, task, submitted):
-                if tool.name == "vote_on_proposal" and not pending:
-                    continue
-                registry.add(tool)
+    async def _native_work(self, swarm: Swarm, team: Team, agent: Agent, task: Task,
+                           model: str) -> None:
+        """One attempt on the built-in "daash" harness (the tool loop)."""
+        cfg = swarm.config
+        ws = self.workspace(swarm)
+        registry = ToolRegistry()
+        for tool in workspace_tools(ws, registry):
+            registry.add(tool)
+        submitted: dict[str, str] = {}
+        pending = await self._pending_proposals(swarm, team, agent)
+        for tool in self._engine_tools(swarm, team, agent, task, submitted):
+            if tool.name == "vote_on_proposal" and not pending:
+                continue
+            registry.add(tool)
 
-            system = await services.agent_system_prompt(
-                self.pool, swarm, agent, team, query=f"{task.name}. {task.description}",
-                embedder=self.embedder)
-            user = prompts.work_prompt(task, task.criteria, task.feedback,
-                                       workspace_listing(ws), pending)
-            t0 = time.monotonic()
-            try:
-                loop = await self.llm.run_tool_loop(model, system, user, registry,
-                                                    cfg.limits.max_tool_steps)
-            except LLMError as exc:
-                await services.record_call(
-                    self.pool, agent, "work_task", model, usage=exc.usage,
-                    transcript=exc.transcript, ok=False, error=str(exc), task_id=task.id,
-                    duration_ms=int((time.monotonic() - t0) * 1000))
-                await self._require_state(swarm)
-                if is_infrastructure_error(exc):
-                    raise
-                await self._attempt_failed(
-                    swarm, team, agent, task, model, registry,
-                    f"The model call failed ({exc}).")
-                return
+        system = await services.agent_system_prompt(
+            self.pool, swarm, agent, team, query=f"{task.name}. {task.description}",
+            embedder=self.embedder)
+        user = prompts.work_prompt(task, task.criteria, task.feedback,
+                                   workspace_listing(ws), pending)
+        t0 = time.monotonic()
+        try:
+            loop = await self.llm.run_tool_loop(model, system, user, registry,
+                                                cfg.limits.max_tool_steps)
+        except LLMError as exc:
             await services.record_call(
-                self.pool, agent, "work_task", model, usage=loop.usage, transcript=loop.transcript,
-                task_id=task.id, duration_ms=int((time.monotonic() - t0) * 1000))
+                self.pool, agent, "work_task", model, usage=exc.usage,
+                transcript=exc.transcript, ok=False, error=str(exc), task_id=task.id,
+                duration_ms=int((time.monotonic() - t0) * 1000))
             await self._require_state(swarm)
-
-            if await self._still(task.id, TaskStatus.IN_PROGRESS.value) is None:
-                log.info("work on %r dropped: the task changed while the agent worked", task.name)
-                return
-            files = dedupe_files(registry.files_written)
-            if loop.stopped_by == "terminal" and loop.terminal_tool == "submit":
-                summary = submitted.get("summary") or loop.terminal_output or ""
-                await self.tasks.update(
-                    task.id, status=TaskStatus.REVIEW.value,
-                    deliverable={"summary": summary, "files": files, "model": model})
-                await self.events.add(
-                    swarm.id, "submitted", team_id=team.id, task_id=task.id, actor=agent.id,
-                    from_status=TaskStatus.IN_PROGRESS.value, to_status=TaskStatus.REVIEW.value,
-                    detail=f"{agent.name} submitted '{task.name}' for review "
-                           f"({len(files)} file(s) written, model {model}): {_clip(summary, 200)}")
-                await self.signal("task.submitted", team.id, task.id, files=files)
-                return
-            why = ("it used all its tool steps" if loop.stopped_by == "max_steps"
-                   else "it answered in text")
+            if is_infrastructure_error(exc):
+                raise
             await self._attempt_failed(
                 swarm, team, agent, task, model, registry,
-                f"{why} without calling `submit`.", loop.final_text)
+                f"The model call failed ({exc}).")
+            return
+        await services.record_call(
+            self.pool, agent, "work_task", model, usage=loop.usage, transcript=loop.transcript,
+            task_id=task.id, duration_ms=int((time.monotonic() - t0) * 1000))
+        await self._require_state(swarm)
+
+        if await self._still(task.id, TaskStatus.IN_PROGRESS.value) is None:
+            log.info("work on %r dropped: the task changed while the agent worked", task.name)
+            return
+        files = dedupe_files(registry.files_written)
+        if loop.stopped_by == "terminal" and loop.terminal_tool == "submit":
+            summary = submitted.get("summary") or loop.terminal_output or ""
+            await self.tasks.update(
+                task.id, status=TaskStatus.REVIEW.value,
+                deliverable={"summary": summary, "files": files, "model": model})
+            await self.events.add(
+                swarm.id, "submitted", team_id=team.id, task_id=task.id, actor=agent.id,
+                from_status=TaskStatus.IN_PROGRESS.value, to_status=TaskStatus.REVIEW.value,
+                detail=f"{agent.name} submitted '{task.name}' for review "
+                       f"({len(files)} file(s) written, model {model}): {_clip(summary, 200)}")
+            await self.signal("task.submitted", team.id, task.id, files=files)
+            return
+        why = ("it used all its tool steps" if loop.stopped_by == "max_steps"
+               else "it answered in text")
+        await self._attempt_failed(
+            swarm, team, agent, task, model, registry,
+            f"{why} without calling `submit`.", loop.final_text)
+
+    # -- remote work (docs/DESIGN-0.3.md section 6) -----------------------------------------------
+
+    async def _remote_work(self, swarm: Swarm, team: Team, agent: Agent, task: Task,
+                           model: str) -> bool:
+        """One attempt on an external agent CLI through a runner.
+
+        Returns False if no runner leased the job in time (the caller then runs it natively),
+        True when the attempt was handled (submitted, failed or dropped). Raises RemoteError for
+        infrastructure trouble and SwarmNotActive / CancelledError when the swarm moved on."""
+        cfg = swarm.config
+        repo = RemoteJobRepo(self.pool)
+        ws = self.workspace(swarm)
+        system = await services.agent_system_prompt(
+            self.pool, swarm, agent, team, query=f"{task.name}. {task.description}",
+            embedder=self.embedder)
+        prompt = prompts.remote_work_prompt(task, task.criteria, task.feedback,
+                                            workspace_listing(ws))
+        payload = {
+            "system_prompt": system, "prompt": prompt,
+            "limits": {"timeout_seconds": cfg.limits.remote_job_timeout_minutes * 60,
+                       "max_files": remote.MAX_FILES, "max_file_bytes": remote.MAX_FILE_BYTES,
+                       "max_total_bytes": remote.MAX_TOTAL_BYTES},
+            "task": {"name": task.name, "artifact": task.artifact}}
+        job = await repo.ensure_active(swarm.id, team.id, task.id, agent.id, task.attempts,
+                                       agent.harness, model, payload)
+        job_id = job.id
+        try:
+            while True:
+                await repo.requeue_expired(_now())
+                job = await repo.get(job_id)
+                if job is None:
+                    raise RemoteError("the remote job disappeared")
+                now = _now()
+                if job.expiries >= MAX_LEASE_EXPIRIES and job.status in ("queued", "leased"):
+                    await repo.abandon(job.id)
+                    raise RemoteError(
+                        f"the runner for '{task.name}' vanished {job.expiries} times")
+                if job.status == "completed":
+                    return await self._apply_remote(swarm, team, agent, task, model, job)
+                if job.status in ("cancelled", "abandoned"):
+                    await self._require_state(swarm)
+                    raise RemoteError(f"the remote job was {job.status} by the coordinator")
+                if job.status == "queued":
+                    wait = cfg.remote_fallback_minutes
+                    if wait is not None and now - job.created_at > timedelta(minutes=wait):
+                        await repo.abandon(job.id)
+                        await self.events.add(
+                            swarm.id, "info", team_id=team.id, task_id=task.id, actor=agent.id,
+                            detail=f"No runner offering '{agent.harness}' picked up "
+                                   f"'{task.name}' within {wait} minutes, so {agent.name} ran "
+                                   f"it on the built-in harness instead.")
+                        return False
+                elif job.status == "leased":
+                    limit = timedelta(minutes=cfg.limits.remote_job_timeout_minutes)
+                    if job.leased_at is not None and now - job.leased_at > limit:
+                        await repo.cancel(job.id)
+                        await self._attempt_failed(
+                            swarm, team, agent, task, model, types.SimpleNamespace(files_written=[]),
+                            "the remote agent ran out of time.", remote=True)
+                        return True
+                await asyncio.sleep(self.remote_poll_seconds)
+        except asyncio.CancelledError:
+            # pause / verification (B.4): tell the runner through its next heartbeat
+            try:
+                await asyncio.shield(repo.cancel(job_id))
+            except BaseException as exc:  # noqa: BLE001 - best effort
+                log.warning("could not cancel remote job %s: %r", job_id, exc)
+            raise
+
+    async def _apply_remote(self, swarm: Swarm, team: Team, agent: Agent, task: Task,
+                            model: str, job) -> bool:
+        """Take a completed remote job's result into the workspace and the task."""
+        res = job.result or {}
+        outcome = res.get("outcome", "error")
+        runner = await RunnerRepo(self.pool).get(job.runner_id) if job.runner_id else None
+        runner_name = runner.name if runner else "unknown"
+        ws = self.workspace(swarm)
+        usage = Usage(**{k: int((res.get("usage") or {}).get(k, 0))
+                         for k in ("prompt_tokens", "completion_tokens", "total_tokens")})
+        await services.record_call(
+            self.pool, agent, "work_task", model, usage=usage, task_id=task.id,
+            ok=outcome != "error", error=res.get("error") if outcome == "error" else None,
+            duration_ms=int(res.get("duration_ms") or 0),
+            transcript=[{"role": "remote", "harness": job.harness, "runner": runner_name,
+                         "outcome": outcome, "summary": res.get("summary", ""),
+                         "content": res.get("transcript_tail", "")}])
+        try:
+            await self._require_state(swarm)
+        except SwarmNotActive:
+            await asyncio.to_thread(shutil.rmtree, remote.staging_dir(ws, job.id), True)
+            raise
+        if await self._still(task.id, TaskStatus.IN_PROGRESS.value) is None:
+            await asyncio.to_thread(shutil.rmtree, remote.staging_dir(ws, job.id), True)
+            log.info("remote work on %r dropped: the task changed while the agent worked",
+                     task.name)
+            return True
+        written, _gone = await asyncio.to_thread(remote.apply_staged, ws, job.id,
+                                                 res.get("deleted") or [])
+        if outcome == "error":
+            raise RemoteError(res.get("error") or "the runner reported an infrastructure error")
+        files = dedupe_files(written)
+        who = f"{agent.name} ({job.harness} on runner '{runner_name}')"
+        if outcome == "submitted":
+            summary = res.get("summary") or ""
+            await self.tasks.update(
+                task.id, status=TaskStatus.REVIEW.value,
+                deliverable={"summary": summary, "files": files, "model": model,
+                             "harness": job.harness, "runner": runner_name})
+            await self.events.add(
+                swarm.id, "submitted", team_id=team.id, task_id=task.id, actor=agent.id,
+                from_status=TaskStatus.IN_PROGRESS.value, to_status=TaskStatus.REVIEW.value,
+                detail=f"{who} submitted '{task.name}' for review ({len(files)} file(s) "
+                       f"written, model {model}): {_clip(summary, 200)}")
+            await self.signal("task.submitted", team.id, task.id, files=files)
+            return True
+        await self._attempt_failed(
+            swarm, team, agent, task, model, types.SimpleNamespace(files_written=files),
+            f"{who} did not finish: {res.get('error') or 'no final answer'}.",
+            res.get("summary") or "", remote=True)
+        return True
 
     async def _attempt_failed(self, swarm: Swarm, team: Team, agent: Agent, task: Task,
                               model: str, registry: ToolRegistry, why: str,
-                              final_text: str = "") -> None:
+                              final_text: str = "", remote: bool = False) -> None:
         if await self._still(task.id, TaskStatus.IN_PROGRESS.value) is None:
             return
         attempts = task.attempts + 1
         verdict = policy.rework_or_fail(attempts, swarm.config.limits.max_attempts_per_task)
-        feedback = (f"Attempt {attempts} did not finish: {why} Write the files, check each "
-                    f"acceptance criterion, then call the submit tool with a short summary.")
+        ending = ("Write the files, check each acceptance criterion, then finish with a short "
+                  "summary." if remote else
+                  "Write the files, check each acceptance criterion, then call the submit tool "
+                  "with a short summary.")
+        feedback = f"Attempt {attempts} did not finish: {why} {ending}"
         deliverable = {"summary": _clip(final_text, 500), "files": dedupe_files(
             registry.files_written), "model": model}
         if verdict == "failed":

@@ -27,6 +27,15 @@ ROLE_NAMES = {
 }
 
 
+def delivery_spec(cfg, index: int) -> tuple[str, str]:
+    """(harness, provider) of Delivery-`index` (1-based): delivery_harnesses cycled, else the
+    first allowed harness/provider as before 0.3."""
+    if cfg.delivery_harnesses:
+        spec = cfg.delivery_harnesses[(index - 1) % len(cfg.delivery_harnesses)]
+        return spec.harness, spec.provider
+    return cfg.allowed_harnesses[0], cfg.allowed_providers[0]
+
+
 # -- workspaces ---------------------------------------------------------------
 
 def workspace_dir(settings: Settings, swarm_id: str) -> Path:
@@ -70,18 +79,19 @@ async def ensure_team_agents(pool: asyncpg.Pool, swarm: Swarm, team: Team) -> li
     existing = await agents.list(swarm.id, team_id=team.id)
     have = {(a.role, a.name) for a in existing}
     cfg = swarm.config
-    wanted: list[tuple[str, str]] = [
-        (AgentRole.MISSION_JUDGEMENT.value, ROLE_NAMES[AgentRole.MISSION_JUDGEMENT.value]),
-        (AgentRole.QUALITY_JUDGEMENT.value, ROLE_NAMES[AgentRole.QUALITY_JUDGEMENT.value]),
-    ] + [(AgentRole.MISSION_DELIVERY.value, f"Delivery-{i}")
+    native = (cfg.allowed_harnesses[0], cfg.allowed_providers[0])
+    wanted: list[tuple[str, str, str, str]] = [
+        (AgentRole.MISSION_JUDGEMENT.value, ROLE_NAMES[AgentRole.MISSION_JUDGEMENT.value], *native),
+        (AgentRole.QUALITY_JUDGEMENT.value, ROLE_NAMES[AgentRole.QUALITY_JUDGEMENT.value], *native),
+    ] + [(AgentRole.MISSION_DELIVERY.value, f"Delivery-{i}", *delivery_spec(cfg, i))
          for i in range(1, cfg.delivery_agents_per_team + 1)]
     created = []
-    for role, name in wanted:
+    for role, name, harness, provider in wanted:
         if (role, name) in have:
             continue
         created.append(await agents.create(
             swarm.id, team.id, role, name, model=choose_model(role, cfg),
-            harness=cfg.allowed_harnesses[0], provider=cfg.allowed_providers[0]))
+            harness=harness, provider=provider))
     return existing + created
 
 

@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     ENGINE_TICK_SECONDS: float = 3.0
     ENGINE_ENABLED: bool = True
 
+    # Authentication (docs/DESIGN-0.3.md section 4). API_TOKEN: bearer token for the admin API and
+    # DAASHboard; empty = open (local prototype). RUNNER_BOOTSTRAP_TOKEN: if set, the runner
+    # "local-runner" is ensured at start with this token (lets compose start a runner unattended).
+    API_TOKEN: str = ""
+    RUNNER_BOOTSTRAP_TOKEN: str = ""
+
     def model_concurrency(self) -> dict[str, int]:
         """LLM_MODEL_CONCURRENCY parsed to {model: limit}; bad JSON is logged and ignored."""
         raw = (self.LLM_MODEL_CONCURRENCY or "").strip()

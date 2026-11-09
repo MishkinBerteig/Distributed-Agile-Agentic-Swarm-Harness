@@ -15,7 +15,7 @@ import asyncpg
 
 from app.models import (
     Agent, AgentCall, AcceptanceCriterion, Feedback, GlobalConfig, Learning, Memory,
-    Swarm, SwarmConfig, SwarmSnapshot, Task, TaskCreate, TaskEvent,
+    RemoteJob, Runner, Swarm, SwarmConfig, SwarmSnapshot, Task, TaskCreate, TaskEvent,
     Team, TeamProposal, Verdict,
 )
 
@@ -550,6 +550,182 @@ class FeedbackRepo(_Repo):
             "SELECT id, swarm_id, text, created_at FROM feedback WHERE swarm_id = $1 "
             "ORDER BY created_at, id", swarm_id)
         return [_to(Feedback, r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Runners and remote jobs (docs/DESIGN-0.3.md section 3)
+# ---------------------------------------------------------------------------
+
+RUNNER_COLS = ("id, name, token_hash, enabled, host, version, harnesses, max_jobs, "
+               "last_seen_at, created_at")
+REMOTE_JOB_COLS = ("id, swarm_id, team_id, task_id, agent_id, attempt, harness, model, status, "
+                   "runner_id, payload, result, expiries, lease_expires_at, heartbeat_at, "
+                   "created_at, leased_at, finished_at")
+RUNNER_UPDATABLE = ("name", "token_hash", "enabled", "host", "version", "harnesses", "max_jobs")
+LEASE_CANDIDATES = 25   # oldest queued jobs examined per lease attempt
+
+
+class RunnerRepo(_Repo):
+    async def create(self, name: str, token_hash: str, max_jobs: int = 1) -> Runner:
+        """Raises asyncpg.UniqueViolationError if the name or token hash exists."""
+        row = await self._pool.fetchrow(
+            f"INSERT INTO runners (id, name, token_hash, max_jobs) VALUES ($1, $2, $3, $4) "
+            f"RETURNING {RUNNER_COLS}", _uid(), name, token_hash, max_jobs)
+        return _to(Runner, row)
+
+    async def get(self, runner_id: str) -> Optional[Runner]:
+        return _to(Runner, await self._pool.fetchrow(
+            f"SELECT {RUNNER_COLS} FROM runners WHERE id = $1", runner_id))
+
+    async def get_by_name(self, name: str) -> Optional[Runner]:
+        return _to(Runner, await self._pool.fetchrow(
+            f"SELECT {RUNNER_COLS} FROM runners WHERE name = $1", name))
+
+    async def by_token_hash(self, token_hash: str) -> Optional[Runner]:
+        return _to(Runner, await self._pool.fetchrow(
+            f"SELECT {RUNNER_COLS} FROM runners WHERE token_hash = $1", token_hash))
+
+    async def list(self) -> list[Runner]:
+        rows = await self._pool.fetch(f"SELECT {RUNNER_COLS} FROM runners ORDER BY created_at, name")
+        return [_to(Runner, r) for r in rows]
+
+    async def update(self, runner_id: str, **fields: Any) -> Optional[Runner]:
+        sets, params = build_update(RUNNER_UPDATABLE, fields)
+        row = await self._pool.fetchrow(
+            f"UPDATE runners SET {sets} WHERE id = $1 RETURNING {RUNNER_COLS}", runner_id, *params)
+        return _to(Runner, row)
+
+    async def touch(self, runner_id: str) -> None:
+        await self._pool.execute("UPDATE runners SET last_seen_at = now() WHERE id = $1", runner_id)
+
+    async def delete(self, runner_id: str) -> bool:
+        """Revoke a runner; its leased jobs go back to the queue first."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                "UPDATE remote_jobs SET status = 'queued', runner_id = NULL, "
+                "lease_expires_at = NULL WHERE runner_id = $1 AND status = 'leased'", runner_id)
+            res = await conn.execute("DELETE FROM runners WHERE id = $1", runner_id)
+        return res.endswith(" 1")
+
+    async def ensure_bootstrap(self, name: str, token_hash: str) -> Runner:
+        """The runner `name` with exactly this token hash (created, or its hash updated)."""
+        existing = await self.get_by_name(name)
+        if existing is None:
+            return await self.create(name, token_hash)
+        if existing.token_hash != token_hash:
+            return await self.update(existing.id, token_hash=token_hash, enabled=True)
+        return existing
+
+    async def active_job_counts(self) -> dict[str, int]:
+        rows = await self._pool.fetch(
+            "SELECT runner_id, count(*) AS n FROM remote_jobs WHERE status = 'leased' "
+            "AND runner_id IS NOT NULL GROUP BY runner_id")
+        return {r["runner_id"]: r["n"] for r in rows}
+
+
+class RemoteJobRepo(_Repo):
+    async def ensure_active(self, swarm_id: str, team_id: str, task_id: str, agent_id: str,
+                            attempt: int, harness: str, model: str,
+                            payload: dict) -> RemoteJob:
+        """The task's queued/leased job, or a new queued one (an engine restart re-attaches)."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                f"SELECT {REMOTE_JOB_COLS} FROM remote_jobs WHERE task_id = $1 "
+                f"AND status IN ('queued', 'leased')", task_id)
+            if row is None:
+                row = await conn.fetchrow(
+                    f"INSERT INTO remote_jobs (id, swarm_id, team_id, task_id, agent_id, attempt, "
+                    f"harness, model, payload) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) "
+                    f"RETURNING {REMOTE_JOB_COLS}",
+                    _uid(), swarm_id, team_id, task_id, agent_id, attempt, harness, model, payload)
+        return _to(RemoteJob, row)
+
+    async def latest_for_task(self, task_id: str) -> Optional[RemoteJob]:
+        return _to(RemoteJob, await self._pool.fetchrow(
+            f"SELECT {REMOTE_JOB_COLS} FROM remote_jobs WHERE task_id = $1 "
+            f"ORDER BY created_at DESC LIMIT 1", task_id))
+
+    async def get(self, job_id: str) -> Optional[RemoteJob]:
+        return _to(RemoteJob, await self._pool.fetchrow(
+            f"SELECT {REMOTE_JOB_COLS} FROM remote_jobs WHERE id = $1", job_id))
+
+    async def list(self, swarm_id: Optional[str] = None, limit: int = 200) -> list[RemoteJob]:
+        if swarm_id is None:
+            rows = await self._pool.fetch(
+                f"SELECT {REMOTE_JOB_COLS} FROM remote_jobs ORDER BY created_at DESC LIMIT $1", limit)
+        else:
+            rows = await self._pool.fetch(
+                f"SELECT {REMOTE_JOB_COLS} FROM remote_jobs WHERE swarm_id = $1 "
+                f"ORDER BY created_at DESC LIMIT $2", swarm_id, limit)
+        return [_to(RemoteJob, r) for r in rows]
+
+    async def requeue_expired(self, now: datetime) -> int:
+        """Leased jobs whose lease timed out (runner vanished) go back to the queue."""
+        res = await self._pool.execute(
+            "UPDATE remote_jobs SET status = 'queued', runner_id = NULL, leased_at = NULL, "
+            "lease_expires_at = NULL, expiries = expiries + 1 "
+            "WHERE status = 'leased' AND lease_expires_at < $1", now)
+        return int(res.split()[-1])
+
+    async def lease_next(self, runner: Runner, harness_models: dict[str, list[str]],
+                         now: datetime, lease_seconds: int = 60) -> Optional[RemoteJob]:
+        """Lease the oldest queued job of an ACTIVE swarm that the runner can take.
+
+        FOR UPDATE SKIP LOCKED: concurrent runners never wait for, or double-lease, a job."""
+        from app.remote import first_match  # local import: keeps repo importable without it
+        if not harness_models:
+            return None
+        async with self._pool.acquire() as conn, conn.transaction():
+            rows = await conn.fetch(
+                f"SELECT j.id, j.harness, j.model FROM remote_jobs j "
+                f"JOIN swarms s ON s.id = j.swarm_id "
+                f"WHERE j.status = 'queued' AND s.lifecycle_state = 'ACTIVE' "
+                f"AND j.harness = ANY($1::text[]) ORDER BY j.created_at, j.id "
+                f"FOR UPDATE OF j SKIP LOCKED LIMIT {LEASE_CANDIDATES}", list(harness_models))
+            pick = first_match([dict(r) for r in rows], harness_models)
+            if pick is None:
+                return None
+            row = await conn.fetchrow(
+                f"UPDATE remote_jobs SET status = 'leased', runner_id = $2, "
+                f"leased_at = $3::timestamptz, heartbeat_at = $3::timestamptz, "
+                f"lease_expires_at = $3::timestamptz + make_interval(secs => $4::double precision) "
+                f"WHERE id = $1 RETURNING {REMOTE_JOB_COLS}",
+                pick["id"], runner.id, now, float(lease_seconds))
+        return _to(RemoteJob, row)
+
+    async def heartbeat(self, job_id: str, runner_id: str, now: datetime,
+                        lease_seconds: int = 60) -> Optional[RemoteJob]:
+        """Extend the lease of a job this runner holds; the job as it is (None if not theirs)."""
+        row = await self._pool.fetchrow(
+            f"UPDATE remote_jobs SET heartbeat_at = $3::timestamptz, lease_expires_at = CASE WHEN "
+            f"status = 'leased' THEN $3::timestamptz + make_interval(secs => $4::double precision) "
+            f"ELSE lease_expires_at END "
+            f"WHERE id = $1 AND runner_id = $2 RETURNING {REMOTE_JOB_COLS}",
+            job_id, runner_id, now, float(lease_seconds))
+        return _to(RemoteJob, row)
+
+    async def complete(self, job_id: str, runner_id: str, result: dict) -> Optional[RemoteJob]:
+        """Store the result of a job this runner still leases; None otherwise (-> 409)."""
+        row = await self._pool.fetchrow(
+            f"UPDATE remote_jobs SET status = 'completed', result = $3, finished_at = now() "
+            f"WHERE id = $1 AND runner_id = $2 AND status = 'leased' RETURNING {REMOTE_JOB_COLS}",
+            job_id, runner_id, result)
+        return _to(RemoteJob, row)
+
+    async def _close(self, job_id: str, status: str) -> Optional[RemoteJob]:
+        row = await self._pool.fetchrow(
+            f"UPDATE remote_jobs SET status = $2, finished_at = now() "
+            f"WHERE id = $1 AND status IN ('queued', 'leased') RETURNING {REMOTE_JOB_COLS}",
+            job_id, status)
+        return _to(RemoteJob, row)
+
+    async def cancel(self, job_id: str) -> Optional[RemoteJob]:
+        """The swarm/task moved on: the runner learns it from its next heartbeat."""
+        return await self._close(job_id, "cancelled")
+
+    async def abandon(self, job_id: str) -> Optional[RemoteJob]:
+        """The coordinator gave up on the job (no runner, runner kept vanishing)."""
+        return await self._close(job_id, "abandoned")
 
 
 # ---------------------------------------------------------------------------

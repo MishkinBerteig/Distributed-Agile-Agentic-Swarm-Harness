@@ -160,10 +160,16 @@ class ActionKind(str, Enum):
 DEFAULT_MODEL_LADDER: list[str] = ["instant", "fast", "great", "amazing"]
 
 
+#: Harness names (docs/DESIGN-0.3.md section 1): "daash" is the native tool loop, the rest run
+#: on external agent CLIs through a pull-based runner ("fake" is the scripted test CLI).
+NATIVE_HARNESS = "daash"
+KNOWN_HARNESSES: tuple[str, ...] = ("daash", "openclaude", "claude-code", "codex", "fake")
+
+
 class HarnessSpec(BaseModel):
-    harness: str = "daash"      # 0.1 ships the native OpenAI-compatible tool-loop harness
+    harness: str = "daash"      # "daash" = native OpenAI-compatible tool loop (see KNOWN_HARNESSES)
     provider: str = "default"   # the endpoint configured by DAASH_LLM_ENDPOINT
-    model: str = "amazing"
+    model: str = "amazing"      # "" = use routing (the ladder) for delivery_harnesses entries
 
 
 class RoleModels(BaseModel):
@@ -184,6 +190,7 @@ class Limits(BaseModel):
     max_new_tasks_per_plan: int = Field(4, ge=1)
     max_attempts_per_task: int = Field(3, ge=1)
     max_tool_steps: int = Field(24, ge=1)          # per work attempt
+    remote_job_timeout_minutes: int = Field(30, ge=1)   # wall time of one remote attempt (0.3)
 
 
 class DoDThresholds(BaseModel):
@@ -205,6 +212,11 @@ class SwarmConfig(BaseModel):
     dod_thresholds: DoDThresholds = Field(default_factory=DoDThresholds)
     #: USD per 1k total tokens by model; local models default to free.
     model_prices: dict[str, float] = Field(default_factory=dict)
+    #: Harness of each delivery agent, cycled: Delivery-i gets delivery_harnesses[(i-1) % len].
+    #: Empty = every delivery agent is native "daash" (0.2 behaviour).
+    delivery_harnesses: list[HarnessSpec] = Field(default_factory=list)
+    #: A remote job no runner leased after this many minutes runs natively instead. None = wait.
+    remote_fallback_minutes: Optional[int] = 10
 
 
 class GlobalConfig(BaseModel):
@@ -265,6 +277,43 @@ class Agent(BaseModel):
     errors: int = 0
     created_at: datetime
     last_active_at: Optional[datetime] = None
+
+
+class Runner(BaseModel):
+    """An external device that runs agent CLIs for remote harnesses (docs/DESIGN-0.3.md section 3).
+    The token hash is never part of this model's API form."""
+    id: str
+    name: str
+    token_hash: str = Field(default="", exclude=True)
+    enabled: bool = True
+    host: Optional[str] = None
+    version: Optional[str] = None
+    harnesses: list[dict[str, Any]] = Field(default_factory=list)
+    max_jobs: int = 1
+    last_seen_at: Optional[datetime] = None
+    created_at: datetime
+
+
+class RemoteJob(BaseModel):
+    """One remote attempt at a task: queued for a runner, leased, then completed/cancelled/abandoned."""
+    id: str
+    swarm_id: str
+    team_id: str
+    task_id: str
+    agent_id: str
+    attempt: int
+    harness: str
+    model: str
+    status: str = "queued"          # queued|leased|completed|cancelled|abandoned
+    runner_id: Optional[str] = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+    result: Optional[dict[str, Any]] = None
+    expiries: int = 0
+    lease_expires_at: Optional[datetime] = None
+    heartbeat_at: Optional[datetime] = None
+    created_at: datetime
+    leased_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
 
 
 class AcceptanceCriterion(BaseModel):
