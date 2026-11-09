@@ -446,3 +446,24 @@ def test_a_stalled_ready_task_is_not_in_flight():
     tasks = [team_task("p", "a", "Pending"), team_task("x", "a", "Rejected"),
              team_task("r", "a", "Ready", deps=["x"])]
     assert not policy.work_in_flight("a", [mk_team("a")], tasks)
+
+
+# -- task budget: rejected-before-start tasks are free (bounded) ------------------------------
+
+def test_rejected_before_start_tasks_do_not_use_the_budget():
+    tasks = [mk_task("d", "Done", committed_at=T0), mk_task("r", "Rejected"),
+             mk_task("p", "Pending")]
+    assert policy.task_budget_used(tasks) == 2
+    assert policy.task_budget_left(tasks, 4) == 2
+
+
+def test_a_task_rejected_after_work_started_still_counts():
+    tasks = [mk_task("r", "Rejected", committed_at=T0)]
+    assert policy.task_budget_used(tasks) == 1 and policy.task_budget_left(tasks, 1) == 0
+
+
+def test_too_many_rejections_still_exhaust_the_budget():
+    tasks = [mk_task(f"r{i}", "Rejected") for i in range(3)]
+    assert policy.task_budget_used(tasks) == 0
+    assert policy.task_budget_left(tasks, 3) == 0          # runaway guard
+    assert policy.task_budget_left(tasks, 4) == 4

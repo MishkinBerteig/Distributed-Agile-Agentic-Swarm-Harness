@@ -156,9 +156,10 @@ def decide(snap: SwarmSnapshot) -> list[Action]:
                 team.last_assessed_at is None or team.last_assessed_at < latest)
             if needs_assessment:
                 emit(Action(kind=ActionKind.ASSESS_MISSION, team_id=team.id))
-            elif len(tasks) >= lim.max_tasks_per_team:
+            elif policy.task_budget_left(tasks, lim.max_tasks_per_team) <= 0:
                 emit(Action(kind=ActionKind.FAIL_TEAM, team_id=team.id,
-                            detail=f"{len(tasks)} of {lim.max_tasks_per_team} tasks used"))
+                            detail=f"{policy.task_budget_used(tasks)} of "
+                                   f"{lim.max_tasks_per_team} tasks used"))
             else:
                 emit(Action(kind=ActionKind.PLAN_TASKS, team_id=team.id))
 

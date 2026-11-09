@@ -434,7 +434,7 @@ class Jobs:
             return
         tasks = await self.tasks.list(team_id=team.id)
         limit = swarm.config.limits.max_tasks_per_team
-        if len(tasks) < limit or policy.live_open_tasks(tasks):
+        if policy.task_budget_left(tasks, limit) > 0 or policy.live_open_tasks(tasks):
             return
         await self.teams.update(team.id, status=TeamStatus.FAILED.value)
         done = sum(1 for t in tasks if t.status == TaskStatus.DONE.value)
@@ -610,7 +610,8 @@ class Jobs:
             return
         lim = swarm.config.limits
         tasks = await self.tasks.list(team_id=team.id)
-        cap = min(lim.max_new_tasks_per_plan, lim.max_tasks_per_team - len(tasks))
+        cap = min(lim.max_new_tasks_per_plan,
+                  policy.task_budget_left(tasks, lim.max_tasks_per_team))
         if cap <= 0 or policy.live_open_tasks(tasks):
             return
         agent = await self._team_agent(swarm, team, DELIVERY)
@@ -624,7 +625,7 @@ class Jobs:
             lambda o: prompts.parse_plan(o, cap), query=team.mission_statement)
         # Re-check just before writing: another job may have changed the team.
         tasks = await self.tasks.list(team_id=team.id)
-        room = lim.max_tasks_per_team - len(tasks)
+        room = policy.task_budget_left(tasks, lim.max_tasks_per_team)
         if room <= 0 or policy.live_open_tasks(tasks):
             return
         created: list[Task] = []
@@ -870,7 +871,7 @@ class Jobs:
         async def create_subtask(args: dict) -> str:
             name = sarg(args, "name")
             tasks = await self.tasks.list(team_id=team.id)
-            if len(tasks) >= swarm.config.limits.max_tasks_per_team:
+            if policy.task_budget_left(tasks, swarm.config.limits.max_tasks_per_team) <= 0:
                 raise ToolError("the team has used its whole task budget; no more tasks")
             artifact = sarg(args, "artifact", required=False)
             crits = [CriterionCreate(text=c.strip()) for c in (args.get("acceptance_criteria") or [])

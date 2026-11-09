@@ -81,6 +81,10 @@ Design: docs/DESIGN-0.2.md. (`v0.1` is tagged at f1e5526.)
   e2e 8. Live: the First Garden re-run finished 9/9 tasks Done on the first attempt, 3 teams accomplished,
   0 failed, 55 min, 516k tokens.
 
+- [x] Post-run fixes: tasks rejected before anyone started them no longer use the team's task budget (bounded by
+  the same limit as a runaway guard); Quality Judgement's Definition of Ready may not forbid a file from
+  existing (it blocked the team's own refinement tasks).
+
 ### After 0.2 (in priority order)
 1. **Distributed, heterogeneous harnesses**: external CLI agents (OpenClaude, Claude Code, Codex) on any device
    through the host runner (`app/runner.py`), plus authentication. These harnesses bring their own code execution

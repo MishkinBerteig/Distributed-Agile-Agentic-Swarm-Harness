@@ -387,3 +387,9 @@ def test_vote_job_keys_unique_per_proposal():
     out = decide(vote_snap([vproposal("p1"), vproposal("p2")]))
     keys = [a.job_key() for a in out if a.kind == K.VOTE]
     assert len(keys) == 2 and len(set(keys)) == 2
+
+
+def test_rejected_before_start_tasks_leave_room_to_plan():
+    tasks = [task("a", "Done"), task("b", "Rejected")]
+    t = team(last_assessed_at=T0 + timedelta(minutes=30))
+    assert kinds(decide(snap(tasks, teams=[t], sw=limited(2)))) == [K.PLAN_TASKS]

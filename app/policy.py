@@ -146,6 +146,25 @@ def live_open_tasks(tasks: list[Task]) -> list[Task]:
             if t.status in TaskStatus.open_statuses() and t.id not in stalled]
 
 
+def task_budget_used(tasks: list[Task]) -> int:
+    """Tasks that count against `max_tasks_per_team`: all of them except tasks rejected before
+    anyone committed to them (Mission Judgement turned the idea down; no work was spent)."""
+    return sum(1 for t in tasks if not _rejected_unstarted(t))
+
+
+def task_budget_left(tasks: list[Task], limit: int) -> int:
+    """Room for new tasks. Rejected-before-start tasks are free, but only up to `limit` of them,
+    so a team whose plans keep being rejected still runs out (runaway guard)."""
+    rejected = sum(1 for t in tasks if _rejected_unstarted(t))
+    if rejected >= limit:
+        return 0
+    return max(0, limit - task_budget_used(tasks))
+
+
+def _rejected_unstarted(t: Task) -> bool:
+    return t.status == TaskStatus.REJECTED.value and t.committed_at is None
+
+
 def work_in_flight(team_id: str, teams: list, tasks: list[Task]) -> bool:
     """Can anything in the swarm still change while `team_id`'s candidates wait (deferral)?
 

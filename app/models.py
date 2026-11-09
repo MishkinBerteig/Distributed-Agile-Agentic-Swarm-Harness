@@ -180,7 +180,7 @@ class Limits(BaseModel):
     max_budget_usd: Optional[float] = None         # priced via SwarmConfig.model_prices
     max_simultaneous_agents: int = Field(3, ge=1)  # concurrent LLM jobs
     max_teams: int = Field(4, ge=1)
-    max_tasks_per_team: int = Field(25, ge=1)      # lifetime, all statuses
+    max_tasks_per_team: int = Field(25, ge=1)      # lifetime; tasks rejected before start are free (up to this many)
     max_new_tasks_per_plan: int = Field(4, ge=1)
     max_attempts_per_task: int = Field(3, ge=1)
     max_tool_steps: int = Field(24, ge=1)          # per work attempt

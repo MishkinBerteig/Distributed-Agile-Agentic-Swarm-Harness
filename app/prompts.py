@@ -302,7 +302,10 @@ def standards_prompt(dor_guidance: str = "", dod_guidance: str = "") -> str:
     s = ("Job: set this team's quality standards.\n"
          "- definition_of_ready: team-specific readiness rules ONLY. The harness already enforces "
          "the generic ones (an idle delivery agent, Mission Judgement approval, at least one "
-         "acceptance criterion, dependencies done), so do not repeat them.\n"
+         "acceptance criterion, dependencies done), so do not repeat them. Each rule must be "
+         "checkable before work starts, from the task text and the files that exist. Never "
+         "require that a file does not exist yet: later tasks of this team refine its own files. "
+         "A rule may require another team's artifact to exist; Mission Judgement waits for it.\n"
          "- definition_of_done: the bar every task of this team must clear, aligned with the "
          "Mission and the vision-level Definition of Done. Make each item checkable.\n")
     if dor_guidance.strip():
