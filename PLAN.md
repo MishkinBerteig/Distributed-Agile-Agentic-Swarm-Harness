@@ -101,13 +101,19 @@ Design: docs/DESIGN-0.3.md. Runner guide: docs/RUNNER.md.
 - [x] Fixes found in the live runs: deferral of not-yet-startable tasks (and only while other work can finish;
   never over a task's own wording; reason shown); rejected-before-start tasks don't use the task budget; DoR rules
   apply per task and may not forbid existing files; binary build junk never becomes a deliverable
-- [x] Tests: unit 518, integration 159, e2e 12 (4 runner scenarios with runner containers + fake CLI)
+- [x] Agent capabilities (§11, user request): `edit_files` / `run_code` / `web_research` per harness (native:
+  edit only; OpenClaude/Claude Code/Codex: edit + run code); tasks carry `needs`; capability-aware commit,
+  rework reassignment and runner leasing; agents and judges are told what the delivering agent can do
+- [x] Work rotates across a team's delivery agents (least recently active first); prioritize tolerates a
+  mistyped task id; the mission assessment sees every workspace file
+- [x] Tests: unit 538 (~3 s), integration 169, e2e 12 (4 runner scenarios with runner containers + fake CLI)
 - Live: LIVE_RESULT_PLACEHOLDER
 
 ### After 0.3 (in priority order)
 1. Harden remote runs: per-harness model/cost accounting in metrics, per-runner concurrency vs gateway capacity,
    runner auto-update, HTTPS/Tailscale deployment notes; enable `DAASH_API_TOKEN` by default when the coordinator
-   is published beyond localhost.
+   is published beyond localhost. Capability-aware Mission Judgement approval; keep external agents inside their
+   task's scope (a Claude Code agent also wrote the next task's tests); more harness adapters (e.g. OpenClaw).
 2. Sandboxed code execution for the native harness (learning mechanism 2: run agent-written automation scripts;
    test-based deterministic checks such as "`python3 -m unittest` passes", run in the runner container).
 3. Research tools for the native harness (web fetch/search with required citations) so fact-checking is grounded.
@@ -158,7 +164,7 @@ timeline, artifacts), metrics, activity feed. API docs: http://127.0.0.1:8000/do
 - Only one live swarm at a time; archive or delete it to create the next.
 
 ### Tests (three tiers, docs/DESIGN-0.2.md)
-- **unit** — `docker compose --profile test run --rm --build test` — pure logic incl. runner adapters, ~12 s.
+- **unit** — `docker compose --profile test run --rm --build test` — pure logic incl. runner adapters, ~3 s.
 - **integration** — `docker compose --profile integration run --rm --build integration` — real PostgreSQL/Redis
   (`daash_test`, Redis DB 15), API and engine in-process against the scripted fake LLM (`tests/fakes/`).
 - **e2e** — `scripts/e2e.sh` — separate compose project `daash-e2e` (no published ports, safe beside the dev
@@ -172,7 +178,8 @@ timeline, artifacts), metrics, activity feed. API docs: http://127.0.0.1:8000/do
   external harnesses (runner). Automation scripts are recorded, not run.
 - Judges are LLMs: verdicts are good but not infallible; they read code but do not run tests.
 - Admin auth is off unless `DAASH_API_TOKEN` is set (the coordinator is published on 127.0.0.1 only by default).
-- Dashboard polls (no SSE). Unit tier is ~12 s (runner loop tests use a real HTTP stub).
+- Dashboard polls (no SSE). No harness offers `web_research` by default (the local gateway cannot serve hosted
+  web tools), so research tasks run degraded.
 - The pre-0.1 dev database was replaced by the new schema (a dump of the old data is in
   `agents-workspace/coordinator/db-backup/`).
 

@@ -344,3 +344,37 @@ that each team member have a basic capabilities list that depends on its harness
   matching with capabilities); integration (a `run_code` task goes to the remote agent, never the native one;
   degraded fallback when no agent can; rework reassignment); fake LLM: scenario `plan_needs` to mark planned
   tasks with needs; e2e unchanged but must pass.
+
+## 12. Command checks (deterministic evidence from running code)
+
+Found live right after §11: a capable remote agent ran the tests and said "OK", but the judges could only
+see files and the agent's claim, so "`python3 -m unittest` passes" could never be confirmed and the task
+looped on rework. PLAN "After 0.3" item 2 asked for test-based deterministic checks; the runner is where code
+can run safely.
+
+* `CheckKind.COMMAND = "command"`: `check_arg` = the shell command (≤ 300 chars), run from the workspace
+  root; `check_path` unused. Passes iff the exit code is 0. Validation rejects empty/oversized commands and
+  NUL/newlines.
+* A task with any command criterion requires `run_code` (added to `required_capabilities` automatically at
+  creation, from plan, `create_subtask` or `POST /tasks`).
+* Plan contract: criteria may use `{"check": "command", "command": "python3 -m unittest"}` (match the
+  existing plan criterion schema). The plan prompt says: when a capable agent exists, prove "tests pass"
+  style criteria with a command check instead of a rubric; never use commands that need the network, install
+  packages, or run longer than 2 minutes. The fake LLM gets a scenario to emit a command criterion.
+* Remote jobs: payload gains `checks: [{"id": <criterion id>, "command": "...", "timeout_seconds": 120}]`.
+  The runner, after the CLI finishes with outcome `submitted`, runs each check (shell, `cwd` = job
+  workspace, timeout, same env as the job, not the user's home) and adds
+  `check_results: [{"id", "exit_code", "output_tail" (≤ 4000 chars), "duration_ms", "timed_out"}]` to the
+  result. Checks run after the agent's last file change so they verify the delivered state.
+* Coordinator: `validate_result` accepts/clips `check_results`; `_apply_remote` stores them on the task's
+  deliverable (`deliverable["check_results"]`). The deterministic evaluator (app/checks.py) marks a command
+  criterion green iff a result for that criterion id has `exit_code == 0` and not `timed_out` (evidence =
+  "exit 0" + output tail), red with the output tail otherwise, and red with "no runner executed this check"
+  when the work was done natively (no results). Red deterministic criteria flow into rework feedback as today.
+* Judges' review prompts include the command results (command, exit code, output tail) as trusted evidence
+  produced by DAASH itself, not by the agent.
+* Native delivery agents never run commands. Combined with §11 rework reassignment, a command-check task that
+  landed on a native agent (degraded) goes to a capable agent on rework.
+* Tests: unit (check evaluation, validation, plan parsing, runner executes checks and reports results incl.
+  timeout, fake CLI), integration (remote fake agent → check results → criterion green → Done; failing
+  command → red → rework with output; native agent → red "no runner executed" → reassigned), e2e must pass.
