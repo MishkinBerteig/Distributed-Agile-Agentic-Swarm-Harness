@@ -70,6 +70,7 @@ def test_job_detection_covers_every_prompt_builder():
                                     "A", [], []),
         "assess": prompts.assess_prompt(SimpleNamespace(name="A", mission_statement="m"), [], []),
         "retrospective": prompts.retrospective_prompt("history"),
+        "review_vision": prompts.vision_review_prompt("V", "dod", [], {}, "", {}),
     }
     for expected, text in cases.items():
         assert detect_job(text) == expected, expected
@@ -222,6 +223,19 @@ def test_assess_accomplished_continue_restart_and_low_confidence():
     assert prompts.parse_assessment(extract_json(content(ask(fake, user)))).status != "restart"
     fake.configure({"plan_rounds": 2, "accomplished_confidence": 0.995})
     assert prompts.parse_assessment(extract_json(content(ask(fake, user)))).status == "continue"
+
+
+def test_review_vision_default_met_and_gaps_first():
+    teams = [SimpleNamespace(name="Alpha", status="accomplished", mission_statement="m"),
+             SimpleNamespace(name="Beta", status="accomplished", mission_statement="m")]
+    user = prompts.vision_review_prompt("V", "dod", teams, {}, "", {})
+    fake = FakeLLM({"vision_gaps_first": 1})
+    first = prompts.parse_vision_review(
+        extract_json(content(ask(fake, user, "coordinator"))), ["Alpha", "Beta"])
+    assert first.verdict == "gaps" and first.gaps[0][0] == "Alpha" and first.gaps[0][1]
+    second = prompts.parse_vision_review(
+        extract_json(content(ask(fake, user, "coordinator"))), ["Alpha", "Beta"])
+    assert second.verdict == "met" and second.confidence >= 0.99
 
 
 def test_retrospective():

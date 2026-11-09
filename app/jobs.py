@@ -423,6 +423,7 @@ class Jobs:
             ActionKind.RETROSPECTIVE: self.retrospective,
             ActionKind.VOTE: self.vote,
             ActionKind.EXPIRE_PROPOSAL: self.expire_proposal,
+            ActionKind.REVIEW_VISION: self.review_vision,
         }[action.kind]
         await handler(swarm, action, escalation)
 
@@ -440,12 +441,16 @@ class Jobs:
         await self.signal("swarm.paused", reason=reason)
 
     async def complete_swarm(self, swarm: Swarm, action: Action, escalation: int = 0) -> None:
+        await self._complete(swarm)
+
+    async def _complete(self, swarm: Swarm, note: str = "") -> bool:
+        """All teams terminal -> VERIFICATION (shared by COMPLETE_SWARM and the vision review)."""
         fresh = await self.swarms.get(swarm.id)
         if fresh is None or fresh.lifecycle_state != "ACTIVE":
-            return
+            return False
         teams = await self.teams.list(swarm.id)
         if not teams or any(t.status == TeamStatus.ACTIVE.value for t in teams):
-            return
+            return False
         await self.swarms.update(swarm.id, lifecycle_state=policy.transition(
             fresh.lifecycle_state, "verify"))
         await services.close_open_tasks(self.pool, swarm.id, services.VERIFY_CLOSE_REASON)
@@ -453,9 +458,83 @@ class Jobs:
         await self.events.add(
             swarm.id, "swarm",
             f"All teams have finished ({done} accomplished, {len(teams) - done} failed). "
-            f"The swarm moved to verification: review the artifacts and archive or continue.",
+            f"The swarm moved to verification: review the artifacts and archive or continue."
+            + note,
             actor="engine")
         await self.signal("swarm.verification", teams=len(teams), accomplished=done)
+        return True
+
+    async def review_vision(self, swarm: Swarm, action: Action, escalation: int = 0) -> None:
+        """Swarm Coordinator judges the combined result against the vision-level DoD
+        (docs/DESIGN-0.3.md section 10): confirmed -> verification; gaps -> reopen teams."""
+        fresh = await self.swarms.get(swarm.id)
+        if fresh is None or fresh.lifecycle_state != "ACTIVE":
+            return
+        teams = await self.teams.list(swarm.id)
+        if not teams or any(t.status == TeamStatus.ACTIVE.value for t in teams):
+            return
+        coord = await services.ensure_coordinator(self.pool, swarm)
+        tasks = await self.tasks.list(swarm_id=swarm.id)
+        done_by_team: dict[str, list[Task]] = {
+            t.name: [x for x in tasks if x.team_id == t.id and x.status == TaskStatus.DONE.value]
+            for t in teams}
+        ws = self.workspace(swarm)
+        paths = dedupe_files(p for ts in done_by_team.values() for x in ts
+                             for p in review_paths(x))
+        files = read_deliverable_files(ws, paths[:12], limit=4000)
+        names = [t.name for t in teams]
+        threshold = swarm.config.dod_thresholds.mission_confidence
+        model = escalate_model(choose_model(COORD, swarm.config), swarm.config, escalation)
+        res = await self._json_job(
+            swarm, coord, None, "review_vision", model,
+            prompts.vision_review_prompt(
+                swarm.vision_statement, fresh.definition_of_done or "", teams, done_by_team,
+                workspace_listing(ws), files),
+            lambda o: prompts.parse_vision_review(o, names, threshold),
+            query=swarm.vision_statement)
+        # _json_job re-checked ACTIVE; re-read the counter in case of races.
+        cur = await self.swarms.get(swarm.id)
+        used = (cur.vision_reviews if cur is not None else fresh.vision_reviews) + 1
+        await self.swarms.update(swarm.id, vision_reviews=used)
+
+        if res.verdict == "met" and res.confidence >= threshold:
+            await self.events.add(
+                swarm.id, "swarm", actor=coord.id,
+                detail=f"Swarm Coordinator confirmed the vision-level Definition of Done "
+                       f"(confidence {res.confidence:.2f}): {_clip(res.summary, 400)}")
+            await self._complete(swarm)
+            return
+
+        by_name = {t.name: t for t in teams}
+        reopened: list[str] = []
+        unactionable: list[str] = []
+        for name, focus in res.gaps:
+            team = by_name[name]
+            if team.status == TeamStatus.ACTIVE.value:
+                continue    # already reopened by an earlier gap in this answer
+            tasks_t = [x for x in tasks if x.team_id == team.id]
+            limit = swarm.config.limits.max_tasks_per_team
+            if (team.status == TeamStatus.FAILED.value
+                    and policy.task_budget_left(tasks_t, limit) <= 0):
+                unactionable.append(f"'{name}' (no task budget left): {_clip(focus, 200)}")
+                continue
+            await self.teams.update(team.id, status=TeamStatus.ACTIVE.value, next_focus=focus)
+            await self.events.add(
+                swarm.id, "team", team_id=team.id, actor=coord.id,
+                detail=f"Swarm Coordinator reopened team '{name}': {_clip(focus, 300)}")
+            await self.signal("team.reopened", team_id=team.id)
+            reopened.append(name)
+        if reopened:
+            if unactionable:
+                await self.events.add(
+                    swarm.id, "swarm", actor=coord.id,
+                    detail="Vision review gaps that could not be acted on: "
+                           + "; ".join(unactionable))
+            return
+        listing = "; ".join(f"'{n}': {_clip(f, 200)}" for n, f in res.gaps)
+        await self._complete(
+            swarm, f" The vision review found open gaps no team could act on: {listing}. "
+                   f"{_clip(res.summary, 300)}")
 
     async def fail_team(self, swarm: Swarm, action: Action, escalation: int = 0) -> None:
         team = await self.teams.get(action.team_id) if action.team_id else None

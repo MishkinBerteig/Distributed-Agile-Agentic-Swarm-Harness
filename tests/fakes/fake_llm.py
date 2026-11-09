@@ -68,6 +68,7 @@ class Scenario:
     work_propose_team: str = ""          # one-shot: the next work reply also calls propose_team
     work_remember: bool = False          # the work reply also calls remember
     reject_names_containing: str = ""    # prioritize rejects candidates whose name has this
+    vision_gaps_first: int = 0           # first N vision reviews answer "gaps" for the first team
     defer_prioritize: int = 0            # next N prioritize replies approve nothing ([])
     record_prompts: bool = False         # keep the system and first user prompt in call records
     complexity: str = "simple"           # answer to classification
@@ -90,6 +91,7 @@ _JOBS: list[tuple[str, str]] = [
     ("vote", r"^Job: vote on a proposal"),
     ("assess", r"^Job: assess"),
     ("retrospective", r"^Job: run a retrospective"),
+    ("review_vision", r"^Job: review the whole swarm against the Vision"),
 ]
 _JOB_RES = [(name, re.compile(rx, re.MULTILINE)) for name, rx in _JOBS]
 _ROLE_RE = re.compile(r"^# Your Role: (.+)$", re.MULTILINE)
@@ -587,6 +589,21 @@ class FakeLLM:
             "status": "accomplished", "confidence": conf,
             "reasoning": "The done work covers the Mission.",
             "next_focus": "" if conf >= 0.99 else "Add the missing detail on the Overview."})
+
+    def _answer_review_vision(self, request, messages, user, fresh, rec):
+        s = self.scenario
+        m = re.search(r'^Team "(.+?)" \[', user, re.MULTILINE)
+        if fresh and s.vision_gaps_first > 0 and m:
+            s.vision_gaps_first -= 1
+            return self._json(request, {
+                "verdict": "gaps", "confidence": 0.7,
+                "summary": "The combined result is missing a piece.",
+                "gaps": [{"team": m.group(1),
+                          "focus": "Add the missing integration section described in the Vision."}]})
+        return self._json(request, {
+            "verdict": "met", "confidence": 0.995,
+            "summary": "The deliverables together meet the vision-level Definition of Done.",
+            "gaps": []})
 
     def _answer_retrospective(self, request, messages, user, fresh, rec):
         return self._json(request, {"learnings": [

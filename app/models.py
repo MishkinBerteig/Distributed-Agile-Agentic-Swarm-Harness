@@ -132,6 +132,10 @@ class LearningKind(str, Enum):
     ROUTING = "routing"        # mechanism 3: allocating work to the cheapest capable model
 
 
+#: Vision reviews a swarm may use before it completes regardless (docs/DESIGN-0.3.md section 10).
+MAX_VISION_REVIEWS = 3
+
+
 class ActionKind(str, Enum):
     """What the engine's pure decide() step can ask the executor to do."""
     PAUSE_FOR_LIMITS = "pause_for_limits"      # deterministic
@@ -149,6 +153,7 @@ class ActionKind(str, Enum):
     RETROSPECTIVE = "retrospective"            # coordinator in LEARNING: swarm-wide learnings
     VOTE = "vote"                              # delivery agents vote on a pending team proposal
     EXPIRE_PROPOSAL = "expire_proposal"        # deterministic: stale/orphaned proposal -> rejected
+    REVIEW_VISION = "review_vision"            # coordinator: all teams done -> vision-level DoD review
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +246,7 @@ class Swarm(BaseModel):
     config: SwarmConfig = Field(default_factory=SwarmConfig)
     paused_reason: Optional[str] = None
     retrospective_done: bool = False
+    vision_reviews: int = 0         # Swarm Coordinator vision reviews used (MAX_VISION_REVIEWS)
     created_at: datetime
     started_at: Optional[datetime] = None
 

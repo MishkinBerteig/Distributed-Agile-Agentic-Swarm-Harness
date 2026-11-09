@@ -969,6 +969,86 @@ def parse_assessment(obj: Any) -> Assessment:
 
 
 # ---------------------------------------------------------------------------
+# Vision review (Swarm Coordinator; docs/DESIGN-0.3.md section 10)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class VisionReview:
+    verdict: str  # met | gaps
+    confidence: float
+    summary: str = ""
+    gaps: list[tuple[str, str]] = field(default_factory=list)  # (exact team name, focus)
+
+
+def vision_review_prompt(vision: str, vision_dod: str, teams: Iterable[Any],
+                         done_by_team: dict[str, list[Any]], listing: str,
+                         files: dict[str, str]) -> str:
+    """`teams` need name, mission_statement, status; `done_by_team` maps team name -> Done tasks."""
+    blocks = []
+    for t in teams:
+        name = _get(t, "name", "")
+        blocks.append(f'Team "{name}" [{_get(t, "status", "")}]\n  Mission: '
+                      f'{_clip(_get(t, "mission_statement", ""), 500)}\n  Done tasks:\n'
+                      + _task_list(done_by_team.get(name, []), limit=20))
+    return ("Job: review the whole swarm against the Vision. Every team has finished its own "
+            "Mission; now judge the combined result against the Vision and the vision-level "
+            "Definition of Done: is the Vision as a whole delivered, and are the teams' "
+            "deliverables consistent with each other (for example, documentation describes "
+            "things that really exist, modules work together)?\n"
+            f"Vision: {_clip(vision, 2000)}\n\nVision-level Definition of Done:\n"
+            f"{_clip(vision_dod, 3000) or '(none)'}\n\n"
+            "Teams:\n" + "\n".join(blocks) + "\n\n"
+            f"Workspace files:\n{listing or '(none)'}\n\n"
+            f"Deliverable files:\n{_files_block(files)}\n"
+            "confidence is your certainty (0 to 1) that the vision-level Definition of Done is "
+            "met by the work as it stands. If you cannot name a concrete gap (specific missing or "
+            "wrong content, or an inconsistency between teams), it is met: answer verdict "
+            '"met" with confidence 0.99 or more. General polish is not a gap. Anything below 1.0 '
+            'must name the concrete gap in "gaps": each gap names the exact team that must act '
+            "and a focus saying what that team must change or add.\n"
+            + _JSON_ONLY + 'Contract: {"verdict": "met"|"gaps", "confidence": 0.0-1.0, '
+            '"summary": "...", "gaps": [{"team": "<exact team name>", "focus": "..."}]}\n'
+            'Example: {"verdict": "gaps", "confidence": 0.7, "summary": "The README documents '
+            'an API that does not exist", "gaps": [{"team": "Core", "focus": "Implement the '
+            'search() function the README describes"}]}')
+
+
+def parse_vision_review(obj: Any, team_names: Iterable[str],
+                        threshold: float = MISSION_CONFIDENCE_FLOOR) -> VisionReview:
+    names = list(team_names)
+    o = _as_obj(obj)
+    verdict = _text(o.get("verdict")).lower()
+    if verdict not in ("met", "gaps"):
+        raise ValueError('"verdict" must be exactly "met" or "gaps"')
+    raw = o.get("gaps")
+    if raw is None:
+        raw = []
+    if not isinstance(raw, list):
+        raise ValueError('"gaps" must be an array of {"team": ..., "focus": ...}')
+    gaps: list[tuple[str, str]] = []
+    for g in raw:
+        if not isinstance(g, dict):
+            raise ValueError('each gap must be an object {"team": ..., "focus": ...}')
+        team, focus = _text(g.get("team")), _text(g.get("focus"))
+        if team not in names:
+            raise ValueError(f'unknown team {team!r} in gaps; the exact team names are: '
+                             + ", ".join(f'"{n}"' for n in names))
+        if not focus:
+            raise ValueError(f'the gap for team "{team}" needs a non-empty "focus"')
+        gaps.append((team, focus))
+    r = VisionReview(verdict=verdict,
+                     confidence=_unit(o.get("confidence"), "confidence"),  # type: ignore[arg-type]
+                     summary=_text(o.get("summary")), gaps=gaps)
+    if (verdict != "met" or r.confidence < threshold) and not gaps:
+        raise ValueError(
+            f'"gaps" is empty, but verdict "{verdict}" at confidence {r.confidence:.2f} means '
+            'more work. Either name the concrete gap as {"team": exact team name, '
+            f'"focus": what to change or add}}, or, if you cannot name one, answer verdict "met" '
+            f"with confidence {threshold} or higher.")
+    return r
+
+
+# ---------------------------------------------------------------------------
 # Retrospective (Swarm Coordinator)
 # ---------------------------------------------------------------------------
 

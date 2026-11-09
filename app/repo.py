@@ -81,7 +81,7 @@ def _val(x: Any) -> Any:
 # ---------------------------------------------------------------------------
 
 SWARM_COLS = ("id, name, vision_statement, definition_of_done, lifecycle_state, config, "
-              "paused_reason, retrospective_done, created_at, started_at")
+              "paused_reason, retrospective_done, vision_reviews, created_at, started_at")
 TEAM_COLS = ("id, swarm_id, name, mission_statement, status, creator_kind, creator_team_id, "
              "definition_of_ready, definition_of_done, generation, next_focus, "
              "last_assessed_at, created_at")
@@ -104,7 +104,7 @@ PROPOSAL_COLS = ("id, swarm_id, team_id, proposer_agent_id, name, mission_statem
                  "status, votes, quorum, created_team_id, created_at, decided_at")
 
 SWARM_UPDATABLE = ("name", "vision_statement", "definition_of_done", "config", "lifecycle_state",
-                   "paused_reason", "retrospective_done", "started_at")
+                   "paused_reason", "retrospective_done", "vision_reviews", "started_at")
 TEAM_UPDATABLE = ("name", "mission_statement", "status", "definition_of_ready",
                   "definition_of_done", "generation", "next_focus", "last_assessed_at")
 TASK_UPDATABLE = ("status", "priority", "complexity", "assigned_agent_id", "attempts",

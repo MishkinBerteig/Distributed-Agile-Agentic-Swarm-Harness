@@ -23,7 +23,7 @@ from app.db import create_pool
 from app.embeddings import build_embedder
 from app.jobs import Deferred, Jobs, SwarmNotActive, is_infrastructure_error
 from app.llm import LLMError
-from app.models import (Action, ActionKind, AgentRole, Swarm, SwarmSnapshot, SwarmStatus, Task,
+from app.models import (Action, ActionKind, AgentRole, MAX_VISION_REVIEWS, Swarm, SwarmSnapshot, SwarmStatus, Task,
                         TaskStatus, TeamStatus)
 from app.repo import AgentRepo, EventRepo, SwarmRepo, load_snapshot
 from app import services
@@ -56,6 +56,7 @@ JOB_LABELS = {
     ActionKind.ASSESS_MISSION: "Mission assessment",
     ActionKind.RETROSPECTIVE: "Swarm retrospective",
     ActionKind.VOTE: "Team proposal vote",
+    ActionKind.REVIEW_VISION: "Vision review",
 }
 
 
@@ -165,7 +166,10 @@ def decide(snap: SwarmSnapshot) -> list[Action]:
 
     if snap.teams and all(t.status in (TeamStatus.ACCOMPLISHED.value, TeamStatus.FAILED.value)
                           for t in snap.teams):
-        emit(Action(kind=ActionKind.COMPLETE_SWARM))
+        if swarm.vision_reviews < MAX_VISION_REVIEWS:
+            emit(Action(kind=ActionKind.REVIEW_VISION, detail="Vision-level review"))
+        else:
+            emit(Action(kind=ActionKind.COMPLETE_SWARM))
     return out
 
 

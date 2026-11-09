@@ -269,10 +269,34 @@ def test_budget_exhausted_with_open_task_keeps_working():
 
 # -- complete swarm -------------------------------------------------------------------------
 
-def test_complete_swarm_when_all_teams_terminal():
+def test_vision_review_when_all_teams_terminal():
     teams = [team("a", status="accomplished"), team("b", status="failed")]
     out = decide(snap(teams=teams, agents=[]))
-    assert kinds(out) == [K.COMPLETE_SWARM]
+    assert kinds(out) == [K.REVIEW_VISION]
+
+
+def test_complete_swarm_once_the_vision_review_cap_is_used():
+    teams = [team("a", status="accomplished"), team("b", status="failed")]
+    assert kinds(decide(snap(teams=teams, agents=[], sw=swarm(vision_reviews=2)))) \
+        == [K.REVIEW_VISION]
+    assert kinds(decide(snap(teams=teams, agents=[], sw=swarm(vision_reviews=3)))) \
+        == [K.COMPLETE_SWARM]
+
+
+def test_reopened_team_plans_with_its_focus():
+    """A reopened team (active again, Done tasks already assessed) gets PLAN_TASKS."""
+    t = team("a", status="active", next_focus="Add the missing part",
+             last_assessed_at=T0 + timedelta(minutes=30))
+    tasks = [task("x", "Done", team_id="a", updated_at=T0 + timedelta(minutes=10))]
+    out = decide(snap(tasks, teams=[t], agents=[agent("d", "a")], sw=swarm(vision_reviews=1)))
+    assert kinds(out) == [K.PLAN_TASKS]
+    assert K.REVIEW_VISION not in kinds(out)
+
+
+def test_review_vision_suppressed_while_running():
+    teams = [team("a", status="accomplished")]
+    out = decide(snap(teams=teams, agents=[], running_jobs={"review_vision:-:-"}))
+    assert out == []
 
 
 def test_no_complete_swarm_while_a_team_is_active():
