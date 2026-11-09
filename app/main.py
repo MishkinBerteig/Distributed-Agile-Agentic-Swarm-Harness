@@ -709,7 +709,8 @@ async def runner_hello(req: HelloRequest, runner: Runner = Depends(runner_auth))
     await RunnerRepo(_p()).update(runner.id, host=req.host[:200], version=req.version[:80],
                                   max_jobs=req.max_jobs, harnesses=caps)
     return {"runner_id": runner.id, "name": runner.name, "poll_seconds": R.POLL_SECONDS,
-            "heartbeat_seconds": R.HEARTBEAT_SECONDS, "lease_seconds": R.LEASE_SECONDS}
+            "heartbeat_seconds": R.heartbeat_seconds_for(settings.RUNNER_LEASE_SECONDS),
+            "lease_seconds": settings.RUNNER_LEASE_SECONDS}
 
 
 @app.post("/runner/lease")
@@ -723,7 +724,7 @@ async def runner_lease(req: LeaseRequest, runner: Runner = Depends(runner_auth))
         await repo.requeue_expired(now)
         active = (await RunnerRepo(_p()).active_job_counts()).get(runner.id, 0)
         if active < runner.max_jobs:
-            job = await repo.lease_next(runner, caps, now, R.LEASE_SECONDS)
+            job = await repo.lease_next(runner, caps, now, settings.RUNNER_LEASE_SECONDS)
             if job is not None:
                 return {"job": _job_for_runner(job)}
         remaining = deadline - time.monotonic()
@@ -770,7 +771,7 @@ async def runner_heartbeat(job_id: str, req: Optional[HeartbeatRequest] = None,
     if not await _job_still_wanted(job):
         await repo.cancel(job.id)
         return {"status": "cancelled"}
-    beat = await repo.heartbeat(job.id, runner.id, _now(), R.LEASE_SECONDS)
+    beat = await repo.heartbeat(job.id, runner.id, _now(), settings.RUNNER_LEASE_SECONDS)
     return {"status": "leased" if beat is not None and beat.status == "leased" else "cancelled"}
 
 

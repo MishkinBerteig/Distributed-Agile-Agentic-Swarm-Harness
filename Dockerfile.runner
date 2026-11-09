@@ -1,6 +1,22 @@
 # DAASH runner image (docs/DESIGN-0.3.md section 7): python3 + node + the three agent CLIs.
 # Running the CLIs here keeps agent-executed code off the host.
-FROM node:22-bookworm-slim
+# Two stages: `fake-only` (python only, no node/npm; used by the e2e tier with the `fake`
+# harness) and `full` (the default, last stage).
+FROM python:3.12-slim-bookworm AS fake-only
+COPY daash_runner /opt/daash/daash_runner
+COPY runner/runner.e2e.json /opt/daash/runner.e2e.json
+RUN useradd --create-home --shell /bin/bash runner \
+    && mkdir -p /work && chown runner:runner /work
+USER runner
+ENV HOME=/home/runner \
+    PYTHONPATH=/opt/daash \
+    PYTHONUNBUFFERED=1 \
+    DAASH_RUNNER_CONFIG=/opt/daash/runner.e2e.json \
+    DAASH_RUNNER_WORKDIR=/work
+WORKDIR /work
+ENTRYPOINT ["python3", "-m", "daash_runner"]
+
+FROM node:22-bookworm-slim AS full
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3 ca-certificates git ripgrep \

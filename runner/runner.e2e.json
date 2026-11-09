@@ -1,0 +1,10 @@
+{
+  "name": "e2e-runner",
+  "harnesses": {
+    "fake": {
+      "command": "python3",
+      "models": [],
+      "env": {}
+    }
+  }
+}

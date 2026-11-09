@@ -263,8 +263,13 @@ any device without a venv.
   team to VERIFICATION; restart re-attaches to the same job; pause cancels the remote job and the heartbeat
   says `cancelled`; lease expiry → requeue → another runner completes; `error` → cooldown, no attempt;
   `failed` → rework; fallback to native when no runner; result path validation.
-* e2e: a `runner` service built from `Dockerfile.runner` with only the `fake` harness enabled in the e2e
-  compose project; scenarios: mixed native+remote swarm to VERIFICATION; runner container killed mid-job,
-  second runner finishes; bad token → 401.
+* e2e (`scripts/e2e.sh`, tests/e2e/test_runner_scenarios.py): `runner` and `runner-hang` services built from
+  the `fake-only` stage of `Dockerfile.runner` (python only, `runner/runner.e2e.json`: only the `fake` harness),
+  both using the bootstrap token `local-runner` (`DAASH_RUNNER_BOOTSTRAP_TOKEN`); `DAASH_RUNNER_LEASE_SECONDS=5`
+  (default 60; heartbeat = lease/3, returned in hello). `runner` (fake CLI takes ~4 s) runs always; `runner-hang`
+  (CLI hangs) is created but stopped until the test starts it. Scenarios: mixed native+fake swarm to
+  VERIFICATION with `/remote-jobs` runner names; runner killed mid-job, lease expires, the other container
+  finishes it with no duplicate completed jobs; bad/missing token -> 401 and open admin API; pause cancels the
+  remote job, the runner drops it, no fake-LLM calls while paused, resume completes.
 * live (manual, gateway): a swarm whose delivery agents are native + openclaude + claude-code + codex in the
   runner container.

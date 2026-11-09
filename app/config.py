@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     # "local-runner" is ensured at start with this token (lets compose start a runner unattended).
     API_TOKEN: str = ""
     RUNNER_BOOTSTRAP_TOKEN: str = ""
+    # Seconds a runner lease lasts without a heartbeat (e2e shortens it; heartbeats follow).
+    RUNNER_LEASE_SECONDS: int = 60
 
     def model_concurrency(self) -> dict[str, int]:
         """LLM_MODEL_CONCURRENCY parsed to {model: limit}; bad JSON is logged and ignored."""

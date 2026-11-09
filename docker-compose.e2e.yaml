@@ -13,6 +13,26 @@ x-daash-env: &daash-env
   DAASH_LLM_ENDPOINT: http://fake-llm:9100
   DAASH_LLM_API_KEY: ""
   DAASH_WORKSPACE_ROOT: /workspaces
+  # 0.3: a fixed test token for the bootstrap runner "local-runner" (e2e only, not a secret) and a
+  # short lease so a killed runner's job is re-queued within seconds (heartbeats follow: lease/3).
+  DAASH_RUNNER_BOOTSTRAP_TOKEN: daash_rt_e2e-fixed-test-token
+  DAASH_RUNNER_LEASE_SECONDS: "5"
+
+x-runner: &runner
+  # `fake-only` stage: python only, only the `fake` harness (runner/runner.e2e.json); no real CLIs.
+  image: ${DAASH_E2E_PROJECT:-daash-e2e}-runner
+  build:
+    context: .
+    dockerfile: Dockerfile.runner
+    target: fake-only
+  environment: &runner-env
+    DAASH_COORDINATOR_URL: http://coordinator:8000
+    DAASH_RUNNER_TOKEN: daash_rt_e2e-fixed-test-token
+    DAASH_RUNNER_MAX_JOBS: "1"
+  depends_on:
+    coordinator:
+      condition: service_healthy
+  networks: [e2e]
 
 services:
   db:
@@ -84,6 +104,22 @@ services:
       - e2e-workspaces:/workspaces
     networks: [e2e]
 
+  # Healthy runner: the fake CLI finishes after a few seconds (long enough to pause/inspect a job).
+  runner:
+    <<: *runner
+    environment:
+      <<: *runner-env
+      DAASH_FAKE_MODE: slow
+      DAASH_FAKE_SLOW_SECONDS: "4"
+
+  # Doomed runner: its fake CLI hangs. Created but NOT started; the runner-death scenario starts it,
+  # then kills it mid-job (same runner token/identity as `runner`, which is stopped meanwhile).
+  runner-hang:
+    <<: *runner
+    environment:
+      <<: *runner-env
+      DAASH_FAKE_MODE: hang
+
   e2e:
     build:
       context: .
@@ -92,6 +128,7 @@ services:
     environment:
       E2E_COORDINATOR_URL: http://coordinator:8000
       E2E_FAKE_LLM_URL: http://fake-llm:9100
+      E2E_RUNNER_TOKEN: daash_rt_e2e-fixed-test-token
       E2E_COMPOSE_PROJECT: ${DAASH_E2E_PROJECT:-daash-e2e}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -102,6 +139,8 @@ services:
         condition: service_started
       fake-llm:
         condition: service_healthy
+      runner:
+        condition: service_started
     networks: [e2e]
 
 networks:

@@ -230,3 +230,12 @@ def test_remote_work_prompt():
         assert needle in p
     assert "submit" not in p
     assert "(empty)" in prompts.remote_work_prompt(task, crit, None, "")
+
+
+def test_lease_seconds_setting_and_heartbeat_follow():
+    from app.config import Settings
+    assert Settings().RUNNER_LEASE_SECONDS == 60            # default unchanged
+    assert Settings(RUNNER_LEASE_SECONDS=5).RUNNER_LEASE_SECONDS == 5
+    assert remote.heartbeat_seconds_for(60) == 15            # default heartbeat unchanged
+    assert remote.heartbeat_seconds_for(5) < 5               # always inside the lease
+    assert remote.heartbeat_seconds_for(0) == 0.5

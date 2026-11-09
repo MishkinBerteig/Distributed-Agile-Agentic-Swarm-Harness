@@ -63,6 +63,11 @@ def bearer_token(header: Optional[str]) -> str:
     return rest.strip() if scheme.lower() == "bearer" else ""
 
 
+def heartbeat_seconds_for(lease_seconds: int) -> float:
+    """Heartbeat interval for a lease length: the default 15 s, at most a third of the lease."""
+    return float(min(HEARTBEAT_SECONDS, max(0.5, lease_seconds / 3)))
+
+
 # -- capabilities and lease matching ------------------------------------------------------
 
 def normalize_capabilities(raw: Any) -> list[dict[str, Any]]:

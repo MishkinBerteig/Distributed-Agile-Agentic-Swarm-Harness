@@ -206,3 +206,17 @@ class Docker:
         cid = self.container(service)["Id"]
         r = self.http.post(f"/containers/{cid}/restart", params={"t": str(grace_seconds)})
         assert r.status_code == 204, f"restart {service}: {r.status_code} {r.text}"
+
+    def _act(self, service: str, verb: str, ok: tuple, **params) -> None:
+        cid = self.container(service)["Id"]
+        r = self.http.post(f"/containers/{cid}/{verb}", params=params)
+        assert r.status_code in ok, f"{verb} {service}: {r.status_code} {r.text}"
+
+    def start(self, service: str) -> None:
+        self._act(service, "start", (204, 304))
+
+    def stop(self, service: str, grace_seconds: int = 2) -> None:
+        self._act(service, "stop", (204, 304), t=str(grace_seconds))
+
+    def kill(self, service: str) -> None:
+        self._act(service, "kill", (204,))
