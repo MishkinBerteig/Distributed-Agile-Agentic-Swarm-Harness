@@ -106,16 +106,26 @@ Design: docs/DESIGN-0.3.md. Runner guide: docs/RUNNER.md.
   rework reassignment and runner leasing; agents and judges are told what the delivering agent can do
 - [x] Work rotates across a team's delivery agents (least recently active first); prioritize tolerates a
   mistyped task id; the mission assessment sees every workspace file
-- [x] Tests: unit 538 (~3 s), integration 169, e2e 12 (4 runner scenarios with runner containers + fake CLI)
-- Live: LIVE_RESULT_PLACEHOLDER
+- [x] Runner scenarios in e2e (runner containers + fake CLI): mixed swarm, runner death, auth, pause
+- [x] Command checks (§12): `command` acceptance criteria (e.g. `python3 -m unittest`) run by the runner after
+  the agent finishes; exit 0 = green, with the real output shown to the judges as DAASH-produced evidence
+- [x] Work prompts keep each agent inside its own task (external agents had been writing other tasks' files)
+- [x] Tests: unit 568 (~6 s), integration 174, e2e 12
+- Live on the local gateway, all agent CLIs in the runner container (logs in `agents-workspace/coordinator/live-run/`):
+  - *Tempconv* (OpenClaude): 3/3 tasks Done first attempt, vision review passed, 36 min; its suite (8 tests) passes.
+  - *Textkit* (OpenClaude + Claude Code + Codex + native, rotation): 6 utilities/tests/README Done first attempt;
+    47 tests pass. Exposed the native agent being asked to run tests (led to capabilities and command checks).
+  - *Primes II* (native + Claude Code + Codex, capabilities + command checks + scope rule): 3/3 Done first
+    attempt, every task proven by a runner-executed command (`Ran 15 tests ... OK`), each agent touched only its
+    own file, vision review passed, ~16 min, p90 5.3 min.
 
 ### After 0.3 (in priority order)
 1. Harden remote runs: per-harness model/cost accounting in metrics, per-runner concurrency vs gateway capacity,
    runner auto-update, HTTPS/Tailscale deployment notes; enable `DAASH_API_TOKEN` by default when the coordinator
    is published beyond localhost. Capability-aware Mission Judgement approval; keep external agents inside their
    task's scope (a Claude Code agent also wrote the next task's tests); more harness adapters (e.g. OpenClaw).
-2. Sandboxed code execution for the native harness (learning mechanism 2: run agent-written automation scripts;
-   test-based deterministic checks such as "`python3 -m unittest` passes", run in the runner container).
+2. Run agent-written automation scripts (learning mechanism 2) on runners, building on command checks; a
+   command-check scenario in e2e; let the native harness request runner execution.
 3. Research tools for the native harness (web fetch/search with required citations) so fact-checking is grounded.
 4. Long soak run at README scale (10M+ tokens); real embedding model by default; richer RAG over transcripts;
    multiple providers per swarm; push updates (SSE) instead of polling.
@@ -164,7 +174,7 @@ timeline, artifacts), metrics, activity feed. API docs: http://127.0.0.1:8000/do
 - Only one live swarm at a time; archive or delete it to create the next.
 
 ### Tests (three tiers, docs/DESIGN-0.2.md)
-- **unit** — `docker compose --profile test run --rm --build test` — pure logic incl. runner adapters, ~3 s.
+- **unit** — `docker compose --profile test run --rm --build test` — pure logic incl. runner adapters, ~6 s.
 - **integration** — `docker compose --profile integration run --rm --build integration` — real PostgreSQL/Redis
   (`daash_test`, Redis DB 15), API and engine in-process against the scripted fake LLM (`tests/fakes/`).
 - **e2e** — `scripts/e2e.sh` — separate compose project `daash-e2e` (no published ports, safe beside the dev
@@ -174,9 +184,9 @@ timeline, artifacts), metrics, activity feed. API docs: http://127.0.0.1:8000/do
   method, then `fake.configure({...})` in a test.
 
 ### Known limitations (0.3)
-- Native-harness agents can only read/write workspace files; code execution and web research come from the
-  external harnesses (runner). Automation scripts are recorded, not run.
-- Judges are LLMs: verdicts are good but not infallible; they read code but do not run tests.
+- Native-harness agents can only edit workspace files; running code comes from the external harnesses (runner) and
+  command checks. Automation scripts are recorded, not run.
+- Judges are LLMs: verdicts are good but not infallible; "tests pass" is only proven by a command check.
 - Admin auth is off unless `DAASH_API_TOKEN` is set (the coordinator is published on 127.0.0.1 only by default).
 - Dashboard polls (no SSE). No harness offers `web_research` by default (the local gateway cannot serve hosted
   web tools), so research tasks run degraded.
