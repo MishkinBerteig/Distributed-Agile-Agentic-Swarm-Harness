@@ -368,3 +368,16 @@ def test_parse_keeps_the_defer_reason_only_for_a_deferral():
 def test_prompt_says_task_wording_is_never_a_reason_to_wait():
     p = prioritize_prompt([ptask("t1")], [], slots=1)
     assert "about the task's own wording is never a reason to wait" in p
+
+
+def test_parse_accepts_a_slightly_mistyped_uuid_but_not_an_ambiguous_one():
+    from app.prompts import resolve_near_id
+    good = "bbfd4ec5-0775-4b84-956b-dfc0b941b9a5"
+    other = "f05b73a7-5eb7-4de3-a1e4-f1e0a113a000"
+    typo = "bfdf4ec5-0775-4b84-956b-dfc0b941b9a5"      # seen live: two characters swapped
+    r = parse_prioritize({"order": [typo, other], "next_task_ids": [typo]}, [good, other])
+    assert r.order == [good, other] and r.next_task_ids == [good]
+    assert resolve_near_id("zzzz4ec5-0775-4b84-956b-dfc0b941b9a5", [good, other]) is None
+    assert resolve_near_id("t2", ["t1", "t3"]) is None             # short ids: exact only
+    twins = ["aaaa4ec5-0775-4b84-956b-dfc0b941b9a5", "aaab4ec5-0775-4b84-956b-dfc0b941b9a5"]
+    assert resolve_near_id("aaac4ec5-0775-4b84-956b-dfc0b941b9a5", twins) is None

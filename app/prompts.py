@@ -591,6 +591,30 @@ def prioritize_prompt(candidates: Iterable[Any], done_tasks: Iterable[Any],
     return s
 
 
+def _edit_distance(a: str, b: str, cap: int = 3) -> int:
+    """Levenshtein distance, stopping early once it exceeds `cap`."""
+    if abs(len(a) - len(b)) > cap:
+        return cap + 1
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i] + [0] * len(b)
+        for j, cb in enumerate(b, 1):
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb))
+        if min(cur) > cap:
+            return cap + 1
+        prev = cur
+    return prev[-1]
+
+
+def resolve_near_id(s: str, valid: Iterable[str], max_distance: int = 2) -> Optional[str]:
+    """The one valid id a model's slightly mistyped id (UUIDs invite transposed characters)
+    is within `max_distance` edits of; None if there is no such id or more than one."""
+    if len(s) < 16:
+        return None
+    hits = [v for v in valid if _edit_distance(s.lower(), v.lower(), max_distance) <= max_distance]
+    return hits[0] if len(hits) == 1 else None
+
+
 def parse_prioritize(obj: Any, valid_ids: Iterable[str], slots: int = 1,
                      allow_defer: bool = True) -> PrioritizeResult:
     slots = max(1, int(slots))
@@ -600,9 +624,12 @@ def parse_prioritize(obj: Any, valid_ids: Iterable[str], slots: int = 1,
 
     def norm(v: Any, where: str) -> str:
         s = str(v).strip()
-        if s not in vset:
+        if s in vset:
+            return s
+        near = resolve_near_id(s, valid)
+        if near is None:
             raise ValueError(f'{where} has unknown task id {s!r}; valid ids are: {", ".join(valid)}')
-        return s
+        return near
 
     raw_order = o.get("order", [])
     if not isinstance(raw_order, list):
