@@ -381,3 +381,8 @@ def test_parse_accepts_a_slightly_mistyped_uuid_but_not_an_ambiguous_one():
     assert resolve_near_id("t2", ["t1", "t3"]) is None             # short ids: exact only
     twins = ["aaaa4ec5-0775-4b84-956b-dfc0b941b9a5", "aaab4ec5-0775-4b84-956b-dfc0b941b9a5"]
     assert resolve_near_id("aaac4ec5-0775-4b84-956b-dfc0b941b9a5", twins) is None
+
+
+def test_prompt_says_partial_tasks_serve_the_mission():
+    p = prioritize_prompt([ptask("t1")], [], slots=1)
+    assert "never reject a task for covering only part of the Mission" in p

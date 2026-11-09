@@ -567,7 +567,9 @@ def prioritize_prompt(candidates: Iterable[Any], done_tasks: Iterable[Any],
               "ones that should not be done.\n")
     s += ("3. rejections: tasks that do not serve the Mission or the Vision, duplicate other "
           "work, or belong to another team's Mission, each with a reason. Rejected ids must not "
-          "be in next_task_ids.")
+          "be in next_task_ids. Tasks are deliberately small pieces of the Mission: a task that "
+          "delivers part of it serves it, so never reject a task for covering only part of the "
+          "Mission (other tasks cover the rest).")
     if can_wait:
         s += (" Never reject a task only because it cannot start yet: a rejected task is gone "
               "for good, so leave it Pending instead.")
