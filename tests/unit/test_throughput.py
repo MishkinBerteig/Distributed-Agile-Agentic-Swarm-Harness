@@ -342,3 +342,15 @@ def test_engine_cancel_stale_cancels_and_clears_keys():
 
 def test_swarm_not_active_is_not_cancellation():
     assert not issubclass(SwarmNotActive, asyncio.CancelledError)
+
+
+def test_parse_without_allow_defer_falls_back_to_approving():
+    r = parse_prioritize({"order": ["t2", "t1"], "next_task_ids": [], "next_task_id": None},
+                         ["t1", "t2"], slots=1, allow_defer=False)
+    assert r.next_task_ids == ["t2"] and not r.deferred
+
+
+def test_prompt_without_can_wait_offers_no_deferral():
+    p = prioritize_prompt([ptask("t1")], [], slots=1, can_wait=False)
+    assert "waiting cannot change anything" in p
+    assert '"next_task_ids": []' not in p and "Never reject a task only because" not in p

@@ -18,6 +18,7 @@ from app.models import (
     Swarm,
     Task,
     TaskStatus,
+    TeamStatus,
 )
 
 # ---------------------------------------------------------------------------
@@ -143,6 +144,26 @@ def live_open_tasks(tasks: list[Task]) -> list[Task]:
     stalled = stalled_task_ids(tasks)
     return [t for t in tasks
             if t.status in TaskStatus.open_statuses() and t.id not in stalled]
+
+
+def work_in_flight(team_id: str, teams: list, tasks: list[Task]) -> bool:
+    """Can anything in the swarm still change while `team_id`'s candidates wait (deferral)?
+
+    True when some non-stalled task anywhere is Ready, In-Progress or Review (this team's
+    included), or another ACTIVE team has no standards yet or no live open task (it will plan or
+    be assessed next). Teams that only hold Pending tasks cannot unblock each other by waiting."""
+    stalled = stalled_task_ids(tasks)
+    moving = (TaskStatus.READY.value, TaskStatus.IN_PROGRESS.value, TaskStatus.REVIEW.value)
+    if any(t.status in moving and t.id not in stalled for t in tasks):
+        return True
+    for tm in teams:
+        if tm.id == team_id or tm.status != TeamStatus.ACTIVE.value:
+            continue
+        if tm.definition_of_done is None:
+            return True
+        if not live_open_tasks([t for t in tasks if t.team_id == tm.id]):
+            return True
+    return False
 
 
 def idle_delivery_agents(team_agents: list[Agent], team_tasks: list[Task]) -> list[Agent]:

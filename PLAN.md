@@ -77,7 +77,9 @@ Design: docs/DESIGN-0.2.md. (`v0.1` is tagged at f1e5526.)
   tasks Done on the first attempt, p90 cycle time 4.7 min (v0.1 runs: 11–13 min).
 - [x] B.6 deferral (after the tag): Mission Judgement can approve nothing when a task needs another team's work;
   the task stays Pending and the engine re-asks when more work is Done (no rejection churn, no hot loop).
-  unit 390, integration 102.
+  Deferral is offered only while other work is in flight, so it cannot wait forever. unit 398, integration 103,
+  e2e 8. Live: the First Garden re-run finished 9/9 tasks Done on the first attempt, 3 teams accomplished,
+  0 failed, 55 min, 516k tokens.
 
 ### After 0.2 (in priority order)
 1. **Distributed, heterogeneous harnesses**: external CLI agents (OpenClaude, Claude Code, Codex) on any device

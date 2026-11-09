@@ -7,6 +7,8 @@ holds that team's prioritize job until another task in the swarm is Done or DEFE
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from app.engine import DEFER_SECONDS
 from app.models import ActionKind
 from tests.integration.helpers import swarm_config
@@ -20,30 +22,49 @@ async def seeded(h, delivery=1):
     return team
 
 
-async def test_a_deferred_task_stays_pending_and_is_not_asked_about_in_a_hot_loop(h, fake):
+async def test_a_deferred_task_stays_pending_and_is_held_without_a_hot_loop(h, fake):
     team = await seeded(h)
+    other = await h.seed_team("Team B")
     task = await h.add_task(team, "Checklist")
-    fake.configure({"defer_prioritize": 1})
+    agent_b = next(a for a in await h.agent_list(other) if a.role == "mission_delivery")
+    calendar = await h.add_task(other, "Calendar", status="In-Progress",
+                                assigned_agent_id=agent_b.id,
+                                committed_at=datetime.now(timezone.utc), complexity="simple")
+    fake.configure({"defer_prioritize": 1, "delay_ms": 400})       # Team B works slowly
 
-    assert [a.kind for a in await h.step()] == [ActionKind.PRIORITIZE]
+    actions = await h.engine.tick()                                 # A prioritizes, B works
+    assert (ActionKind.PRIORITIZE, team.id) in [(a.kind, a.team_id) for a in actions]
+    await h.wait_for(lambda: bool(h.engine.deferrals.active_keys()), label="deferral held")
     assert (await h.tasks.get(task.id)).status == "Pending"         # not rejected, not approved
     deferred = await h.event_list("deferred")
     assert len(deferred) == 1 and "'Checklist'" in deferred[0].detail
     assert not await h.event_list("rejected")
 
     for _ in range(3):                                              # held: no new calls
-        assert await h.step() == []
+        actions = await h.engine.tick()
+        assert ActionKind.PRIORITIZE not in [a.kind for a in actions]
     assert len(fake.calls_for("prioritize")) == 1
+    assert (await h.tasks.get(calendar.id)).status != "Done"
 
     h.clock.advance(DEFER_SECONDS + 1)                              # asked again after the wait
-
-    async def approved():
-        return (await h.tasks.get(task.id)).status != "Pending"
-
-    await h.run_until(approved, label="Checklist approved")
-    assert len(fake.calls_for("prioritize")) == 2
+    actions = await h.engine.tick()
+    assert (ActionKind.PRIORITIZE, team.id) in [(a.kind, a.team_id) for a in actions]
+    await h.settle()
+    fake.configure({"delay_ms": 0})
     await h.run_to_state("VERIFICATION")
     assert (await h.tasks.get(task.id)).status == "Done"
+
+
+async def test_with_nothing_else_in_flight_mission_judgement_cannot_defer(h, fake):
+    """Waiting could never change the answer (no other work can finish), so a deferral would
+    loop forever: the prompt offers no deferral and an empty answer approves the first task."""
+    fake.configure({"defer_prioritize": 1, "record_prompts": True})
+    team = await seeded(h)
+    task = await h.add_task(team, "Polish the checklist")
+    await h.step()
+    assert (await h.tasks.get(task.id)).status == "Ready"
+    assert not await h.event_list("deferred")
+    assert "waiting cannot change anything" in fake.calls_for("prioritize")[0]["user"]
 
 
 async def test_a_deferral_is_released_as_soon_as_other_work_is_done(h, fake):

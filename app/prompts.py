@@ -538,7 +538,7 @@ class PrioritizeResult:
 
 def prioritize_prompt(candidates: Iterable[Any], done_tasks: Iterable[Any],
                       team_dor: Optional[str] = None, other_teams: Iterable[Any] = (),
-                      slots: int = 1, workspace_files: str = "") -> str:
+                      slots: int = 1, workspace_files: str = "", can_wait: bool = True) -> str:
     slots = max(1, int(slots))
     s = scope_block(other_teams)
     s += ("Job: prioritize this team's candidate tasks by how directly they advance the Mission.\n"
@@ -546,15 +546,22 @@ def prioritize_prompt(candidates: Iterable[Any], done_tasks: Iterable[Any],
          f"2. next_task_ids: the tasks approved to start now: up to {slots} slot(s) are free, so "
          f"approve up to {slots} task(s), highest priority first, each not rejected and meeting "
          "the Definition of Ready. Approve fewer only if fewer candidates qualify. "
-         "next_task_id: the first of them. If no candidate can start yet (for example it needs "
-         "work another team has not finished), approve none: \"next_task_ids\": [] and "
-         "\"next_task_id\": null. Those tasks stay Pending and you will be asked again when "
-         "more work is done.\n"
-         "3. rejections: tasks that do not serve the Mission or the Vision, duplicate other "
-         "work, or belong to another team's Mission, each with a reason. Rejected ids must not "
-         "be in next_task_ids. Never reject a task only because it cannot start yet: a rejected "
-         "task is gone for good, so leave it Pending instead.\n"
-         "Copy task ids exactly as written.\n\n")
+         "next_task_id: the first of them.")
+    if can_wait:
+        s += (" If no candidate can start yet (for example it needs work another team has not "
+              "finished), approve none: \"next_task_ids\": [] and \"next_task_id\": null. Those "
+              "tasks stay Pending and you will be asked again when more work is done.\n")
+    else:
+        s += (" No other work is in progress anywhere in this swarm, so waiting cannot change "
+              "anything: approve at least one candidate that advances the Mission, or reject the "
+              "ones that should not be done.\n")
+    s += ("3. rejections: tasks that do not serve the Mission or the Vision, duplicate other "
+          "work, or belong to another team's Mission, each with a reason. Rejected ids must not "
+          "be in next_task_ids.")
+    if can_wait:
+        s += (" Never reject a task only because it cannot start yet: a rejected task is gone "
+              "for good, so leave it Pending instead.")
+    s += "\nCopy task ids exactly as written.\n\n"
     if team_dor and team_dor.strip():
         s += f"Team Definition of Ready:\n{team_dor.strip()}\n\n"
     cands = list(candidates)
@@ -573,7 +580,8 @@ def prioritize_prompt(candidates: Iterable[Any], done_tasks: Iterable[Any],
     return s
 
 
-def parse_prioritize(obj: Any, valid_ids: Iterable[str], slots: int = 1) -> PrioritizeResult:
+def parse_prioritize(obj: Any, valid_ids: Iterable[str], slots: int = 1,
+                     allow_defer: bool = True) -> PrioritizeResult:
     slots = max(1, int(slots))
     o = _as_obj(obj)
     valid = [str(v) for v in valid_ids]
@@ -625,7 +633,7 @@ def parse_prioritize(obj: Any, valid_ids: Iterable[str], slots: int = 1) -> Prio
         if v not in order:
             order.append(v)
     # An explicit empty list approves nothing on purpose: the candidates wait (deferral).
-    deferred = not chosen and not raw_next and isinstance(ids_field, list)
+    deferred = allow_defer and not chosen and not raw_next and isinstance(ids_field, list)
     if not chosen and not deferred:  # missing or conflicting answer: approve the first ones
         chosen = [v for v in order if v not in rejected][:slots]
     nxt = chosen[0] if chosen else None

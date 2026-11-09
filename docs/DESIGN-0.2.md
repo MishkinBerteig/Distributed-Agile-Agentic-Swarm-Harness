@@ -89,3 +89,8 @@ Scenarios:
   hot loop. The prompt says a task is never rejected only because it cannot start yet, and lists the files that
   exist in the shared workspace (all teams) so the judge can see whether a dependency is met. A missing
   `next_task_ids` still falls back to approving the first candidates.
+  Deferral is offered only while work can still change something (`policy.work_in_flight`: a non-stalled task
+  is Ready/In-Progress/Review anywhere, or another ACTIVE team will plan or be assessed). Otherwise the prompt
+  says waiting cannot help, and an empty answer falls back to approving the first candidate; the judge must
+  approve or reject. (Found in the same run: a refinement task was deferred after every other team had
+  finished, which would have re-asked every 5 minutes forever.)

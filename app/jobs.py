@@ -658,15 +658,21 @@ class Jobs:
         done = [t for t in tasks if t.status == TaskStatus.DONE.value]
         mj = await self._team_agent(swarm, team, MJ)
         model = escalate_model(choose_model(MJ, swarm.config), swarm.config, escalation)
-        others = [t for t in await self.teams.list(swarm.id) if t.id != team.id]
+        all_teams = await self.teams.list(swarm.id)
+        others = [t for t in all_teams if t.id != team.id]
         ready_startable = sum(1 for t in ready if policy.deps_done(t, by_id))
         slots = prioritize_slots(len(await self._delivery_agents(swarm, team)), ready_startable)
+        # Deferring only helps while other work can still finish; otherwise it would wait forever.
+        can_wait = policy.work_in_flight(team.id, all_teams,
+                                         await self.tasks.list(swarm_id=swarm.id))
         user = prompts.prioritize_prompt(candidates, done, team.definition_of_ready, others,
                                          slots=slots,
-                                         workspace_files=workspace_listing(self.workspace(swarm)))
+                                         workspace_files=workspace_listing(self.workspace(swarm)),
+                                         can_wait=can_wait)
         res = await self._json_job(
             swarm, mj, team, "prioritize", model, user,
-            lambda o: prompts.parse_prioritize(o, valid, slots), query=team.mission_statement)
+            lambda o: prompts.parse_prioritize(o, valid, slots, allow_defer=can_wait),
+            query=team.mission_statement)
 
         # The user may have changed or deleted tasks while Mission Judgement thought.
         fresh = {t.id: t.status for t in await self.tasks.list(team_id=team.id)}

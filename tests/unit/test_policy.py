@@ -4,7 +4,7 @@ import pytest
 
 from app import policy
 from app.models import (SWARM_ACTIONS, AcceptanceCriterion, Agent, DoDThresholds,
-                        Limits, Swarm, SwarmConfig, Task)
+                        Limits, Swarm, SwarmConfig, Task, Team)
 
 T0 = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
 
@@ -401,3 +401,48 @@ def test_limits_budget_and_multiple():
     r = policy.limits_exceeded(sw, 100, 5.0, T0 + timedelta(minutes=2))
     assert len(r) == 3
     assert any("max_budget_usd" in x for x in r)
+
+
+# -- work_in_flight (may a team's Mission Judgement defer?) --------------------------------
+
+def mk_team(id, status="active", dod="- done"):
+    return Team(id=id, swarm_id="s", name=id, mission_statement="m", status=status,
+                definition_of_done=dod, created_at=datetime(2026, 1, 1, tzinfo=timezone.utc))
+
+
+def team_task(id, team, status, deps=()):
+    return mk_task(id, status, team_id=team, depends_on=list(deps))
+
+
+def test_work_in_flight_when_any_task_is_moving():
+    teams = [mk_team("a"), mk_team("b", status="accomplished")]
+    tasks = [team_task("p", "a", "Pending"), team_task("w", "b", "In-Progress")]
+    assert policy.work_in_flight("a", teams, tasks)
+
+
+def test_own_moving_task_counts_too():
+    tasks = [team_task("p", "a", "Pending"), team_task("r", "a", "Review")]
+    assert policy.work_in_flight("a", [mk_team("a")], tasks)
+
+
+def test_nothing_in_flight_when_only_pending_and_other_teams_finished():
+    teams = [mk_team("a"), mk_team("b", status="accomplished")]
+    tasks = [team_task("p", "a", "Pending"), team_task("d", "b", "Done")]
+    assert not policy.work_in_flight("a", teams, tasks)
+
+
+def test_an_active_team_about_to_plan_or_get_standards_is_in_flight():
+    tasks = [team_task("p", "a", "Pending"), team_task("d", "b", "Done")]
+    assert policy.work_in_flight("a", [mk_team("a"), mk_team("b")], tasks)       # will assess/plan
+    assert policy.work_in_flight("a", [mk_team("a"), mk_team("b", dod=None)], tasks[:1])
+
+
+def test_two_teams_holding_only_pending_tasks_cannot_unblock_each_other():
+    tasks = [team_task("p", "a", "Pending"), team_task("q", "b", "Pending")]
+    assert not policy.work_in_flight("a", [mk_team("a"), mk_team("b")], tasks)
+
+
+def test_a_stalled_ready_task_is_not_in_flight():
+    tasks = [team_task("p", "a", "Pending"), team_task("x", "a", "Rejected"),
+             team_task("r", "a", "Ready", deps=["x"])]
+    assert not policy.work_in_flight("a", [mk_team("a")], tasks)
