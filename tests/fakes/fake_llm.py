@@ -71,6 +71,8 @@ class Scenario:
     vision_gaps_first: int = 0           # first N vision reviews answer "gaps" for the first team
     plan_needs: str = ""                 # capability ("run_code") put in "needs" of planned tasks
     plan_needs_first: int = 1            # ... on the first N tasks of each plan reply
+    plan_command_check: str = ""         # shell command added as a `command` criterion to the
+                                         # first plan_needs_first tasks of each plan reply
     defer_prioritize: int = 0            # next N prioritize replies approve nothing ([])
     record_prompts: bool = False         # keep the system and first user prompt in call records
     complexity: str = "simple"           # answer to classification
@@ -420,6 +422,10 @@ class FakeLLM:
                      "check_path": art, "check_arg": "Overview"},
                     {"text": "The content is clear and complete", "check_kind": "rubric"}],
                 "depends_on": [i - 1] if (s.plan_dependencies == "chain" and i > 0) else []})
+            if s.plan_command_check and i < s.plan_needs_first:
+                tasks[-1]["acceptance_criteria"].append({
+                    "text": f"`{s.plan_command_check}` exits 0", "check_kind": "command",
+                    "check_arg": s.plan_command_check})
             if s.plan_needs and i < s.plan_needs_first:
                 tasks[-1]["needs"] = [s.plan_needs]
         return self._json(request, {"tasks": tasks})
@@ -525,7 +531,7 @@ class FakeLLM:
         attempt = self._review_attempt(user, "quality", fresh)
         rubric = [int(m.group(1)) for m in re.finditer(
             r"^(\d+)\. \[RUBRIC - you score it\]", user, re.MULTILINE)]
-        red = re.findall(r"^\d+\. \[[a-z_]+: automatically checked, result RED.*?\] (.*)$",
+        red = re.findall(r"^\d+\. \[(?:[a-z_]+|command `[^`]*`): automatically checked.*?result RED.*?\] (.*)$",
                          user, re.MULTILINE)
         if red:
             return self._json(request, {

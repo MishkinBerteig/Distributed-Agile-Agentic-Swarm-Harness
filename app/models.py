@@ -107,11 +107,12 @@ class CheckKind(str, Enum):
     FILE_CONTAINS = "file_contains"  # check_path + check_arg (regex, case-insensitive)
     MIN_WORDS = "min_words"          # check_path + check_arg (integer)
     JSON_VALID = "json_valid"        # check_path required
+    COMMAND = "command"              # check_arg = shell command; run by a runner (DESIGN-0.3 s12)
 
 
 DETERMINISTIC_CHECKS: frozenset[str] = frozenset(
     {CheckKind.FILE_EXISTS.value, CheckKind.FILE_CONTAINS.value,
-     CheckKind.MIN_WORDS.value, CheckKind.JSON_VALID.value})
+     CheckKind.MIN_WORDS.value, CheckKind.JSON_VALID.value, CheckKind.COMMAND.value})
 
 
 class Complexity(str, Enum):
@@ -209,6 +210,16 @@ def harness_capabilities(harness: str, override: Optional[list[str]] = None) -> 
 def required_capabilities(raw: Any) -> list[str]:
     """Capabilities a task needs: known values only; `edit_files` is implied, so not stored."""
     return [c for c in normalize_capabilities(raw) if c != Capability.EDIT_FILES.value]
+
+
+def with_command_capability(required: Any, criteria: Any) -> list[str]:
+    """`required_capabilities(required)` plus `run_code` when any criterion is a command check."""
+    caps = required_capabilities(required)
+    if any(getattr(getattr(c, "check_kind", None), "value", getattr(c, "check_kind", None))
+           == CheckKind.COMMAND.value for c in criteria or ()) \
+            and Capability.RUN_CODE.value not in caps:
+        caps = required_capabilities(caps + [Capability.RUN_CODE.value])
+    return caps
 
 
 class HarnessSpec(BaseModel):

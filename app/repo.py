@@ -16,7 +16,7 @@ import asyncpg
 from app.models import (
     Agent, AgentCall, AcceptanceCriterion, Feedback, GlobalConfig, Learning, Memory,
     RemoteJob, Runner, Swarm, SwarmConfig, SwarmSnapshot, Task, TaskCreate, TaskEvent,
-    Team, TeamProposal, Verdict, harness_capabilities, required_capabilities,
+    Team, TeamProposal, Verdict, harness_capabilities, required_capabilities, with_command_capability,
 )
 
 
@@ -277,7 +277,8 @@ class TaskRepo(_Repo):
                 "depends_on, required_capabilities, created_by, embedding) "
                 "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::vector)",
                 task_id, swarm_id, data.team_id, data.parent_id, data.name, data.description,
-                data.artifact, list(data.depends_on), required_capabilities(data.required_capabilities),
+                data.artifact, list(data.depends_on),
+                with_command_capability(data.required_capabilities, data.acceptance_criteria),
                 created_by, _vec_or_none(embedding))
             for i, c in enumerate(data.acceptance_criteria, start=1):
                 await conn.execute(

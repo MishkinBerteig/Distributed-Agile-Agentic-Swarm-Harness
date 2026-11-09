@@ -14,6 +14,7 @@ from typing import Any
 
 from . import adapters, workspace
 from .client import AuthError, Client, CoordinatorError, HttpStatus
+from .checks import run_checks
 from .config import available_harnesses
 
 VERSION = "0.3.0"
@@ -261,6 +262,12 @@ class Runner:
                 files = workspace.encode_files(ws, changed, limits)
             except workspace.LimitExceeded as exc:
                 parsed.outcome, parsed.error, files, deleted = "failed", str(exc), [], []
+        check_results: list[dict] = []
+        if parsed.outcome == "submitted" and job.get("checks"):
+            check_results = self._run_checks(jid, job["checks"], ws, inv.env)
+            if check_results is None:
+                log.info("job %s cancelled during its checks; dropped", jid)
+                return None
         transcript = stdout[-TAIL_MAX:]
         if stderr.strip():
             transcript = (transcript[-(TAIL_MAX - 2100):] + "\n[stderr]\n" + stderr[-2000:])
@@ -270,9 +277,30 @@ class Runner:
             "duration_ms": int((time.monotonic() - started) * 1000), "exit_code": exit_code,
             "transcript_tail": transcript[-TAIL_MAX:], "error": parsed.error[:2000],
         }
+        if check_results:
+            payload["check_results"] = check_results
         log.info("job %s finished: outcome=%s files=%d deleted=%d exit=%s", jid, parsed.outcome,
                  len(files), len(deleted), exit_code)
         return payload
+
+    def _run_checks(self, jid: str, checks: list, ws: str, env: dict | None) -> list[dict] | None:
+        """Run the job's command checks in its workspace, heartbeating meanwhile. None = the lease
+        was cancelled (or the runner is shutting down) and the job should be dropped."""
+        next_beat = time.monotonic() + self.heartbeat_seconds
+
+        def tick() -> bool:
+            nonlocal next_beat
+            if self.stop.is_set():
+                return True
+            if time.monotonic() >= next_beat:
+                next_beat = time.monotonic() + self.heartbeat_seconds
+                try:
+                    return self.client.heartbeat(jid) == "cancelled"
+                except Exception as exc:  # noqa: BLE001 - a bad heartbeat must not kill the job
+                    log.warning("heartbeat for %s failed: %s", jid, exc)
+            return False
+
+        return run_checks(checks, ws, env, tick, poll=self.poll_interval)
 
     @staticmethod
     def _feed_stdin(proc: subprocess.Popen, text: str | None) -> None:

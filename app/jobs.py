@@ -22,7 +22,8 @@ import types
 
 from app import models, policy, prompts, remote, services
 from app.bus import DecisionBus
-from app.checks import is_deterministic, run_check, validate_check_spec
+from app.checks import (COMMAND_TIMEOUT_SECONDS, is_deterministic, run_check,
+                        validate_check_spec)
 from app.config import Settings
 from app.llm import LLMError, Usage
 from app.models import (Action, ActionKind, Agent, AgentRole, AgentState, CheckKind,
@@ -975,6 +976,10 @@ class Jobs:
         payload = {
             "system_prompt": system, "prompt": prompt,
             "required_capabilities": list(task.required_capabilities),
+            "checks": [{"id": c.id, "command": c.check_arg,
+                        "timeout_seconds": COMMAND_TIMEOUT_SECONDS}
+                       for c in task.criteria
+                       if c.check_kind == CheckKind.COMMAND.value and c.check_arg],
             "limits": {"timeout_seconds": cfg.limits.remote_job_timeout_minutes * 60,
                        "max_files": remote.MAX_FILES, "max_file_bytes": remote.MAX_FILE_BYTES,
                        "max_total_bytes": remote.MAX_TOTAL_BYTES},
@@ -1070,7 +1075,11 @@ class Jobs:
             await self.tasks.update(
                 task.id, status=TaskStatus.REVIEW.value,
                 deliverable={"summary": summary, "files": files, "model": model,
-                             "harness": job.harness, "runner": runner_name})
+                             "harness": job.harness, "runner": runner_name,
+                             "check_results": remote.clean_check_results(
+                                 res.get("check_results"),
+                                 [c.id for c in task.criteria
+                                  if c.check_kind == CheckKind.COMMAND.value])})
             await self.events.add(
                 swarm.id, "submitted", team_id=team.id, task_id=task.id, actor=agent.id,
                 from_status=TaskStatus.IN_PROGRESS.value, to_status=TaskStatus.REVIEW.value,
@@ -1326,7 +1335,8 @@ class Jobs:
         for c in task.criteria:
             if not is_deterministic(c.check_kind):
                 continue
-            res = await asyncio.to_thread(run_check, c, ws)
+            res = await asyncio.to_thread(run_check, c, ws,
+                                          (task.deliverable or {}).get("check_results"))
             det_results.append(res.passed)
             if not res.passed:
                 failed_checks.append(f"{c.text} ({res.evidence})")

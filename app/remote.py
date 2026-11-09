@@ -208,6 +208,37 @@ class ValidatedResult:
     exit_code: Optional[int] = None
     transcript_tail: str = ""
     error: str = ""
+    check_results: list[dict[str, Any]] = field(default_factory=list)
+
+
+CHECK_OUTPUT_MAX = 4000
+MAX_CHECK_RESULTS = 50
+
+
+def clean_check_results(raw: Any, allowed_ids: Optional[Iterable[str]] = None) -> list[dict[str, Any]]:
+    """Command-check results (docs/DESIGN-0.3.md section 12) cleaned up: malformed entries are
+    dropped, output clipped to its last CHECK_OUTPUT_MAX characters, one entry per id, only ids in
+    `allowed_ids` when given."""
+    if not isinstance(raw, list):
+        return []
+    allowed = set(allowed_ids) if allowed_ids is not None else None
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in raw[:MAX_CHECK_RESULTS]:
+        if not isinstance(item, dict):
+            continue
+        cid, code = item.get("id"), item.get("exit_code")
+        if not isinstance(cid, str) or not cid or cid in seen:
+            continue
+        if allowed is not None and cid not in allowed:
+            continue
+        seen.add(cid)
+        timed_out = item.get("timed_out") is True
+        out.append({"id": cid,
+                    "exit_code": code if isinstance(code, int) and not isinstance(code, bool) else None,
+                    "output_tail": str(item.get("output_tail") or "")[-CHECK_OUTPUT_MAX:],
+                    "duration_ms": _int(item.get("duration_ms")), "timed_out": timed_out})
+    return out
 
 
 def _int(v: Any) -> int:
@@ -273,7 +304,8 @@ def validate_result(body: Any, max_files: int = MAX_FILES, max_file_bytes: int =
         duration_ms=_int(body.get("duration_ms")),
         exit_code=body.get("exit_code") if isinstance(body.get("exit_code"), int) else None,
         transcript_tail=str(body.get("transcript_tail") or "")[-TRANSCRIPT_MAX:],
-        error=str(body.get("error") or "")[:2000])
+        error=str(body.get("error") or "")[:2000],
+        check_results=clean_check_results(body.get("check_results")))
 
 
 def stored_result(v: ValidatedResult) -> dict[str, Any]:
@@ -281,7 +313,8 @@ def stored_result(v: ValidatedResult) -> dict[str, Any]:
     return {"outcome": v.outcome, "summary": v.summary, "files": [p for p, _ in v.files],
             "deleted": list(v.deleted), "usage": v.usage, "cost_usd": v.cost_usd,
             "duration_ms": v.duration_ms, "exit_code": v.exit_code,
-            "transcript_tail": v.transcript_tail, "error": v.error}
+            "transcript_tail": v.transcript_tail, "error": v.error,
+            "check_results": list(v.check_results)}
 
 
 # -- filesystem: workspace tarball and staging ---------------------------------------------------

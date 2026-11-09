@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional
 
 from app import models
+from app.checks import validate_command
 
 # ---------------------------------------------------------------------------
 # System prompt hierarchy
@@ -462,12 +463,20 @@ def plan_prompt(team_name: str, done_tasks: Iterable[Any], open_tasks: Iterable[
           "- file_contains (check_path, check_arg = regex)\n"
           "- min_words (check_path, check_arg = integer)\n"
           "- json_valid (check_path)\n"
+          "- command (check_arg = one shell command, at most 300 characters, run from the "
+          "workspace root; green when it exits 0)\n"
           "- rubric (a judged quality criterion, no check_path needed)\n"
           "depends_on lists the 0-based positions of EARLIER tasks in your list that must be "
           "done first (usually empty).\n"
           "needs (optional) lists capabilities beyond editing files: \"run_code\" when a "
           "criterion needs a command, script or test run as evidence, \"web_research\" when it "
           "needs the web. Leave it empty otherwise.\n")
+    if needs_ok:
+        s += ("When an agent that can run code exists, prove \"the tests pass\" or \"the script "
+              "works\" criteria with a command check (for example check_kind command, check_arg "
+              "\"python3 -m unittest\") instead of a rubric; the task then needs run_code. Never "
+              "use commands that need the network, install packages, or run longer than 2 "
+              "minutes.\n")
     if not needs_ok:
         s += ("No delivery agent here can run code or use the web, so leave needs empty and plan "
               "read-only verification instead (for example, check by reading the files).\n")
@@ -504,11 +513,19 @@ def _parse_criterion(c: Any, where: str) -> models.CriterionCreate:
     kind = str(c.get("check_kind") or "rubric").strip().lower()
     path = _safe_rel(c.get("check_path"))
     arg = c.get("check_arg")
+    if str(c.get("check") or "").strip().lower() == "command" or (
+            kind == "command" and arg in (None, "")):
+        kind = "command"
+        arg = c.get("command") if c.get("command") not in (None, "") else arg
     arg = None if arg is None or str(arg).strip() == "" else str(arg).strip()
     valid = {k.value for k in models.CheckKind}
     if kind not in valid:
         kind = "rubric"
-    if kind != "rubric":
+    if kind == "command":
+        if validate_command(arg):  # unusable command: downgrade to a judged rubric criterion
+            kind, arg = "rubric", None
+        path = None
+    elif kind != "rubric":
         ok = path is not None
         if ok and kind == "file_contains":
             try:
@@ -549,7 +566,8 @@ def parse_plan(obj: Any, max_new: int) -> list[PlannedTask]:
             raise ValueError(f'{w} ("{name}") needs "acceptance_criteria": a non-empty array')
         crits = [_parse_criterion(c, f"{w}.acceptance_criteria[{j}]") for j, c in enumerate(crits_raw)]
         artifact = _safe_rel(t.get("artifact")) or ""
-        if artifact and not any(c.check_kind.value in models.DETERMINISTIC_CHECKS for c in crits):
+        if artifact and not any(c.check_kind.value in models.DETERMINISTIC_CHECKS
+                                and c.check_kind != models.CheckKind.COMMAND for c in crits):
             crits.append(models.CriterionCreate(
                 text=f"The file {artifact} exists", check_kind=models.CheckKind.FILE_EXISTS,
                 check_path=artifact))
@@ -867,6 +885,12 @@ def quality_review_prompt(task: Any, criteria_with_det_results: Iterable[Any],
             rubric.append(o)
             lines.append(f"{o}. [RUBRIC - you score it] {_get(c, 'text', '')}"
                          + (f" (file: {_get(c, 'check_path')})" if _get(c, "check_path") else ""))
+        elif kind == "command":
+            st = _get(c, "status", "unknown")
+            ev = _get(c, "evidence")
+            lines.append(f"{o}. [command `{_get(c, 'check_arg')}`: automatically checked by DAASH's "
+                         f"runner, not by the agent (trusted evidence), result {str(st).upper()}"
+                         + (f" - {ev}" if ev else "") + f"] {_get(c, 'text', '')}")
         else:
             st = _get(c, "status", "unknown")
             ev = _get(c, "evidence")

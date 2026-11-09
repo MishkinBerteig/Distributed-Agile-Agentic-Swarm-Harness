@@ -9,12 +9,13 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Optional
+from typing import Any, Optional
 
 from app.models import DETERMINISTIC_CHECKS, AcceptanceCriterion, CheckKind
 
 MAX_READ_BYTES = 2 * 1024 * 1024
 EVIDENCE_MAX_CHARS = 200
+COMMAND_EVIDENCE_CHARS = 1200
 
 
 @dataclass
@@ -52,6 +53,20 @@ def _path_problem(path: Optional[str]) -> Optional[str]:
 
 
 MAX_PATTERN_CHARS = 300
+MAX_COMMAND_CHARS = 300
+COMMAND_TIMEOUT_SECONDS = 120
+
+
+def validate_command(cmd: Optional[str]) -> Optional[str]:
+    """An error message if a command check's shell command is unusable, else None."""
+    if cmd is None or not cmd.strip():
+        return "Check 'command' needs a shell command in check_arg."
+    if len(cmd) > MAX_COMMAND_CHARS:
+        return (f"Check 'command' is too long ({len(cmd)} characters; the limit is "
+                f"{MAX_COMMAND_CHARS}). Put the steps in a script file and run that.")
+    if "\x00" in cmd or "\n" in cmd or "\r" in cmd:
+        return "Check 'command' must be a single line without NUL or newline characters."
+    return None
 
 
 def validate_check_spec(kind: str, path: Optional[str], arg: Optional[str]) -> Optional[str]:
@@ -66,6 +81,8 @@ def validate_check_spec(kind: str, path: Optional[str], arg: Optional[str]) -> O
             if problem:
                 return f"Rubric check path invalid: {problem}."
         return None
+    if kind == CheckKind.COMMAND.value:
+        return validate_command(arg)
     problem = _path_problem(path)
     if problem:
         return f"Check '{kind}' needs a valid path: {problem}."
@@ -111,11 +128,41 @@ def _read_text(target: Path) -> tuple[Optional[str], bool, Optional[str]]:
     return data[:MAX_READ_BYTES].decode("utf-8", errors="replace"), truncated, None
 
 
-def run_check(criterion: AcceptanceCriterion, workspace: Path) -> CheckResult:
+def command_result_for(criterion_id: str, check_results: Any) -> Optional[dict]:
+    """The stored runner result for a command criterion, if any."""
+    for r in check_results or ():
+        if isinstance(r, dict) and r.get("id") == criterion_id:
+            return r
+    return None
+
+
+def evaluate_command(criterion: AcceptanceCriterion, check_results: Any) -> CheckResult:
+    """A command criterion from the runner-produced `deliverable["check_results"]`."""
+    spec_error = validate_command(criterion.check_arg)
+    if spec_error:
+        return CheckResult(False, spec_error)
+    r = command_result_for(criterion.id, check_results)
+    if r is None:
+        return CheckResult(False, "no runner executed this check (the work was not done by a "
+                                  "remote agent that can run code)")
+    tail = str(r.get("output_tail") or "").strip()
+    if r.get("timed_out"):
+        return CheckResult(False, _truncate(
+            f"timed out; `{criterion.check_arg}` was killed. {tail}", COMMAND_EVIDENCE_CHARS))
+    if r.get("exit_code") == 0:
+        return CheckResult(True, _truncate(f"exit 0. {tail}", COMMAND_EVIDENCE_CHARS))
+    return CheckResult(False, _truncate(
+        f"exit {r.get('exit_code')}. {tail}", COMMAND_EVIDENCE_CHARS))
+
+
+def run_check(criterion: AcceptanceCriterion, workspace: Path,
+              check_results: Any = None) -> CheckResult:
     """Run one deterministic check. Raises ValueError only for rubric/unknown kinds."""
     kind = _kind(criterion.check_kind)
     if kind == CheckKind.RUBRIC.value or kind not in DETERMINISTIC_CHECKS:
         raise ValueError(f"Check kind '{kind}' is not deterministic and cannot be run by code.")
+    if kind == CheckKind.COMMAND.value:
+        return evaluate_command(criterion, check_results)
     path, arg = criterion.check_path, criterion.check_arg
 
     spec_error = validate_check_spec(kind, path, arg)

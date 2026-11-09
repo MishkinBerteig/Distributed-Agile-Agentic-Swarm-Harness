@@ -9,13 +9,16 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import os
 import tarfile
+import tempfile
 from typing import Any, Optional
 
 import httpx
 
 from app.models import AgentRole
 from app.repo import RemoteJobRepo
+from daash_runner.checks import run_checks
 
 BODY = ("Overview\n" + "This section explains the deliverable clearly and completely for the "
         "reader. " * 6)
@@ -42,6 +45,7 @@ class FakeRunner:
         self.workspaces: dict[str, list[str]] = {}   # job id -> file names in the tarball
         self.cancelled: list[str] = []          # job ids a heartbeat said "cancelled" for
         self.posted: list[tuple[str, int]] = []  # (job id, HTTP status of the result)
+        self.run_command_checks = True   # execute payload["checks"] for real (see run_job_checks)
         self.stop = asyncio.Event()
         self._tasks: list[asyncio.Task] = []
 
@@ -81,6 +85,19 @@ class FakeRunner:
             self.cancelled.append(job["id"])
         return status
 
+    async def run_job_checks(self, job: dict, files: dict[str, str]) -> list[dict]:
+        """Like the real runner: run the job's command checks (for real, via
+        daash_runner.checks) in a scratch copy of the workspace plus the delivered files."""
+        def work() -> list[dict]:
+            with tempfile.TemporaryDirectory() as d:
+                for rel, text in files.items():
+                    path = os.path.join(d, rel)
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    with open(path, "w") as fh:
+                        fh.write(text)
+                return run_checks(job.get("checks") or [], d) or []
+        return await asyncio.to_thread(work)
+
     async def post_result(self, job: dict, outcome: str = "submitted", **extra: Any) -> int:
         artifact = job["task"]["artifact"]
         body = {"outcome": outcome, "summary": f"{self.name} did {job['task']['name']}",
@@ -89,6 +106,10 @@ class FakeRunner:
                 "exit_code": 0 if outcome == "submitted" else 1, "transcript_tail": "tail"}
         if outcome != "submitted":
             body["error"] = f"{outcome} (scripted)"
+        if (outcome == "submitted" and self.run_command_checks and job.get("checks")
+                and "check_results" not in extra):
+            body["check_results"] = await self.run_job_checks(
+                job, {artifact: BODY} if artifact else {})
         body.update(extra)
         r = await self.api.post(f"/runner/jobs/{job['id']}/result", headers=self.headers,
                                 json=body)
