@@ -1,0 +1,65 @@
+/* DAASHboard Help view (components/Help.jsx). The coordinator sends the help as an HTML fragment
+   (app/help.py); every rule here is scoped to .help-doc so it cannot touch the rest of the
+   dashboard. Colours come from the dashboard tokens in styles.css. */
+.help-doc {
+  --code-bg: #f0f2f7;
+  --r-coord: #3b5bdb; --r-qj: #7048b8; --r-mj: #1971c2; --r-del: #2b8a3e;
+  --topbar-clear: 64px;
+  max-width: 1180px; margin: 0 auto; padding: 12px 0 48px;
+  font-size: 15px; line-height: 1.55;
+}
+.help-doc [id] { scroll-margin-top: var(--topbar-clear); }
+.help-doc header.mast { display: grid; gap: 6px; padding-bottom: 22px; border-bottom: 1px solid var(--border); }
+.help-doc .eyebrow { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); font-weight: 600; }
+.help-doc h1 { display: block; font-size: clamp(24px, 4vw, 32px); line-height: 1.15; margin: 0; text-wrap: balance; }
+.help-doc h2 { font-size: 22px; margin: 0 0 10px; text-wrap: balance; }
+.help-doc h3 { font-size: 17px; margin: 0; text-wrap: balance; }
+.help-doc p, .help-doc li { max-width: 72ch; }
+.help-doc p { margin: 6px 0 10px; }
+.help-doc .lede { color: var(--muted); font-size: 16px; margin: 0; }
+.help-doc a { color: var(--accent); }
+.help-doc code { font-family: var(--mono); font-size: .88em; background: var(--code-bg); padding: 1px 4px; border-radius: 4px; }
+.help-doc .layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 36px; margin-top: 26px; }
+.help-doc nav.toc { position: sticky; top: var(--topbar-clear); align-self: start; display: grid; gap: 2px; font-size: 14px; }
+.help-doc nav.toc a { color: var(--muted); text-decoration: none; padding: 3px 8px; border-radius: 6px; }
+.help-doc nav.toc a:hover, .help-doc nav.toc a:focus-visible { color: var(--text); background: var(--accent-soft); outline: none; }
+.help-doc nav.toc .sub { padding-left: 20px; font-size: 13px; }
+.help-doc .help-main { min-width: 0; display: grid; gap: 40px; }
+.help-doc section { display: grid; gap: 8px; min-width: 0; }
+.help-doc .stack { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+.help-doc .part { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; min-width: 0; }
+.help-doc .part h3 { font-size: 13px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }
+.help-doc .part ol { margin: 0; padding-left: 22px; display: grid; gap: 2px; }
+.help-doc .scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.help-doc table { border-collapse: collapse; width: 100%; font-size: 14px; }
+.help-doc th, .help-doc td { text-align: left; vertical-align: top; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+.help-doc th { font-size: 12px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); font-weight: 600; background: var(--bg); }
+.help-doc tbody tr:last-child td { border-bottom: none; }
+.help-doc .num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.help-doc .role { display: grid; gap: 14px; }
+.help-doc .role-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; }
+.help-doc .role-chip { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor; }
+.help-doc .coordinator { color: var(--r-coord); }
+.help-doc .qj { color: var(--r-qj); }
+.help-doc .mj { color: var(--r-mj); }
+.help-doc .delivery { color: var(--r-del); }
+.help-doc .job { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; display: grid; gap: 10px; min-width: 0; }
+.help-doc .job h3 { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
+.help-doc dl { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 6px 14px; margin: 0; }
+.help-doc dt { font-size: 12px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); padding-top: 2px; }
+.help-doc dd { margin: 0; min-width: 0; }
+.help-doc dd ul { margin: 0; padding-left: 18px; }
+.help-doc details.example { border: 1px solid var(--border); border-radius: 8px; background: var(--code-bg); min-width: 0; }
+.help-doc details.example summary { cursor: pointer; padding: 8px 12px; font-size: 14px; color: var(--accent); }
+.help-doc details.example summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.help-doc .size { color: var(--muted); font-size: 12px; margin-left: 6px; }
+.help-doc pre { margin: 0; padding: 12px 14px; border-top: 1px solid var(--border); font: 12.5px/1.5 var(--mono);
+  white-space: pre-wrap; overflow-wrap: anywhere; max-height: 520px; overflow: auto; }
+.help-doc .note { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 10px 14px; border-radius: 0 8px 8px 0; max-width: 72ch; }
+@media (max-width: 860px) {
+  .help-doc .layout { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+  .help-doc nav.toc { position: static; display: flex; flex-wrap: wrap; gap: 4px; }
+  .help-doc nav.toc .sub { display: none; }
+  .help-doc dl { grid-template-columns: minmax(0, 1fr); }
+  .help-doc dt { padding-top: 6px; }
+}

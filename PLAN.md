@@ -114,8 +114,10 @@ Design: docs/DESIGN-0.3.md. Runner guide: docs/RUNNER.md.
   told exactly what the author could not do; no-rubric reviews ask for an empty `criteria`; `delete_file` listed);
   a planned check that cannot run goes back to the planner once with the reason, then becomes a judged criterion
   with an event saying so
-- [x] DAASHboard online help: "How DAASH prompts its agents" (`GET /help/prompts`, `app/help.py`, Help link in
-  the top bar), rendered live from `app/prompts.py` with sample data so it cannot drift; open without a token
+- [x] DAASHboard online help: "How DAASH prompts its agents", a Help view inside DAASHboard (top-bar Help,
+  `#help`, sections linkable as `#help/<id>`). The coordinator renders it from `app/prompts.py` with sample data
+  so it cannot drift (`app/help.py`, `GET /help/prompts`, signed in like the rest of the API); DAASHboard styles
+  it (`dashboard/src/help.css`). No separate published copy
 - [x] Tests: unit 578 (~6 s), integration 176, e2e 12
 - Live on the local gateway, all agent CLIs in the runner container (logs in `agents-workspace/coordinator/live-run/`):
   - *Tempconv* (OpenClaude): 3/3 tasks Done first attempt, vision review passed, 36 min; its suite (8 tests) passes.
@@ -236,4 +238,4 @@ runner + CLI adapters, outside `app/`).
   `run_code` / `web_research` per harness; capability-aware assignment, rework reassignment and leasing),
   live-run fixes. Not tagged.
 - **2026-11-09 — prompt review**: prompt wording fixes, invalid planned checks reported to the planner, DAASHboard
-  online help for agent prompts (also published as a web page).
+  online help for agent prompts, inside DAASHboard (2026-11-11: moved from a separate page into a Help view).

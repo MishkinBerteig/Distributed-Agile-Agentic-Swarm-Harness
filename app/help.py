@@ -1,11 +1,13 @@
-"""DAASHboard online help: "DAASH Agent Prompts" (GET /help/prompts).
+"""DAASHboard online help: "How DAASH prompts its agents" (GET /help/prompts, shown in
+DAASHboard's Help view).
 
-The page explains how every agent prompt is built. Its examples are rendered live from
+The help explains how every agent prompt is built. Its examples are rendered live from
 app/prompts.py with fixed sample data, and its limits are read from the code's own constants,
 so the help cannot drift from the prompts DAASH really sends. Pure: no I/O.
 """
 from __future__ import annotations
 
+import functools
 import html
 import inspect
 from datetime import datetime, timezone
@@ -20,7 +22,7 @@ from app.config import Settings
 from app.llm import NUDGE, TRANSCRIPT_CHARS, LLMClient
 from app.tools import READ_LIMIT_CHARS, ToolRegistry, workspace_tools
 
-TITLE = "DAASH Agent Prompts"
+TITLE = "How DAASH prompts its agents"
 _TEMPERATURE = inspect.signature(LLMClient.chat).parameters["temperature"].default
 _MAX_TOKENS = Settings.model_fields["LLM_MAX_TOKENS"].default
 _TASK_LIST_LIMIT = inspect.signature(P._task_list).parameters["limit"].default
@@ -395,85 +397,6 @@ def _table(head: list[str], rows: list[list[str]], cls: str = "") -> str:
             f"<tbody>{body}</tbody></table></div>")
 
 
-CSS = """
-:root {
-  /* DAASHboard palette; layout: sticky contents rail beside one reading column */
-  --bg: #f4f5f8; --surface: #ffffff; --border: #dfe3ea; --text: #1c2330; --muted: #5f6b80;
-  --accent: #3b5bdb; --accent-soft: #e7ecff; --code-bg: #f0f2f7;
-  --r-coord: #3b5bdb; --r-qj: #7048b8; --r-mj: #1971c2; --r-del: #2b8a3e;
-  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-}
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
-  --bg: #10131a; --surface: #171b24; --border: #2a3142; --text: #e2e6ee; --muted: #9aa4b5;
-  --accent: #8ea6ff; --accent-soft: #1d2540; --code-bg: #0c0f15;
-  --r-coord: #8ea6ff; --r-qj: #b69cf0; --r-mj: #6cb4f2; --r-del: #6fcf86; color-scheme: dark } }
-:root[data-theme="dark"] {
-  --bg: #10131a; --surface: #171b24; --border: #2a3142; --text: #e2e6ee; --muted: #9aa4b5;
-  --accent: #8ea6ff; --accent-soft: #1d2540; --code-bg: #0c0f15;
-  --r-coord: #8ea6ff; --r-qj: #b69cf0; --r-mj: #6cb4f2; --r-del: #6fcf86; color-scheme: dark }
-* { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.55 var(--font); }
-.wrap { max-width: 1180px; margin: 0 auto; padding-block: 28px 64px;
-  padding-left: max(16px, env(safe-area-inset-left, 0px));
-  padding-right: max(16px, env(safe-area-inset-right, 0px)); }
-header.mast { display: grid; gap: 6px; padding-bottom: 22px; border-bottom: 1px solid var(--border); }
-.eyebrow { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); font-weight: 600; }
-h1 { font-size: clamp(26px, 4vw, 34px); line-height: 1.15; margin: 0; text-wrap: balance; }
-h2 { font-size: 22px; margin: 0 0 10px; text-wrap: balance; }
-h3 { font-size: 17px; margin: 0; text-wrap: balance; }
-p, li { max-width: 72ch; }
-p { margin: 6px 0 10px; }
-.lede { color: var(--muted); font-size: 16px; margin: 0; }
-a { color: var(--accent); }
-code { font-family: var(--mono); font-size: .88em; background: var(--code-bg); padding: 1px 4px; border-radius: 4px; }
-.layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 36px; margin-top: 26px; }
-nav.toc { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 16px); align-self: start;
-  display: grid; gap: 2px; font-size: 14px; }
-nav.toc a { color: var(--muted); text-decoration: none; padding: 3px 8px; border-radius: 6px; }
-nav.toc a:hover, nav.toc a:focus-visible { color: var(--text); background: var(--accent-soft); outline: none; }
-nav.toc .sub { padding-left: 20px; font-size: 13px; }
-main { min-width: 0; display: grid; gap: 40px; }
-section { display: grid; gap: 8px; min-width: 0; }
-.stack { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
-.msg { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; min-width: 0; }
-.msg h3 { font-size: 13px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }
-.msg ol { margin: 0; padding-left: 22px; display: grid; gap: 2px; }
-.scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
-table { border-collapse: collapse; width: 100%; font-size: 14px; }
-th, td { text-align: left; vertical-align: top; padding: 8px 12px; border-bottom: 1px solid var(--border); }
-th { font-size: 12px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); font-weight: 600; background: var(--bg); }
-tbody tr:last-child td { border-bottom: none; }
-td.num, .num { font-variant-numeric: tabular-nums; white-space: nowrap; }
-.role { display: grid; gap: 14px; }
-.role-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; }
-.chip { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor; }
-.coordinator { color: var(--r-coord); } .qj { color: var(--r-qj); } .mj { color: var(--r-mj); } .delivery { color: var(--r-del); }
-.job { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; display: grid; gap: 10px; min-width: 0; }
-.job h3 { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
-.job h3 code { font-size: 12px; font-weight: 400; color: var(--muted); }
-dl { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 6px 14px; margin: 0; }
-dt { font-size: 12px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); padding-top: 2px; }
-dd { margin: 0; min-width: 0; }
-dd ul { margin: 0; padding-left: 18px; }
-details.example { border: 1px solid var(--border); border-radius: 8px; background: var(--code-bg); min-width: 0; }
-details.example summary { cursor: pointer; padding: 8px 12px; font-size: 14px; color: var(--accent); }
-details.example summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.size { color: var(--muted); font-size: 12px; margin-left: 6px; }
-pre { margin: 0; padding: 12px 14px; border-top: 1px solid var(--border); font: 12.5px/1.5 var(--mono);
-  white-space: pre-wrap; overflow-wrap: anywhere; max-height: 520px; overflow: auto; }
-.note { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 10px 14px; border-radius: 0 8px 8px 0; max-width: 72ch; }
-@media (max-width: 860px) {
-  .layout { grid-template-columns: minmax(0, 1fr); gap: 20px; }
-  nav.toc { position: static; display: flex; flex-wrap: wrap; gap: 4px; }
-  nav.toc .sub { display: none; }
-  dl { grid-template-columns: minmax(0, 1fr); }
-  dt { padding-top: 6px; }
-}
-@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
-"""
-
-
 def _system_section() -> str:
     rows = [
         ["1", "<code># Vision</code>", "The swarm's Vision, as you wrote it.", "none"],
@@ -548,7 +471,7 @@ def _jobs_section() -> str:
                       else f"<code>{_e(model)}</code>")
         out.append(f'<div class="role" id="role-{key}"><div class="role-head">'
                    f'<h3 class="{key}">{_e(title)}</h3>'
-                   f'<span class="chip {key}">default model {model_note}</span></div>'
+                   f'<span class="role-chip {key}">default model {model_note}</span></div>'
                    f"<p>{_e(blurb)}</p>")
         for j in (j for j in jobs if j["role"] == key):
             adds = "".join(f"<li>{_e(a)}</li>" for a in j["adds"])
@@ -674,9 +597,11 @@ def _code_section() -> str:
             + "</section>")
 
 
-def prompts_page(full_document: bool = False) -> str:
-    """The help page. `full_document` adds the doctype/head for serving it directly."""
-    toc = [("overview", "Two messages per call", False), ("system", "The system message", False),
+@functools.cache
+def prompts_html() -> str:
+    """The help as an HTML fragment for DAASHboard's Help view, which styles it
+    (dashboard/src/help.css). Pure, so it is rendered once per process."""
+    toc =[("overview", "Two messages per call", False), ("system", "The system message", False),
            ("memory", "Memory and learnings", False), ("jobs", "The jobs, by role", False)]
     toc += [(f"role-{k}", t, True) for k, t, _, _ in ROLES]
     toc += [("tools", "Built-in agent tools", False), ("external", "External agents", False),
@@ -688,30 +613,23 @@ def prompts_page(full_document: bool = False) -> str:
         "<p>Every model call DAASH makes for an agent has two messages. There are no template "
         "files: each job's message is built by a function in <code>app/prompts.py</code>, and "
         "a matching function checks the reply.</p>"
-        '<div class="stack"><div class="msg"><h3>System message</h3><p>Who the agent is and '
+        '<div class="stack"><div class="part"><h3>System message</h3><p>Who the agent is and '
         "what matters, from the top down.</p><ol><li>Vision</li><li>Values and Principles</li>"
         "<li>Mission</li><li>Definition of Done</li><li>Definition of Ready</li><li>Role</li>"
         "<li>User Feedback</li><li>Learnings</li><li>Memory</li></ol></div>"
-        '<div class="msg"><h3>Job message</h3><p>What to do now.</p><ol><li><code>Job:</code> '
+        '<div class="part"><h3>Job message</h3><p>What to do now.</p><ol><li><code>Job:</code> '
         "and its rules</li><li>What this job needs to see: tasks, files, listings, earlier "
         "feedback</li><li>The exact JSON to reply with, and one example</li></ol></div></div>"
         "<p>External agents (OpenClaude, Claude Code, Codex) receive the same two messages "
         "through a runner.</p></section>")
-    body = (
-        f'<div class="wrap"><header class="mast"><span class="eyebrow">DAASHboard help'
-        f'</span><h1>How DAASH prompts its agents</h1><p class="lede">What each agent is told, '
-        f"where every part comes from, and what DAASH checks in the reply. The examples are "
-        f"rendered from DAASH's own prompt code with a sample prime-number swarm.</p></header>"
-        f'<div class="layout"><nav class="toc" aria-label="Contents">{nav}</nav><main>'
+    return (
+        f'<header class="mast"><span class="eyebrow">DAASHboard help</span><h1>{_e(TITLE)}</h1>'
+        f'<p class="lede">What each agent is told, where every part comes from, and what DAASH '
+        f"checks in the reply. The examples are rendered from this version of DAASH's own "
+        f"prompt code, with a sample prime-number swarm.</p></header>"
+        f'<div class="layout"><nav class="toc" aria-label="Contents">{nav}</nav>'
+        f'<div class="help-main">'
         + overview + _system_section() + _retrieval_section() + _jobs_section()
         + _tools_section() + _cli_section() + _rules_section() + _code_section()
-        + "</main></div></div>")
-    head = (f"<title>{_e(TITLE)}</title>"
-            '<meta name="claude:viewport-fit-sides" content="cover">'
-            f"<style>{CSS}</style>")
-    if not full_document:
-        return head + body
-    return ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
-            '<meta name="viewport" content="width=device-width, initial-scale=1, '
-            'viewport-fit=cover">' + head + "</head><body>" + body + "</body></html>")
+        + "</div></div>")
 

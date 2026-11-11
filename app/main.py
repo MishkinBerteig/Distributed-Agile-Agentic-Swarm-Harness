@@ -18,7 +18,6 @@ from typing import Any, Optional
 import asyncpg
 from fastapi import Body, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from app import api_helpers as H
@@ -82,14 +81,13 @@ _WWW_AUTH = {"WWW-Authenticate": "Bearer"}
 
 
 async def require_admin(request: Request) -> None:
-    """Admin bearer auth for every endpoint except /health, /help/* (online help with sample
-    data only) and /runner/* (runner tokens). Open when DAASH_API_TOKEN is empty (local
-    prototype)."""
+    """Admin bearer auth for every endpoint except /health and /runner/* (runner tokens). Open
+    when DAASH_API_TOKEN is empty (local prototype)."""
     expected = settings.API_TOKEN
     if not expected:
         return
     path = request.url.path
-    if path == "/health" or path.startswith(("/runner/", "/help/")):
+    if path == "/health" or path.startswith("/runner/"):
         return
     if not R.tokens_match(R.bearer_token(request.headers.get("authorization")), expected):
         raise HTTPException(401, "Authentication required", headers=_WWW_AUTH)
@@ -177,10 +175,11 @@ async def health() -> dict:
 
 # -- online help (DAASHboard) --------------------------------------------------------------
 
-@app.get("/help/prompts", response_class=HTMLResponse)
-async def help_prompts() -> HTMLResponse:
-    """How DAASH prompts its agents, rendered live from app/prompts.py with sample data."""
-    return HTMLResponse(help_pages.prompts_page(full_document=True))
+@app.get("/help/prompts")
+async def help_prompts() -> dict:
+    """DAASHboard's Help view: how DAASH prompts its agents, rendered from app/prompts.py with
+    sample data. `html` is a fragment that DAASHboard styles (dashboard/src/help.css)."""
+    return {"title": help_pages.TITLE, "html": help_pages.prompts_html()}
 
 
 @app.get("/config")

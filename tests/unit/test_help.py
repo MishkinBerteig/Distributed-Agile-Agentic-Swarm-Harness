@@ -11,8 +11,8 @@ from app import prompts as P
 
 
 def test_page_has_every_role_and_job():
-    page = H.prompts_page()
-    assert page.startswith("<title>DAASH Agent Prompts</title>")
+    page = H.prompts_html()
+    assert page.startswith('<header class="mast">') and f"<h1>{H.TITLE}</h1>" in page
     for _, title, _, _ in H.ROLES:
         assert f">{title}</h3>" in page
     for job in H._jobs():
@@ -22,7 +22,7 @@ def test_page_has_every_role_and_job():
 
 
 def test_examples_are_rendered_from_the_live_prompt_code():
-    page = html.unescape(H.prompts_page())
+    page = html.unescape(H.prompts_html())
     # the exact current wording, not a copy that could drift
     assert P.SCOPE_RULE.strip() in page
     assert P.work_prompt(H.TASK, H.TASK.criteria, None, "", (), capabilities=H.NATIVE) in page
@@ -38,7 +38,7 @@ def test_examples_are_rendered_from_the_live_prompt_code():
 
 
 def test_limits_and_models_come_from_the_code():
-    page = H.prompts_page()
+    page = H.prompts_html()
     assert f"{J.FILE_CLIP:,} characters" in page
     assert f"{J.ASSESS_TOTAL_CHARS:,} characters in all" in page
     cfg = models.SwarmConfig()
@@ -48,19 +48,23 @@ def test_limits_and_models_come_from_the_code():
 
 
 def test_tools_table_lists_every_tool():
-    page = H.prompts_page()
+    page = H.prompts_html()
     for name in ("list_files", "read_file", "write_file", "append_file", "delete_file",
                  "create_subtask", "remember", "recall", "propose_team", "vote_on_proposal",
                  "submit"):
         assert f"<code>{name}</code>" in page
 
 
-def test_full_document_and_theme_tokens():
-    doc = H.prompts_page(full_document=True)
-    assert doc.startswith("<!doctype html>") and doc.endswith("</html>")
-    assert 'name="viewport"' in doc
-    # every colour is a token with a dark value, and the body sets its background
-    assert "@media (prefers-color-scheme: dark)" in doc and ':root[data-theme="dark"]' in doc
-    assert "body { margin: 0; background: var(--bg)" in doc
-    # no external resources: the page works offline inside DAASHboard
-    assert not re.search(r'(src|href)="https?://', doc)
+def test_fragment_is_safe_to_embed_in_daashboard():
+    """DAASHboard injects the fragment into its Help view and styles it (help.css)."""
+    page = H.prompts_html()
+    tags = {t.lower() for t in re.findall(r"<!?([A-Za-z][\w-]*)", page)}
+    assert not tags & {"doctype", "html", "head", "body", "title", "meta", "style", "script",
+                       "main", "iframe", "link"}
+    # no external resources: the help works offline
+    assert not re.search(r'(src|href)="https?://', page)
+    # every in-page link has a target (DAASHboard turns them into #help/<id>)
+    ids = set(re.findall(r' id="([^"]+)"', page))
+    links = re.findall(r'href="#([^"]+)"', page)
+    assert links and set(links) <= ids
+    assert len(ids) == len(re.findall(r' id="', page)), "duplicate ids"

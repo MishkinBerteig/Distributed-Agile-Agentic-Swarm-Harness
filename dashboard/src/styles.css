@@ -216,7 +216,7 @@ legend { font-weight: 600; font-size: 13px; padding: 0 4px; }
 /* 0.3: login, runners, harness mix, remote jobs */
 .login { max-width: 420px; margin: 40px auto; }
 .signout { margin-left: auto; }
-.help-link { margin-left: auto; color: var(--text); text-decoration: none; }
+.help-link { margin-left: auto; color: var(--text); text-decoration: none; white-space: nowrap; }
 .help-link + .signout { margin-left: 0; }
 .table-scroll { overflow-x: auto; }
 .nowrap { white-space: nowrap; }

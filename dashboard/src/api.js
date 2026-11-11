@@ -59,6 +59,7 @@ export const api = {
   getConfig: () => request('GET', '/config'),
   putConfig: (cfg) => request('PUT', '/config', cfg),
   getModels: () => request('GET', '/models'),
+  getHelp: (topic) => request('GET', `/help/${enc(topic)}`),
 
   listSwarms: () => request('GET', '/swarms'),
   createSwarm: (payload) => request('POST', '/swarms', payload),

@@ -3,6 +3,7 @@ import { api, getToken, onAuthRequired, setToken } from './api.js'
 import { usePolling } from './hooks/usePolling.js'
 import { ErrorNote, Spinner } from './components/Common.jsx'
 import CreateSwarm from './components/CreateSwarm.jsx'
+import Help, { HELP_HASH, isHelpHash } from './components/Help.jsx'
 import { PreviousSwarms, ValuesEditor } from './components/GlobalSettings.jsx'
 import LiveSwarm from './components/LiveSwarm.jsx'
 import Login from './components/Login.jsx'
@@ -38,7 +39,19 @@ function Main() {
   )
 }
 
+// True while the address ends in #help (the Help view). Back and Forward switch views too.
+function useHelpView() {
+  const [help, setHelp] = useState(() => isHelpHash(window.location.hash))
+  useEffect(() => {
+    const onHash = () => setHelp(isHelpHash(window.location.hash))
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
+  return help
+}
+
 export default function App() {
+  const help = useHelpView()
   // 'checking' | 'login' | 'expired' | 'ok'
   const [auth, setAuth] = useState('checking')
   const [authRequired, setAuthRequired] = useState(false)
@@ -68,14 +81,19 @@ export default function App() {
       <nav className="topbar">
         <span className="brand">DAASHboard</span>
         <span className="muted">Distributed Agile Agentic Swarm Harness</span>
-        <a className="btn small help-link" href="/api/help/prompts" target="_blank" rel="noreferrer"
-          title="How DAASH prompts its agents (opens in a new tab)">Help: agent prompts</a>
+        {auth === 'ok' && (help
+          ? <a className="btn small help-link" href="#">Close help</a>
+          : <a className="btn small help-link" href={HELP_HASH} title="How DAASH prompts its agents">Help</a>)}
         {showSignOut && <button type="button" className="btn small signout" onClick={signOut}>Sign out</button>}
       </nav>
       {auth === 'checking' ? (
         <main className="container"><Spinner label="Connecting to coordinator" /></main>
       ) : auth === 'ok' ? (
-        <Main />
+        <>
+          {/* Main stays mounted under the help so a half-typed form or open panel survives. */}
+          <div hidden={help}><Main /></div>
+          {help && <Help />}
+        </>
       ) : (
         <Login expired={auth === 'expired'} onSignedIn={() => { setAuth('ok'); check() }} />
       )}
