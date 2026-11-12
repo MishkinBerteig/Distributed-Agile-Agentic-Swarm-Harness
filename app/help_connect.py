@@ -212,6 +212,14 @@ def _work() -> str:
     sample = P.connected_rules("6f1c2d3e-…")
     return (
         '<section id="work"><h2>How a task runs</h2>'
+        '<h3 id="in-a-swarm">Using it in a swarm</h3>'
+        "<p>Open <em>Create a swarm</em> › <em>Advanced configuration</em> (or <em>Settings</em> "
+        "› <em>Defaults for new swarms</em>), add a delivery row and pick the agent under "
+        "<em>Connected agents</em>, for example <em>Jane (A2A)</em>. Its model reads <em>its own "
+        "model</em>, and a warning shows when it is not available. On the swarm page its row "
+        "carries a badge such as <em>Jane · A2A</em> or <em>Fitz · agent host</em>; its team "
+        "messages and DAASH tool calls are in the activity feed (tool calls grouped by agent) "
+        "and in the agent's details.</p>"
         "<ol>"
         "<li>DAASH sends the agent one message: its usual system message (Vision, Mission, "
         "Definition of Done, learnings and memories) followed by the task, its acceptance "
@@ -237,6 +245,7 @@ def _work() -> str:
         + _table(["Status", "Means"], [
             ["available", "The last check passed."],
             ["waiting for approval", "Connected in DAASH, not yet approved by the owner."],
+            ["not checked yet", "Approved, but not tested since. Test it, or wait a minute."],
             ["token rejected", "The agent refused DAASH's token: approval missing or undone. "
              "Reset tokens."],
             ["unreachable", "No answer. DAASH waits and retries without counting an attempt; "
@@ -245,8 +254,9 @@ def _work() -> str:
              "offline."],
             ["disabled", "You turned it off. Its rows use DAASH's own agent meanwhile."],
         ])
-        + "<p>One connected agent can fill several delivery rows. Its <em>max jobs</em> caps how "
-          "many tasks it works on at once, across all of them.</p>"
+        + "<p>One connected agent can fill several delivery rows. Its <em>tasks at once</em> "
+          "(max jobs; Edit on the Agents page) caps how many tasks it works on at once, across "
+          "all of them.</p>"
         "</section>")
 
 
@@ -299,7 +309,8 @@ def connect_html() -> str:
            ("approval-openclaw", "OpenClaw", True), ("approval-hermes", "Hermes Agent", True),
            ("detection", "DAASH notices by itself", True),
            ("agent-host", "Agents behind a firewall", False), ("tools", "DAASH tools", False),
-           ("work", "How a task runs", False), ("network", "Networking", False),
+           ("work", "How a task runs", False), ("in-a-swarm", "Using it in a swarm", True),
+           ("network", "Networking", False),
            ("limits", "Limitations", False)]
     sub_cls = ' class="sub"'
     nav = "".join(f'<a href="#{i}"{sub_cls if sub else ""}>{_e(t)}</a>' for i, t, sub in toc)

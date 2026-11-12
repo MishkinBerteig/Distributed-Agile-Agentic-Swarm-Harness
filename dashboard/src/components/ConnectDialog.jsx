@@ -96,7 +96,8 @@ function WaitBanner({ agent, onRetry, retrying }) {
       <div className="ok-banner" role="status">
         <strong>Connected &#10003;</strong> {agent.name} accepted DAASH&rsquo;s connection.
         <p>Use it in a swarm: in <a href="#/">Create a swarm</a> &rsaquo; Advanced configuration (or <a href="#/settings">Settings</a> &rsaquo;
-          Defaults for new swarms), add a delivery agent and pick <strong>{agent.label}</strong>.</p>
+          Defaults for new swarms), add a delivery agent and pick <strong>{agent.label}</strong>.{' '}
+          <a href="#/help/connect/in-a-swarm">More in Help</a></p>
       </div>
     )
   }
