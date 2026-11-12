@@ -1,0 +1,13 @@
+{
+  "ok": false,
+  "status": "timeout",
+  "final": "",
+  "payloads": [],
+  "model": null,
+  "provider": null,
+  "sessionId": "2b751c54-0999-433f-8467-9505702ccaa2",
+  "error": {
+    "message": "Couldn't connect to the AI service. Check your connection, then try again. For details, open Settings → Logs in the Control UI or run `openclaw logs --follow`.",
+    "kind": "timeout"
+  }
+}

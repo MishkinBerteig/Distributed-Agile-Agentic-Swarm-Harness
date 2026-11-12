@@ -1,0 +1,26 @@
+{
+  "ok": false,
+  "status": "timeout",
+  "final": "",
+  "payloads": [
+    {
+      "text": "Request timed out before a response was generated. Please try again, or increase `agents.defaults.timeoutSeconds` in your config.",
+      "mediaUrl": null,
+      "isError": true
+    }
+  ],
+  "codeModeEngaged": false,
+  "assistantTurns": 1,
+  "bridgeCalls": {
+    "search": 0,
+    "describe": 0,
+    "call": 0
+  },
+  "model": "fast",
+  "provider": "daash",
+  "sessionId": "ee877100-603e-4a01-8825-83d1e3651f2a",
+  "error": {
+    "message": "Request timed out before a response was generated. Please try again, or increase `agents.defaults.timeoutSeconds` in your config.",
+    "kind": "timeout"
+  }
+}

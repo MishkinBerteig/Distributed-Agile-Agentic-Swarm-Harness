@@ -1,0 +1,13 @@
+{
+  "ok": false,
+  "status": "error",
+  "final": "",
+  "payloads": [],
+  "model": null,
+  "provider": null,
+  "sessionId": "f124ab7a-4b70-47b0-9e58-d6c3fa4868e8",
+  "error": {
+    "message": "⚠️ Couldn't sign in to the AI service. Sign in again under Models in the Control UI or run `openclaw configure`.",
+    "kind": "exception"
+  }
+}

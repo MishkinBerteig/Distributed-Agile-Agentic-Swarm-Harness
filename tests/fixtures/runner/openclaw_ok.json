@@ -1,0 +1,43 @@
+{
+  "ok": true,
+  "status": "ok",
+  "final": "Done — `/out/usage/ws/hello.txt` created containing exactly `hi` (2 bytes, no trailing newline), verified with `od -c`.",
+  "payloads": [
+    {
+      "text": "Done — `/out/usage/ws/hello.txt` created containing exactly `hi` (2 bytes, no trailing newline), verified with `od -c`.",
+      "mediaUrl": null
+    }
+  ],
+  "usage": {
+    "usageReport": {
+      "state": "available"
+    },
+    "input": 9321,
+    "output": 405,
+    "cacheRead": 18336,
+    "cacheWrite": 0,
+    "reasoningTokens": 273,
+    "total": 28062,
+    "cost": {
+      "total": 0
+    }
+  },
+  "codeModeEngaged": false,
+  "assistantTurns": 3,
+  "bridgeCalls": {
+    "search": 0,
+    "describe": 0,
+    "call": 0
+  },
+  "toolSummary": {
+    "calls": 2,
+    "tools": [
+      "write",
+      "exec"
+    ],
+    "failures": 0
+  },
+  "model": "fast",
+  "provider": "daash",
+  "sessionId": "53bb577b-fd0b-491b-ad97-3c5cbb537cc3"
+}
