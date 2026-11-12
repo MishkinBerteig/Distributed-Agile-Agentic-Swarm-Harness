@@ -132,18 +132,23 @@ def alembic_downgrade(db_url: str, target: str) -> None:
     assert res.returncode == 0, res.stdout + res.stderr
 
 
-async def test_0_4_schema_is_one_migration_and_reversible(scratch_db):
-    """All of 0.4's schema (docs/DESIGN-0.4.md) is in f0a3c0d0e005, on top of the 0.3 head."""
-    assert script_head() == "f0a3c0d0e005"
+async def test_0_4_schema_is_two_migrations_and_reversible(scratch_db):
+    """0.4's schema (docs/DESIGN-0.4.md) is f0a3c0d0e005 (MCP, messages, connected agents) plus
+    f0a3c0d0e006 (discovery, approval state, agent hosts), on top of the 0.3 head."""
+    assert script_head() == "f0a3c0d0e006"
     run_alembic(scratch_db)
-    assert {"agent_messages", "connected_agents"} <= await tables(scratch_db)
+    assert {"agent_messages", "connected_agents", "agent_discoveries",
+            "runner_enrollments"} <= await tables(scratch_db)
     assert "mcp_token_hash" in await columns(scratch_db, "remote_jobs")
     assert await columns(scratch_db, "connected_agents") == {
         "id", "name", "protocol", "url", "endpoint", "skill", "token", "mcp_token_hash",
         "capabilities", "max_jobs", "enabled", "card", "last_ok_at", "last_error",
-        "mcp_seen_at", "created_at"}
+        "mcp_seen_at", "created_at", "status", "kind", "pending_until", "runner_id", "local_ref"}
+    alembic_downgrade(scratch_db, "f0a3c0d0e005")
+    assert not {"agent_discoveries", "runner_enrollments"} & await tables(scratch_db)
+    assert "status" not in await columns(scratch_db, "connected_agents")
     alembic_downgrade(scratch_db, "f0a3c0d0e004")
     assert not {"agent_messages", "connected_agents"} & await tables(scratch_db)
     assert "mcp_token_hash" not in await columns(scratch_db, "remote_jobs")
     run_alembic(scratch_db)
-    assert await version(scratch_db) == "f0a3c0d0e005"
+    assert await version(scratch_db) == "f0a3c0d0e006"
