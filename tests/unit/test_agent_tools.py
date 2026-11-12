@@ -222,10 +222,13 @@ def test_messages_block_in_every_delivery_work_prompt():
     assert P.team_messages_block(None) == ""
     empty = P.team_messages_block([])
     assert "Messages from your team: none." in empty and P.MESSAGING_LINE in empty
-    block = P.team_messages_block([msg("Delivery-2", "keep the\nTypeError"),
+    block = P.team_messages_block([msg("Delivery-2", "keep the TypeError:\n\n    raise TypeError"),
                                    msg("Delivery-3", "README is mine", "team")])
-    assert "Messages from your team (now marked read):\n- Delivery-2 to you: keep the TypeError\n" \
+    assert "Messages from your team (now marked read):\n- Delivery-2 to you: keep the TypeError:" \
+           "\n      raise TypeError\n" \
            "- Delivery-3 to the team: README is mine\n" + P.MESSAGING_LINE in block
+    long = "x" * 4000                                      # shown whole: never cut in a prompt
+    assert long in P.team_messages_block([msg("Delivery-2", long)])
     native = P.work_prompt(t, t.criteria, None, "", (), messages=[msg("Delivery-2", "hello")])
     remote = P.remote_work_prompt(t, t.criteria, None, "", messages=[msg("Delivery-2", "hello")])
     for p in (native, remote):

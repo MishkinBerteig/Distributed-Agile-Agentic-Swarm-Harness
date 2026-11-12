@@ -837,12 +837,16 @@ DAASH_TOOLS_REMOTE = ("You have DAASH tools (MCP server `daash`): remember/recal
 MESSAGING_LINE = ('Message your team with send_message (to a teammate\'s name, "team" for every '
                   'other delivery agent, or "coordinator" for the Swarm Coordinator) and check '
                   "for new messages with read_messages; team_roster shows who is on your team.")
-MESSAGE_PROMPT_CLIP = 1500   # characters of one message shown in a prompt
+def _message_text(m: Any) -> str:
+    """A message in full (send_message caps it at 4000 characters); its line breaks are kept as
+    indented continuation lines so code and lists survive."""
+    lines = [ln.rstrip() for ln in str(_get(m, "text", "") or "").strip().splitlines()]
+    return "\n  ".join(ln for ln in lines if ln) or "(empty)"
 
 
 def _message_line(m: Any, to_label: str) -> str:
     who = _get(m, "from_name") or "a teammate"
-    return f"- {who} {to_label}: {_clip(' '.join(str(_get(m, 'text', '')).split()), MESSAGE_PROMPT_CLIP)}"
+    return f"- {who} {to_label}: {_message_text(m)}"
 
 
 def team_messages_block(messages: Optional[Iterable[Any]]) -> str:
@@ -868,8 +872,7 @@ def coordinator_messages_block(messages: Iterable[Any]) -> str:
         who = _get(m, "from_name") or "an agent"
         team = _get(m, "from_team")
         who += f" (team '{team}')" if team else ""
-        lines.append(f"- {who}: "
-                     f"{_clip(' '.join(str(_get(m, 'text', '')).split()), MESSAGE_PROMPT_CLIP)}")
+        lines.append(f"- {who}: {_message_text(m)}")
     if not lines:
         return ""
     return ("Messages the teams sent to you, the Swarm Coordinator (take them into account):\n"
