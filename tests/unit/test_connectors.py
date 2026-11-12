@@ -287,6 +287,14 @@ def _sync(agent, req):
     return httpx.Response(404)
 
 
+async def test_probe_recognises_openclaw_before_its_a2a_channel_is_on():
+    agent = FakeA2AAgent("Jane", channel_on=False)
+    f = await C.probe("jane", 18789, transport=transport(agent.httpx_handler))
+    assert (f.kind, f.status, f.card, f.url) == ("openclaw", "found", None, "http://jane:18789")
+    assert "2026.11.3" in f.detail and "A2A channel is off" in f.detail
+    assert C.openclaw_page_version("<html><p>hello</p>") is None
+
+
 async def test_probe_skips_closed_ports():
     async def closed(host, port, timeout):
         return False

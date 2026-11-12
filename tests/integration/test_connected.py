@@ -112,8 +112,8 @@ async def test_connect_before_the_a2a_channel_exists(api, h, jane, pool):
     """A gateway whose owner has not turned A2A on serves no card: connecting still works and
     the approval step is what makes it answer; the card is fetched once it does."""
     jane.channel_on = False
-    r = await api.post("/connected-agents", json={"address": "jane", "protocol": "a2a",
-                                                  "kind": "openclaw"})
+    # a bare host name: DAASH tries the default ports and recognises the gateway by its page
+    r = await api.post("/connected-agents", json={"address": "jane"})
     assert r.status_code == 201, r.text
     out = r.json()
     a = out["agent"]

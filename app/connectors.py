@@ -449,6 +449,21 @@ RUN_FAILED = ("failed", "error", "errored", "cancelled", "canceled", "stopped", 
               "timeout", "timed_out", "expired")
 
 
+_OC_VERSION_RE = re.compile(r'OPENCLAW_CONTROL_UI_BUILD_INFO\s*=\s*\{"version":"([^"]+)"')
+#: An OpenClaw gateway's public liveness answer (verified on 2026.11.3; also /healthz).
+OPENCLAW_HEALTH = {"ok": True, "status": "live"}
+
+
+def openclaw_page_version(html_text: str) -> Optional[str]:
+    """'' or the version when `html_text` (GET /) is OpenClaw's Control UI; None otherwise. The
+    page carries `data-openclaw-control-ui-*` attributes and OPENCLAW_CONTROL_UI_BUILD_INFO."""
+    head = (html_text or "")[:20000]
+    if "data-openclaw-control-ui" not in head and "OPENCLAW_CONTROL_UI" not in head:
+        return None
+    m = _OC_VERSION_RE.search(head)
+    return m.group(1) if m else ""
+
+
 def looks_like_hermes_health(obj: Any) -> bool:
     """A Hermes API server's public /health answer (discovery never sends a credential)."""
     if not isinstance(obj, dict):
@@ -773,6 +788,7 @@ async def probe(host: str, port: int, *, transport: Optional[httpx.AsyncBaseTran
                                                  detail=SILENT_DETAIL)
         except httpx.HTTPError:
             return None
+        health = None
         if resp.status_code == 200:
             try:
                 health = resp.json()
@@ -782,6 +798,23 @@ async def probe(host: str, port: int, *, transport: Optional[httpx.AsyncBaseTran
                 return Finding(host, port, "hermes", "found", name=f"Hermes on {host}",
                                url=origin, card={"health": health},
                                detail="Hermes Agent API server")
+        # An OpenClaw gateway whose owner has not turned A2A on yet serves no card, but its
+        # Control UI page and /health say what it is (no credential needed).
+        version: Optional[str] = None
+        try:
+            page = await client.get(origin + "/", headers={"Accept": "text/html"})
+            if page.status_code == 200:
+                version = openclaw_page_version(page.text)
+        except httpx.HTTPError:
+            version = None
+        if version is None and health == OPENCLAW_HEALTH and port == OPENCLAW_PORT:
+            version = ""
+        if version is not None:
+            return Finding(host, port, "openclaw", "found", name=f"OpenClaw on {host}",
+                           url=origin, card=None,
+                           detail=f"OpenClaw{(' ' + version) if version else ''} gateway; its "
+                                  "A2A channel is off: Connect gives its owner the one step "
+                                  "that turns it on")
     return None
 
 

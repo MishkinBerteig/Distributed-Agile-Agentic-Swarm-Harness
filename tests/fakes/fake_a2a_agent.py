@@ -41,6 +41,10 @@ import httpx
 from tests.fakes.fake_llm import build_file_content, parse_criteria
 
 JOB_RE = re.compile(r"Your DAASH job id: ([0-9a-fA-F-]{8,})")
+#: The start of OpenClaw 2026.11.3's Control UI page (GET /), which says what the gateway is.
+CONTROL_UI = ('<!doctype html>\n<html data-openclaw-control-ui-base-path="" lang="en">\n  <head>'
+              '<script id="openclaw-control-ui-build-info">globalThis.OPENCLAW_CONTROL_UI_BUILD_'
+              'INFO={"version":"2026.11.3","commit":"fake"}</script>')
 
 
 def _needs(criteria: list[dict]) -> dict[str, dict]:
@@ -126,6 +130,8 @@ class FakeA2AAgent:
             return (200, self.card()) if self.channel_on else (404, {"error": "Not Found"})
         if method == "GET" and path in ("/health", "/healthz"):
             return 200, {"ok": True, "status": "live"}
+        if method == "GET" and path == "/":
+            return 200, CONTROL_UI
         if path != "/a2a/v1" or method != "POST" or not self.channel_on:
             return 404, {"error": "not found"}
         auth = headers.get("authorization", "")
@@ -249,6 +255,8 @@ class FakeA2AAgent:
         status, body = await self.handle(request.method, request.url.path,
                                          {k.lower(): v for k, v in request.headers.items()},
                                          request.content)
+        if isinstance(body, str):
+            return httpx.Response(status, text=body, headers={"Content-Type": "text/html"})
         return httpx.Response(status, json=body)
 
     def state(self) -> dict:
@@ -341,9 +349,10 @@ def serve(agent: FakeA2AAgent, port: int) -> ThreadingHTTPServer:
                 fut = asyncio.run_coroutine_threadsafe(agent.handle(
                     method, path, {k.lower(): v for k, v in self.headers.items()}, body), loop)
                 status, out = fut.result(timeout=60)
-            data = json.dumps(out).encode()
+            html_page = isinstance(out, str)
+            data = out.encode() if html_page else json.dumps(out).encode()
             self.send_response(status)
-            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Type", "text/html" if html_page else "application/json")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
