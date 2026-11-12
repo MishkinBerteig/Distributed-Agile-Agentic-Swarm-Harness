@@ -265,6 +265,9 @@ class FakeConnected:
     async def by_mcp_token_hash(self, h: str) -> Optional[ConnectedAgent]:
         return next((a for a in self.by_id.values() if a.mcp_token_hash == h), None)
 
+    async def get(self, aid: str) -> Optional[ConnectedAgent]:
+        return self.by_id.get(aid)
+
     async def touch_mcp(self, aid: str) -> None:
         self.seen.append(aid)
 

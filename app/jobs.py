@@ -25,8 +25,9 @@ from app.bus import DecisionBus
 from app.checks import COMMAND_TIMEOUT_SECONDS, is_deterministic, run_check
 from app.config import Settings
 from app.llm import LLMError, Usage
+from app.connected_work import ConnectedWork
 from app.models import (Action, ActionKind, Agent, AgentRole, AgentState, CheckKind,
-                        CreatorKind, CriterionStatus, NATIVE_HARNESS, Swarm,
+                        CONNECTED_HARNESS, CreatorKind, CriterionStatus, NATIVE_HARNESS, Swarm,
                         SwarmStatus, Task, TaskCreate,
                         TaskStatus, Team, TeamStatus)
 from app.repo import (AgentRepo, CallRepo, ConnectedAgentRepo, EventRepo, LearningRepo,
@@ -315,7 +316,7 @@ def _now() -> datetime:
 # Job implementations
 # ---------------------------------------------------------------------------
 
-class Jobs:
+class Jobs(ConnectedWork):
     def __init__(self, pool: asyncpg.Pool, llm: Any, bus: Optional[DecisionBus],
                  embedder: Any, settings: Settings) -> None:
         self.pool = pool
@@ -344,6 +345,10 @@ class Jobs:
         self._partial: dict[tuple, Any] = {}
         # seconds between checks of a remote job's state (tests shrink it)
         self.remote_poll_seconds = 2.0
+        # seconds between polls of a connected agent's task (docs/DESIGN-0.4.md section 5.3;
+        # OpenClaw allows 30 requests a minute per peer)
+        self.connected_poll_seconds = settings.CONNECTED_POLL_SECONDS
+        self.connector_transport = None   # httpx transport for connected agents (tests)
 
     # -- plumbing -------------------------------------------------------------
 
@@ -644,7 +649,8 @@ class Jobs:
         if live is None or live.lifecycle_state != "ACTIVE":
             return
         now = _now()
-        idle = policy.idle_agents_for(task, team_agents, team_tasks)
+        idle = await self._connected_capacity_filter(
+            live, policy.idle_agents_for(task, team_agents, team_tasks))
         if not idle:
             log.info("commit of %r skipped: no idle agent with its required capabilities",
                      task.name)
@@ -917,7 +923,12 @@ class Jobs:
             all_tasks = await self.tasks.list(swarm_id=swarm.id)
             stats = stats_from_tasks(all_tasks)
             model = choose_model(DELIVERY, cfg, task.complexity, task.attempts, stats)
-            if agent.harness != NATIVE_HARNESS:
+            if agent.harness == CONNECTED_HARNESS:
+                # an existing agent elsewhere (docs/DESIGN-0.4.md section 5.5); it uses its own
+                # model, so `model` only matters if this attempt falls back to the built-in agent
+                if await self._connected_work(swarm, team, agent, task):
+                    return
+            elif agent.harness != NATIVE_HARNESS:
                 spec_model = delivery_spec_model(cfg, agent.name)
                 if spec_model:
                     model = escalate_model(spec_model, cfg, task.attempts)
@@ -937,7 +948,7 @@ class Jobs:
             registry.add(tool)
         submitted: dict[str, str] = {}
         pending = await self._pending_proposals(swarm, team, agent)
-        ctx = self._tool_context(swarm, team, agent, task)
+        ctx = await self._tool_context(swarm, team, agent, task)
         for tool in agent_tools.build_agent_tools(ctx, workspace=False):
             if tool.name in agent_tools.VOTING_TOOL_NAMES and not pending:
                 continue
@@ -1006,17 +1017,26 @@ class Jobs:
         Returns False if no runner leased the job in time (the caller then runs it natively),
         True when the attempt was handled (submitted, failed or dropped). Raises RemoteError for
         infrastructure trouble and SwarmNotActive / CancelledError when the swarm moved on."""
-        cfg = swarm.config
-        repo = RemoteJobRepo(self.pool)
-        ws = self.workspace(swarm)
         system = await services.agent_system_prompt(
             self.pool, swarm, agent, team, query=f"{task.name}. {task.description}",
             embedder=self.embedder)
         messages = await self.messages.unread(agent.id)
         prompt = prompts.remote_work_prompt(task, task.criteria, task.feedback,
-                                            workspace_listing(ws), capabilities=agent.capabilities,
-                                            messages=messages)
-        payload = {
+                                            workspace_listing(self.workspace(swarm)),
+                                            capabilities=agent.capabilities, messages=messages)
+        payload = self._remote_payload(swarm, task, system, prompt)
+
+        def no_pickup(wait: int) -> str:
+            return (f"No runner offering '{agent.harness}' picked up '{task.name}' within {wait} "
+                    f"minutes, so {agent.name} ran it on the built-in harness instead.")
+
+        return await self._run_remote_job(swarm, team, agent, task, model, agent.harness,
+                                          payload, messages, no_pickup)
+
+    def _remote_payload(self, swarm: Swarm, task: Task, system: str, prompt: str) -> dict:
+        """The Job JSON a runner receives (docs/DESIGN-0.3.md section 5.2)."""
+        cfg = swarm.config
+        return {
             "system_prompt": system, "prompt": prompt,
             "required_capabilities": list(task.required_capabilities),
             "checks": [{"id": c.id, "command": c.check_arg,
@@ -1027,10 +1047,20 @@ class Jobs:
                        "max_files": remote.MAX_FILES, "max_file_bytes": remote.MAX_FILE_BYTES,
                        "max_total_bytes": remote.MAX_TOTAL_BYTES},
             "task": {"name": task.name, "artifact": task.artifact}}
+
+    async def _run_remote_job(self, swarm: Swarm, team: Team, agent: Agent, task: Task,
+                              model: str, harness: str, payload: dict, messages: list,
+                              no_pickup, label: Optional[dict] = None) -> bool:
+        """Queue (or re-attach to) the task's runner job and wait for it: the shared path of
+        runner CLIs and of agents on an agent host (docs/DESIGN-0.4.md section 5.9). `no_pickup`
+        words the fallback event; `label` ({"who", "deliverable", "call_model"}) names the agent
+        in events and the deliverable."""
+        cfg = swarm.config
+        repo = RemoteJobRepo(self.pool)
         job = await repo.ensure_active(swarm.id, team.id, task.id, agent.id, task.attempts,
-                                       agent.harness, model, payload)
+                                       harness, model, payload)
         delivered: list[str] = []
-        if messages and job.payload.get("prompt") == prompt:
+        if messages and job.payload.get("prompt") == payload.get("prompt"):
             # the job that will run carries these messages (an engine restart re-attaches to an
             # existing job instead, whose prompt does not): only now are they read
             delivered = [m.id for m in messages]
@@ -1048,7 +1078,7 @@ class Jobs:
                     raise RemoteError(
                         f"the runner for '{task.name}' vanished {job.expiries} times")
                 if job.status == "completed":
-                    return await self._apply_remote(swarm, team, agent, task, model, job)
+                    return await self._apply_remote(swarm, team, agent, task, model, job, label)
                 if job.status in ("cancelled", "abandoned"):
                     await self._require_state(swarm)
                     raise RemoteError(f"the remote job was {job.status} by the coordinator")
@@ -1060,9 +1090,7 @@ class Jobs:
                         await self.messages.mark_unread(delivered)
                         await self.events.add(
                             swarm.id, "info", team_id=team.id, task_id=task.id, actor=agent.id,
-                            detail=f"No runner offering '{agent.harness}' picked up "
-                                   f"'{task.name}' within {wait} minutes, so {agent.name} ran "
-                                   f"it on the built-in harness instead.")
+                            detail=no_pickup(wait))
                         return False
                 elif job.status == "leased":
                     limit = timedelta(minutes=cfg.limits.remote_job_timeout_minutes)
@@ -1089,7 +1117,7 @@ class Jobs:
             await repo.cancel(job_id)
 
     async def _apply_remote(self, swarm: Swarm, team: Team, agent: Agent, task: Task,
-                            model: str, job) -> bool:
+                            model: str, job, label: Optional[dict] = None) -> bool:
         """Take a completed remote job's result into the workspace and the task."""
         res = job.result or {}
         outcome = res.get("outcome", "error")
@@ -1099,8 +1127,9 @@ class Jobs:
         usage = Usage(**{k: int((res.get("usage") or {}).get(k, 0))
                          for k in ("prompt_tokens", "completion_tokens", "total_tokens")})
         await services.record_call(
-            self.pool, agent, "work_task", model, usage=usage, task_id=task.id,
-            ok=outcome != "error", error=res.get("error") if outcome == "error" else None,
+            self.pool, agent, "work_task", (label or {}).get("call_model") or model, usage=usage,
+            task_id=task.id, ok=outcome != "error",
+            error=res.get("error") if outcome == "error" else None,
             duration_ms=int(res.get("duration_ms") or 0),
             transcript=[{"role": "remote", "harness": job.harness, "runner": runner_name,
                          "outcome": outcome, "summary": res.get("summary", ""),
@@ -1120,22 +1149,27 @@ class Jobs:
         if outcome == "error":
             raise RemoteError(res.get("error") or "the runner reported an infrastructure error")
         files = dedupe_files(written)
-        who = f"{agent.name} ({job.harness} on runner '{runner_name}')"
+        who = ((label or {}).get("who", "").replace("{runner}", runner_name)
+               or f"{agent.name} ({job.harness} on runner '{runner_name}')")
+        model_note = f", model {model}" if model else ""
         if outcome == "submitted":
             summary = res.get("summary") or ""
-            await self.tasks.update(
-                task.id, status=TaskStatus.REVIEW.value,
-                deliverable={"summary": summary, "files": files, "model": model,
-                             "harness": job.harness, "runner": runner_name,
-                             "check_results": remote.clean_check_results(
-                                 res.get("check_results"),
-                                 [c.id for c in task.criteria
-                                  if c.check_kind == CheckKind.COMMAND.value])})
+            deliverable = {"summary": summary, "files": files, "harness": job.harness,
+                           "runner": runner_name,
+                           "check_results": remote.clean_check_results(
+                               res.get("check_results"),
+                               [c.id for c in task.criteria
+                                if c.check_kind == CheckKind.COMMAND.value])}
+            if model:
+                deliverable["model"] = model
+            deliverable.update((label or {}).get("deliverable") or {})
+            await self.tasks.update(task.id, status=TaskStatus.REVIEW.value,
+                                    deliverable=deliverable)
             await self.events.add(
                 swarm.id, "submitted", team_id=team.id, task_id=task.id, actor=agent.id,
                 from_status=TaskStatus.IN_PROGRESS.value, to_status=TaskStatus.REVIEW.value,
                 detail=f"{who} submitted '{task.name}' for review ({len(files)} file(s) "
-                       f"written, model {model}): {_clip(summary, 200)}")
+                       f"written{model_note}): {_clip(summary, 200)}")
             await self.signal("task.submitted", team.id, task.id, files=files)
             return True
         await self._attempt_failed(
@@ -1175,7 +1209,8 @@ class Jobs:
                 detail=f"{agent.name} did not finish '{task.name}' (attempt {attempts} of "
                        f"{swarm.config.limits.max_attempts_per_task}): {why} Trying again.")
             await self.signal("task.rework", team.id, task.id)
-            await self._reassign_if_incapable(swarm, team, task)
+            if not await self._handover_if_connected(swarm, team, task):
+                await self._reassign_if_incapable(swarm, team, task)
 
     async def _classify(self, swarm: Swarm, agent: Agent, team: Team, task: Task) -> Task:
         model = choose_model("classifier", swarm.config)
@@ -1205,11 +1240,14 @@ class Jobs:
         props = await self.proposals.list(swarm.id, status="pending")
         return [p for p in props if p.team_id == team.id and agent.id not in p.votes]
 
-    def _tool_context(self, swarm: Swarm, team: Team, agent: Agent,
-                      task: Task) -> agent_tools.AgentContext:
-        """The context DAASH's agent tools (app/agent_tools.py) run in for a native attempt."""
+    async def _tool_context(self, swarm: Swarm, team: Team, agent: Agent,
+                            task: Task) -> agent_tools.AgentContext:
+        """The context DAASH's agent tools (app/agent_tools.py) run in for a native attempt.
+        Connected agents' own names (e.g. "Jane") address their rows in send_message."""
+        aliases, labels = await self.connected_names(swarm.id, team.id)
         return agent_tools.AgentContext(repos=self.repos, swarm=swarm, team=team, agent=agent,
-                                        task=task, embedder=self.embedder, signal=self.signal)
+                                        task=task, embedder=self.embedder, signal=self.signal,
+                                        name_aliases=aliases, agent_labels=labels)
 
     async def _settle(self, swarm: Swarm, team: Team, prop, n_voters: int) -> str:
         return await agent_tools.settle(self.proposals, prop, n_voters)
@@ -1407,7 +1445,8 @@ class Jobs:
                 detail=f"'{task.name}' needs rework (attempt {attempt} of "
                        f"{cfg.limits.max_attempts_per_task}): {_clip(feedback, 300)}")
             await self.signal("task.rework", team.id, task.id)
-            await self._reassign_if_incapable(swarm, team, task)
+            if not await self._handover_if_connected(swarm, team, task):
+                await self._reassign_if_incapable(swarm, team, task)
 
     async def _reassign_if_incapable(self, swarm: Swarm, team: Team, task: Task) -> None:
         """Rework: if the assigned agent lacks a required capability while a capable agent is

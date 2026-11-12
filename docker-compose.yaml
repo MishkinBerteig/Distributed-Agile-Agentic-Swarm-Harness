@@ -32,6 +32,11 @@ services:
       - DAASH_API_TOKEN=${DAASH_API_TOKEN:-}
       - DAASH_RUNNER_BOOTSTRAP_TOKEN=${DAASH_RUNNER_BOOTSTRAP_TOKEN:-}
       - DAASH_AGENT_PUBLIC_URL=${DAASH_AGENT_PUBLIC_URL:-}
+      # Connected agents (docs/DESIGN-0.4.md section 5.8): where discovery looks. On a tailnet,
+      # scripts/tailnet-hosts.sh prints a DAASH_DISCOVERY_HOSTS value.
+      - DAASH_DISCOVERY_HOSTS=${DAASH_DISCOVERY_HOSTS:-}
+      - DAASH_DISCOVERY_SUBNETS=${DAASH_DISCOVERY_SUBNETS:-}
+      - DAASH_DISCOVERY_PORTS=${DAASH_DISCOVERY_PORTS:-18789,8642}
     extra_hosts:
       - host.docker.internal:host-gateway
     depends_on:
@@ -108,6 +113,7 @@ services:
       - DAASH_LLM_MODEL_CONCURRENCY=${DAASH_LLM_MODEL_CONCURRENCY:-{}}
       - DAASH_WORKSPACE_ROOT=/workspaces
       - DAASH_ENGINE_ENABLED=${DAASH_ENGINE_ENABLED:-true}
+      - DAASH_CONNECTED_POLL_SECONDS=${DAASH_CONNECTED_POLL_SECONDS:-10}
     extra_hosts:
       - host.docker.internal:host-gateway
     depends_on:

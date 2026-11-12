@@ -13,11 +13,11 @@ from typing import Any, Optional
 import asyncpg
 
 from app.config import Settings
-from app.models import (Agent, AgentRole, AgentState, CreatorKind, Swarm, TaskStatus, Team,
-                        harness_capabilities)
+from app.models import (CONNECTED_HARNESS, Agent, AgentRole, AgentState, CreatorKind, Swarm,
+                        TaskStatus, Team, harness_capabilities)
 from app.prompts import compose_system_prompt, parse_standards, standards_prompt
-from app.repo import (AgentRepo, CallRepo, ConfigRepo, EventRepo, FeedbackRepo, LearningRepo,
-                      MemoryRepo, TeamRepo)
+from app.repo import (AgentRepo, CallRepo, ConfigRepo, ConnectedAgentRepo, EventRepo,
+                      FeedbackRepo, LearningRepo, MemoryRepo, TeamRepo)
 from app.routing import choose_model
 
 #: Display names for the fixed team roles (Delivery agents are numbered).
@@ -30,20 +30,34 @@ ROLE_NAMES = {
 
 def delivery_spec(cfg, index: int) -> tuple[str, str]:
     """(harness, provider) of Delivery-`index` (1-based): delivery_harnesses cycled, else the
-    first allowed harness/provider as before 0.3."""
+    first allowed harness/provider as before 0.3. A connected agent's row (harness "connected",
+    docs/DESIGN-0.4.md section 5.2) has the connected agent's id as its provider."""
     if cfg.delivery_harnesses:
         spec = cfg.delivery_harnesses[(index - 1) % len(cfg.delivery_harnesses)]
+        if spec.harness == CONNECTED_HARNESS:
+            return spec.harness, spec.connected_agent or ""
         return spec.harness, spec.provider
-    return cfg.allowed_harnesses[0], cfg.allowed_providers[0]
+    first = cfg.allowed_harnesses[0]
+    if first == CONNECTED_HARNESS:   # "connected" alone is no default: it needs an agent
+        first = next((h for h in cfg.allowed_harnesses if h != CONNECTED_HARNESS), "daash")
+    return first, cfg.allowed_providers[0]
 
 
-def delivery_capabilities(cfg, index: int) -> list[str]:
-    """Capabilities of Delivery-`index`: the HarnessSpec override, else the harness default."""
+def delivery_capabilities(cfg, index: int,
+                          connected_caps: Optional[list[str]] = None) -> list[str]:
+    """Capabilities of Delivery-`index`: the HarnessSpec override, else the harness default (for
+    a connected agent: `connected_caps`, the connected agent's own)."""
     harness, _ = delivery_spec(cfg, index)
     override = None
     if cfg.delivery_harnesses:
         override = cfg.delivery_harnesses[(index - 1) % len(cfg.delivery_harnesses)].capabilities
+    if override is None and harness == CONNECTED_HARNESS and connected_caps is not None:
+        override = connected_caps
     return harness_capabilities(harness, override)
+
+
+#: Agent.model of a connected agent's row: DAASH does not choose its model (section 5.2).
+CONNECTED_MODEL = ""
 
 
 # -- workspaces ---------------------------------------------------------------
@@ -91,20 +105,30 @@ async def ensure_team_agents(pool: asyncpg.Pool, swarm: Swarm, team: Team) -> li
     have = {(a.role, a.name) for a in existing}
     cfg = swarm.config
     native = (cfg.allowed_harnesses[0], cfg.allowed_providers[0])
+    if native[0] == "connected":     # judges never run on a connected agent
+        native = ("daash", native[1])
+    connected = {a.id: a for a in await ConnectedAgentRepo(pool).list()} \
+        if any(d.harness == CONNECTED_HARNESS for d in cfg.delivery_harnesses) else {}
+
+    def delivery(i: int) -> tuple[str, str, str, str, Optional[list[str]]]:
+        harness, provider = delivery_spec(cfg, i)
+        ca = connected.get(provider) if harness == CONNECTED_HARNESS else None
+        caps = delivery_capabilities(cfg, i, ca.capabilities if ca is not None else None)
+        return (AgentRole.MISSION_DELIVERY.value, f"Delivery-{i}", harness, provider, caps)
+
     wanted: list[tuple[str, str, str, str, Optional[list[str]]]] = [
         (AgentRole.MISSION_JUDGEMENT.value, ROLE_NAMES[AgentRole.MISSION_JUDGEMENT.value],
          *native, None),
         (AgentRole.QUALITY_JUDGEMENT.value, ROLE_NAMES[AgentRole.QUALITY_JUDGEMENT.value],
          *native, None),
-    ] + [(AgentRole.MISSION_DELIVERY.value, f"Delivery-{i}", *delivery_spec(cfg, i),
-          delivery_capabilities(cfg, i))
-         for i in range(1, cfg.delivery_agents_per_team + 1)]
+    ] + [delivery(i) for i in range(1, cfg.delivery_agents_per_team + 1)]
     created = []
     for role, name, harness, provider, caps in wanted:
         if (role, name) in have:
             continue
+        model = CONNECTED_MODEL if harness == CONNECTED_HARNESS else choose_model(role, cfg)
         created.append(await agents.create(
-            swarm.id, team.id, role, name, model=choose_model(role, cfg),
+            swarm.id, team.id, role, name, model=model,
             harness=harness, provider=provider, capabilities=caps))
     return existing + created
 

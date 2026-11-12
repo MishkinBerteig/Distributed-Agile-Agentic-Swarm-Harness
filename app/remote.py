@@ -8,6 +8,7 @@ import binascii
 import hashlib
 import hmac
 import io
+import re
 import secrets
 import shutil
 import tarfile
@@ -402,3 +403,110 @@ def clip_for_listing(job: dict[str, Any], limit: int = PROMPT_LISTING_CLIP) -> d
             payload[key] = text[:limit] + f"... [{len(text) - limit} more characters]"
     out["payload"] = payload
     return out
+
+
+# -- reply file blocks of connected agents (docs/DESIGN-0.4.md section 5.5) ---------------------------
+
+#: `<<<FILE path>>>` ... `<<<END FILE>>>` and `<<<DELETE path>>>`: how a connected agent without
+#: DAASH's file tools hands over the files it created, changed or deleted.
+_BLOCK_RE = re.compile(
+    r"^[ \t]*<<<FILE[ \t]+(?P<path>[^\n>]+?)[ \t]*>>>[ \t]*\r?\n(?P<body>.*?)"
+    r"^[ \t]*<<<END[ \t]*FILE[ \t]*>>>[ \t]*$"
+    r"|^[ \t]*<<<DELETE[ \t]+(?P<del>[^\n>]+?)[ \t]*>>>[ \t]*$", re.S | re.M)
+_OPEN_RE = re.compile(r"^[ \t]*<<<FILE[ \t]+([^\n>]+?)[ \t]*>>>", re.M)
+
+
+@dataclass
+class ReplyBlocks:
+    files: list[tuple[str, bytes]] = field(default_factory=list)
+    deleted: list[str] = field(default_factory=list)
+    summary: str = ""
+    problems: list[str] = field(default_factory=list)
+
+
+def parse_file_blocks(text: str, max_files: int = MAX_FILES, max_file_bytes: int = MAX_FILE_BYTES,
+                      max_total_bytes: int = MAX_TOTAL_BYTES) -> ReplyBlocks:
+    """The file blocks of a connected agent's reply, checked with the remote result rules
+    (validate_rel_path, size and count limits). A bad block is skipped and reported in
+    `problems`; the reply without its blocks is the summary. A later block for the same path
+    wins; a deletion after a write of the same path wins."""
+    out = ReplyBlocks()
+    text = text or ""
+    files: dict[str, bytes] = {}
+    deleted: list[str] = []
+    total = 0
+    spans: list[tuple[int, int]] = []
+    for m in _BLOCK_RE.finditer(text):
+        spans.append(m.span())
+        raw = m.group("path") if m.group("path") is not None else m.group("del")
+        try:
+            rel = validate_rel_path(raw.strip().strip("`'\""))
+        except ResultError as exc:
+            out.problems.append(str(exc))
+            continue
+        if is_generated(rel):
+            continue
+        if m.group("del") is not None:
+            files.pop(rel, None)
+            if rel not in deleted:
+                deleted.append(rel)
+            continue
+        body = m.group("body")
+        if body.endswith("\r\n"):
+            body = body[:-2]
+        elif body.endswith("\n"):
+            body = body[:-1]
+        data = body.encode("utf-8")
+        if len(data) > max_file_bytes:
+            out.problems.append(f"file {rel!r} is {len(data)} bytes (limit {max_file_bytes})")
+            continue
+        if rel not in files and len(files) >= max_files:
+            out.problems.append(f"more than {max_files} files; {rel!r} was skipped")
+            continue
+        total += len(data) - len(files.get(rel, b""))
+        if total > max_total_bytes:
+            total -= len(data) - len(files.get(rel, b""))
+            out.problems.append(f"files total more than {max_total_bytes} bytes; {rel!r} was "
+                                "skipped")
+            continue
+        files[rel] = data
+        if rel in deleted:
+            deleted.remove(rel)
+    rest, pos = [], 0
+    for a, b in spans:
+        rest.append(text[pos:a])
+        pos = b
+    rest.append(text[pos:])
+    leftover = "".join(rest)
+    for m in _OPEN_RE.finditer(leftover):
+        out.problems.append(f"the block for {m.group(1).strip()!r} has no <<<END FILE>>> line, "
+                            "so it was ignored")
+    out.files = list(files.items())
+    out.deleted = deleted
+    out.summary = re.sub(r"\n{3,}", "\n\n", leftover).strip()[:SUMMARY_MAX]
+    return out
+
+
+def apply_file_blocks(root: Path, files: Iterable[tuple[str, bytes]],
+                      deleted: Iterable[str]) -> tuple[list[str], list[str]]:
+    """Write reply-block files into the live workspace and delete deleted paths, never leaving
+    it (the paths were validated by parse_file_blocks). Returns (written, deleted)."""
+    written: list[str] = []
+    for rel, data in files:
+        dest = root / rel
+        if dest.is_symlink():
+            dest.unlink()       # never write through a link
+        if not _inside(root, dest):
+            continue
+        if dest.is_dir():
+            shutil.rmtree(dest, ignore_errors=True)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+        written.append(rel)
+    gone: list[str] = []
+    for rel in deleted:
+        dest = root / rel
+        if _inside(root, dest) and (dest.is_file() or dest.is_symlink()):
+            dest.unlink()
+            gone.append(rel)
+    return written, gone

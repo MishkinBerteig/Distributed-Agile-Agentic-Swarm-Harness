@@ -57,6 +57,20 @@ class Settings(BaseSettings):
     # runners' config snippets. Empty = not set (DAASHboard says how to set it).
     AGENT_PUBLIC_URL: str = ""
 
+    # Connected agents (docs/DESIGN-0.4.md section 5). Discovery probes DISCOVERY_HOSTS (names or
+    # IPs, comma-separated; e.g. Tailscale MagicDNS names, see scripts/tailnet-hosts.sh), the hosts
+    # of known runners and every address of DISCOVERY_SUBNETS (private CIDRs no larger than /24)
+    # on DISCOVERY_PORTS. Never with a credential.
+    DISCOVERY_HOSTS: str = ""
+    DISCOVERY_SUBNETS: str = ""
+    DISCOVERY_PORTS: str = "18789,8642"
+    # Seconds between polls of a connected agent's task (OpenClaw allows 30 requests a minute).
+    CONNECTED_POLL_SECONDS: float = 10.0
+    # The owner's approval window: a pending agent is checked every PENDING_CHECK_SECONDS for
+    # PENDING_MINUTES (section 5.8).
+    CONNECTED_PENDING_MINUTES: int = 60
+    CONNECTED_PENDING_CHECK_SECONDS: float = 10.0
+
     def model_concurrency(self) -> dict[str, int]:
         """LLM_MODEL_CONCURRENCY parsed to {model: limit}; bad JSON is logged and ignored."""
         raw = (self.LLM_MODEL_CONCURRENCY or "").strip()
