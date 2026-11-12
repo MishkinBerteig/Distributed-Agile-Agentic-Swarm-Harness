@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     RUNNER_BOOTSTRAP_TOKEN: str = ""
     # Seconds a runner lease lasts without a heartbeat (e2e shortens it; heartbeats follow).
     RUNNER_LEASE_SECONDS: int = 60
+    # The address other machines use for DAASH's agent-facing port (docs/DESIGN-0.4.md section
+    # 6), e.g. http://m5m128gb.tail391a32.ts.net:8001; shown in connected agents' and remote
+    # runners' config snippets. Empty = not set (DAASHboard says how to set it).
+    AGENT_PUBLIC_URL: str = ""
 
     def model_concurrency(self) -> dict[str, int]:
         """LLM_MODEL_CONCURRENCY parsed to {model: limit}; bad JSON is logged and ignored."""

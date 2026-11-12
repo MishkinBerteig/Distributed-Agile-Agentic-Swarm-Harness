@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from app import main, remote
+from app import main, remote, runner_api
 from app.repo import RemoteJobRepo, RunnerRepo
 from tests.integration.runner_helpers import FakeRunner, b64, make_remote_job, new_runner
 
@@ -20,7 +20,7 @@ AUTH = {"Authorization": f"Bearer {ADMIN}"}
 
 @pytest.fixture(autouse=True)
 def fast_poll(monkeypatch):
-    monkeypatch.setattr(main, "LEASE_POLL_SECONDS", 0.05)
+    monkeypatch.setattr(runner_api, "LEASE_POLL_SECONDS", 0.05)
 
 
 def bearer(token: str) -> dict:

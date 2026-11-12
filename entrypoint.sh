@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-# Usage: entrypoint.sh [api|engine]   (default: api)
+# Usage: entrypoint.sh [api|engine|agent-api]   (default: api)
 MODE="${1:-api}"
 
 # Wait for PostgreSQL to be ready
@@ -24,8 +24,13 @@ case "$MODE" in
     # The coordinator owns migrations; the engine only starts once it is healthy.
     exec python -m app.engine
     ;;
+  agent-api)
+    # Agent-facing port (docs/DESIGN-0.4.md section 6): /health, /mcp and /runner/* only.
+    # The coordinator owns migrations; compose starts this once the coordinator is healthy.
+    exec uvicorn app.agent_api:app --host 0.0.0.0 --port 8001
+    ;;
   *)
-    echo "Unknown mode '$MODE' (expected: api | engine)" >&2
+    echo "Unknown mode '$MODE' (expected: api | engine | agent-api)" >&2
     exit 2
     ;;
 esac

@@ -8,6 +8,10 @@
 # let runners on other devices reach the coordinator; then ALSO set DAASH_API_TOKEN):
 #   8000 - coordinator API (docs at /docs)
 #   7173 - DAASHboard (Vite dev server)
+#   8001 - agent-facing API: only /health, /mcp and /runner/* (docs/DESIGN-0.4.md section 6).
+#          Bound by DAASH_AGENT_BIND_ADDR (default 127.0.0.1), so it can be published to other
+#          machines (connected agents, remote runners) without publishing the admin API. Set
+#          DAASH_AGENT_PUBLIC_URL to the address those machines use (shown in config snippets).
 services:
   coordinator:
     build:
@@ -27,6 +31,7 @@ services:
       - DAASH_WORKSPACE_ROOT=/workspaces
       - DAASH_API_TOKEN=${DAASH_API_TOKEN:-}
       - DAASH_RUNNER_BOOTSTRAP_TOKEN=${DAASH_RUNNER_BOOTSTRAP_TOKEN:-}
+      - DAASH_AGENT_PUBLIC_URL=${DAASH_AGENT_PUBLIC_URL:-}
     extra_hosts:
       - host.docker.internal:host-gateway
     depends_on:
@@ -40,6 +45,45 @@ services:
       timeout: 5s
       retries: 20
       start_period: 15s
+    volumes:
+      - daash-workspaces:/workspaces
+    networks:
+      - backend
+      - frontend
+
+  # Agent-facing API (docs/DESIGN-0.4.md section 6): the same image, serving only /health, the DAASH
+  # MCP server (/mcp) and the runner protocol (/runner/*). Publish it to other machines with
+  # DAASH_AGENT_BIND_ADDR (e.g. 0.0.0.0 or a Tailscale IP) without exposing the admin API on 8000.
+  # Starts after the coordinator is healthy, i.e. after the coordinator ran the migrations.
+  agent-api:
+    build:
+      context: .
+      target: runtime
+    command: ["agent-api"]
+    restart: unless-stopped
+    ports:
+      - "${DAASH_AGENT_BIND_ADDR:-127.0.0.1}:8001:8001"
+    environment:
+      - DAASH_DATABASE_URL=postgresql://daash:daash@db:5432/daash
+      - DAASH_REDIS_URL=redis://redis:6379/0
+      - DAASH_DATABASE_HOST=db
+      - DAASH_WORKSPACE_ROOT=/workspaces
+      - DAASH_API_TOKEN=${DAASH_API_TOKEN:-}
+      - DAASH_RUNNER_BOOTSTRAP_TOKEN=${DAASH_RUNNER_BOOTSTRAP_TOKEN:-}
+      - DAASH_AGENT_PUBLIC_URL=${DAASH_AGENT_PUBLIC_URL:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      coordinator:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
     volumes:
       - daash-workspaces:/workspaces
     networks:
