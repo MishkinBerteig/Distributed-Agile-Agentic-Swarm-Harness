@@ -30,7 +30,8 @@ class Client:
 
     def _open(self, method: str, path: str, body: bytes | None, ctype: str | None, timeout: float):
         req = urllib.request.Request(self.base + path, data=body, method=method)
-        req.add_header("Authorization", f"Bearer {self.token}")
+        if self.token:
+            req.add_header("Authorization", f"Bearer {self.token}")
         if ctype:
             req.add_header("Content-Type", ctype)
         try:
@@ -59,9 +60,27 @@ class Client:
 
     # -- protocol (DESIGN-0.3 section 5) ----------------------------------
 
-    def hello(self, host: str, version: str, max_jobs: int, harnesses: list[dict]) -> dict:
-        return self.call("POST", "/runner/hello", {
-            "host": host, "version": version, "max_jobs": max_jobs, "harnesses": harnesses})[1]
+    def hello(self, host: str, version: str, max_jobs: int, harnesses: list[dict],
+              agents: list[dict] | None = None) -> dict:
+        """`agents` (an agent host's local agents, docs/DESIGN-0.4.md 5.9) is sent only when
+        given; the answer then carries `agents` and `agent_tokens`."""
+        body = {"host": host, "version": version, "max_jobs": max_jobs, "harnesses": harnesses}
+        if agents is not None:
+            body["agents"] = agents
+        return self.call("POST", "/runner/hello", body)[1] or {}
+
+    def enroll(self, code: str, host: str, name: str, version: str, platform: str) -> dict:
+        """Exchange an agent host's one-time connect code for a runner token (no token yet)."""
+        return self.call("POST", "/runner/enroll", {
+            "code": code, "host": host, "name": name, "version": version,
+            "platform": platform})[1] or {}
+
+    def health(self) -> dict:
+        return self.call("GET", "/health", None, timeout=10)[1] or {}
+
+    def disconnect(self) -> dict:
+        """Tell the coordinator this agent host is going away (its runner is disabled)."""
+        return self.call("POST", "/runner/disconnect", {})[1] or {}
 
     def lease(self, wait_seconds: int, free_slots: int) -> dict | None:
         status, data = self.call("POST", "/runner/lease",

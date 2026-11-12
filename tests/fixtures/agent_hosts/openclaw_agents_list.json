@@ -1,0 +1,13 @@
+[
+  {
+    "id": "main",
+    "identityName": "Testy",
+    "identityEmoji": "T",
+    "identitySource": "config",
+    "workspace": "/home/runner/.openclaw/workspace",
+    "agentDir": "/home/runner/.openclaw/agents/main/agent",
+    "model": "lmstudio/fast",
+    "bindings": 0,
+    "isDefault": true
+  }
+]
