@@ -409,8 +409,8 @@ class ConnectedAgent(BaseModel):
     bearer DAASH sends (`token`) and the MCP token hash are never part of the API form."""
     id: str
     name: str
-    protocol: str                   # a2a | hermes-api
-    url: str
+    protocol: str                   # a2a | hermes-api | runner
+    url: Optional[str] = None       # None for agents on an agent host (protocol runner)
     endpoint: Optional[str] = None
     skill: Optional[str] = None
     token: Optional[str] = Field(default=None, exclude=True)

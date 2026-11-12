@@ -43,6 +43,8 @@ from app.tools import ToolRegistry
 log = logging.getLogger("daash.mcp")
 
 MCP_PATH = "/mcp"
+#: Protocol of agents reached through a runner or an agent host (docs/DESIGN-0.4.md 5.9).
+RUNNER_PROTOCOL = "runner"
 JOB_TOKEN_PREFIX = "djt_"
 CONNECTED_TOKEN_PREFIX = "dca_"
 #: Newest first; a client asking for another version is offered the newest.
@@ -91,6 +93,13 @@ class Identity:
     kind: str                                   # "job" | "connected"
     job_id: Optional[str] = None                # job tokens
     connected: Optional[ConnectedAgent] = None  # connected-agent tokens
+
+    @property
+    def file_tools(self) -> bool:
+        """Directly connected agents edit the live swarm workspace through MCP; agents on a
+        runner or an agent host (protocol `runner`, section 5.9) work on a local copy."""
+        return (self.kind == "connected" and self.connected is not None
+                and self.connected.protocol != RUNNER_PROTOCOL)
 
 
 def negotiate_version(requested: Any) -> str:
@@ -146,9 +155,11 @@ def instructions(identity: Identity) -> str:
     s = ("DAASH tools for your current DAASH job: remember/recall (your persistent memory), "
          "team_roster, send_message/read_messages (talk to your team), current_task, "
          "create_subtask, propose_team, list_proposals and vote_on_proposal.")
-    if identity.kind == "connected":
+    if identity.file_tools:
         s += (" list_files, read_file, write_file, append_file and delete_file edit the shared "
-              "swarm workspace. Pass job=<id> when you have more than one DAASH job.")
+              "swarm workspace.")
+    if identity.kind == "connected":
+        s += " Pass job=<id> when you have more than one DAASH job."
     return s
 
 
@@ -179,8 +190,7 @@ class DaashBackend:
         return None
 
     def list_tools(self, identity: Identity) -> list[dict]:
-        connected = identity.kind == "connected"
-        return mcp_tools(workspace=connected, job_arg=connected)
+        return mcp_tools(workspace=identity.file_tools, job_arg=identity.kind == "connected")
 
     async def _job(self, identity: Identity, requested: Optional[str]
                    ) -> tuple[Optional[RemoteJob], Optional[str]]:
@@ -216,16 +226,16 @@ class DaashBackend:
         agent = await r.agents.get(job.agent_id)
         if team is None or agent is None:
             return None, JOB_ENDED
-        connected = identity.kind == "connected"
+        files = identity.file_tools
 
         async def on_file(path: str, written: bool) -> None:
             await r.remote_jobs.record_mcp_file(job.id, path, written)
 
         workspace = (self.workspace_root(swarm.id)
-                     if connected and self.workspace_root is not None else None)
+                     if files and self.workspace_root is not None else None)
         return AgentContext(repos=r, swarm=swarm, team=team, agent=agent, task=task,
                             embedder=self.embedder, signal=self.signal, workspace=workspace,
-                            job_id=job.id, on_file=on_file if connected else None), None
+                            job_id=job.id, on_file=on_file if files else None), None
 
     async def call_tool(self, identity: Identity, name: str, arguments: dict) -> tuple[str, bool]:
         """(text, is_error) for one tools/call."""
@@ -239,7 +249,7 @@ class DaashBackend:
         ctx, problem = await self._context(identity, job)
         if problem:
             return problem, True
-        registry = ToolRegistry(build_agent_tools(ctx, workspace=identity.kind == "connected"))
+        registry = ToolRegistry(build_agent_tools(ctx, workspace=identity.file_tools))
         outcome = await registry.call(name, args)
         await self._record(identity, ctx, name, args, outcome.error)
         return outcome.output, outcome.error

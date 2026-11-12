@@ -20,8 +20,11 @@ COPY app /opt/daash/app
 COPY alembic.ini /opt/daash/alembic.ini
 COPY migrations /opt/daash/migrations
 COPY entrypoint.sh /opt/daash/entrypoint.sh
+# The runner, served as one file to agent hosts (docs/DESIGN-0.4.md 5.9): /runner/daash-runner.pyz
+COPY daash_runner /opt/daash/daash_runner
 
-RUN chmod +x /opt/daash/entrypoint.sh
+RUN chmod +x /opt/daash/entrypoint.sh \
+    && cd /opt/daash && python -m daash_runner.pyz /opt/daash/daash-runner.pyz
 WORKDIR /opt/daash
 ENTRYPOINT ["/opt/daash/entrypoint.sh"]
 
