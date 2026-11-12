@@ -37,9 +37,10 @@ Facts this design relies on (checked 2026-11-11; notes in `agents-workspace/v0.4
   (PLAN "After 0.3" item 2); routing does not change yet.
 * **Runner agent types** (section 4): `openclaw` and `hermes` adapters, installed in the runner container and
   pointed at the local gateway. Every runner-launched CLI gets the DAASH MCP server for its job.
-* **Connected agents** (section 5): a DAASH delivery slot can be an existing agent reached over the network:
-  protocol `a2a` (OpenClaw and any other A2A 1.0 agent) or `hermes-api` (Hermes's API server). The engine talks
-  to it directly. No runner is needed, and DAASH does not choose its model.
+* **Connected agents** (section 5): a DAASH delivery slot can be an agent that already exists elsewhere. DAASH
+  either reaches it directly (`a2a` for OpenClaw and any other A2A 1.0 agent, or `hermes-api`), or reaches it
+  through a DAASH runner installed next to it (for agents behind a firewall). DAASH discovers agents. The owner
+  approves with one step, and DAASH detects the approval by itself. DAASH does not choose these agents' models.
 * **Agent-facing port** (section 6): the MCP and runner endpoints can be published to other machines without
   publishing the admin API.
 * **DAASHboard** (section 7): connect an agent, generated config snippets for the agent's side, status, the
@@ -66,7 +67,7 @@ behaviour cannot drift. Tools (names as now, plus the new ones):
 | `send_message` | to, text | new, section 3 |
 | `read_messages` | — | new, section 3 |
 | `current_task` | — | new: the task, artifact, acceptance criteria and latest feedback (helps agents that lose context) |
-| `list_files`, `read_file`, `write_file`, `append_file`, `delete_file` | as the native tools | **only for connected agents** (`workspace=True`); they edit the live swarm workspace with the native tools' path rules and size limits |
+| `list_files`, `read_file`, `write_file`, `append_file`, `delete_file` | as the native tools | **only for directly connected agents** (`a2a`, `hermes-api`; `workspace=True`), which have no copy of the files; they edit the live swarm workspace with the native tools' path rules and size limits. Agents on runners and agent hosts work on a local copy instead |
 
 `submit` stays native-only. A remote or connected agent submits by finishing (its final reply is the summary).
 
@@ -148,12 +149,29 @@ and `hermes` ("Hermes Agent").
 
 ## 5. Connected agents (existing agents reached over the network)
 
+The user's direction (2026-11-11): *"The ideal is 100% automated discovery and connection with requests from DAASH
+to OpenClaw agents being done in such a way that the human owner of the OpenClaw agent gets the simplest possible
+action to approve the connection."* Fitz runs on a production machine whose firewall must not change. It can make
+outbound connections but cannot accept incoming ones. So there are two ways to connect, and both end in one
+approval step by the owner:
+* **Direct** (5.3–5.5, 5.8): DAASH reaches the agent's own endpoint. Protocols: `a2a` (OpenClaw's A2A channel and
+  any A2A 1.0 agent) and `hermes-api`. DAASH discovers the agent and generates the owner's single approval step. It
+  then detects for itself when the connection works.
+* **Through an agent host** (5.9): for agents nobody can connect to (Fitz). The owner runs one command on the
+  agent's machine. It installs a DAASH runner that dials out to DAASH, finds the local agents and relays DAASH's
+  work to them.
+
 5.1 **Data** (table `connected_agents`): id, name (unique, shown in DAASHboard and to the team: e.g. "Jane"),
-protocol (`a2a` | `hermes-api`), url (what the user entered: an Agent Card URL or gateway origin for A2A, the
+protocol (`a2a` | `hermes-api` | `runner`), url (what the user entered: an Agent Card URL or gateway origin for A2A, the
 API base URL for Hermes), endpoint (A2A JSON-RPC URL; see 5.3), skill (A2A skill/agent id, informational), token
 (the bearer DAASH sends; write-only in the API, never returned or logged), mcp_token_hash, capabilities
 (default `["edit_files"]`), max_jobs (default 1), enabled, card (JSON, A2A), last_ok_at, last_error,
-mcp_seen_at, created_at.
+mcp_seen_at, created_at. A second 0.4 migration adds:
+* `status` (`pending` = waiting for the owner's approval, `connected`, `offline`);
+* `runner_id` and `local_ref` (for `runner` agents: the runner that hosts the agent, and the agent's local id or profile);
+* `kind` (`openclaw` | `hermes` | `a2a` | `other`, for labels and snippets);
+* `pending_until`.
+It also adds the table `runner_enrollments` (id, code_hash, created_at, expires_at, used_at, runner_id).
 
 5.2 **Swarm config.** `HarnessSpec` gains `connected_agent: Optional[str]` (connected agent id) with
 `harness = "connected"`. The model is ignored (shown as "its own model"), and capabilities default to the
@@ -212,6 +230,78 @@ tries again. Event: *"Jane could not finish '<task>'; handing it to Delivery-3."
 (last call …) / not yet used", and whether this swarm allows it. A check runs on demand ("Test") and when the
 Agents page loads, at most once a minute per agent.
 
+5.8 **Discovery and the one approval step (direct)**
+* *Discovery* (`POST /connected-agents/discover`, plus every 10 minutes while DAASHboard's Agents page is open):
+  * Hosts probed: `DAASH_DISCOVERY_HOSTS` (comma-separated names or IPs), the hosts of known runners, and every
+    address in `DAASH_DISCOVERY_SUBNETS` (comma-separated private CIDRs no larger than /24, e.g. `10.0.0.0/24`).
+  * Ports probed: `DAASH_DISCOVERY_PORTS` (default `18789,8642`).
+  * Probing is concurrent with short timeouts, and DAASH never sends a credential while discovering.
+  * What counts as found:
+    * an A2A card at `/.well-known/agent-card.json`, giving name, version, skills, and `openclaw` when the card says
+      so;
+    * a Hermes API server, recognised by its `/health`.
+  * A port that accepts the connection but never answers is listed as *"something is listening but does not answer
+    (probably a firewall); connect it through an agent host instead"*. Today that is Fitz.
+  * Results are stored and shown; already-connected agents are marked.
+* *Connect* creates a `pending` connected agent and generates the A2A peer token and the MCP token. DAASHboard
+  then shows the owner **one** approval step, in two forms:
+  1. **A command to paste on the agent's machine.** For OpenClaw it is one `openclaw config patch --stdin` heredoc,
+     followed by a gateway restart only if the installed version needs one; verify this against a real gateway. The
+     patch enables the `a2a` plugin and channel, adds `channels.a2a.peers.daash.token`, and adds
+     `mcp.servers.daash` (url `<DAASH_AGENT_PUBLIC_URL>/mcp`, `transport: "streamable-http"`,
+     `headers.Authorization`).
+  2. **A message the owner can send to their own agent** in their usual chat, asking it to apply the same patch.
+     This works where the agent may change its own config for its owner.
+
+  For Hermes, the step is to enable the API server with a key the owner chooses (DAASHboard shows the exact `.env`
+  lines and the `mcp_servers.daash` entry), then paste the key into DAASH.
+* *Detection*: while an agent is `pending`, DAASH runs the cheap check every 10 s for up to 60 minutes
+  (`pending_until`). On success it becomes `connected`, with an event *"Jane accepted DAASH's connection"*; on
+  expiry it stays `pending` with a "Try again" button. Tokens are shown only while the agent is `pending`, then
+  never again; "Reset tokens" makes new ones and returns the agent to `pending`.
+
+5.9 **Agent hosts (a runner next to the agent; for agents behind a firewall)**
+* *Enrollment.* `POST /runner-enrollments` (admin) mints a one-time code, valid for 60 minutes, and returns the
+  owner's single command:
+  `curl -fsSLo ~/daash-runner.pyz <PUBLIC>/runner/daash-runner.pyz && python3 ~/daash-runner.pyz connect <PUBLIC> <CODE>`.
+  * The agent port serves the runner as a zipapp: standard library only, built into the image.
+  * `POST /runner/enroll {code, host, ...}` exchanges the code for a runner token, which works once.
+  * `connect` then does the following:
+    1. writes `~/.daash-runner/config.json` (mode 0600);
+    2. discovers local agents;
+    3. gives each found agent DAASH's tools, unless `--no-tools` is passed (OpenClaw: `openclaw mcp add daash --url …
+       --transport streamable-http --header Authorization=Bearer <dca token>`; Hermes: the profile's
+       `mcp_servers.daash`). The tokens come back from the coordinator when the runner first says hello;
+    4. installs and starts a user service (macOS: a LaunchAgent; Linux: a systemd `--user` unit), unless
+       `--no-service` is passed;
+    5. prints exactly what it found and what it changed.
+  * `python3 ~/daash-runner.pyz disconnect` reverses every step.
+  * No admin rights are needed and nothing listens on the machine.
+* *Local discovery* (on every hello, every 5 minutes):
+  * **OpenClaw:** `openclaw` on PATH, or in the usual install places, run through a login shell. `openclaw agents
+    list --json` gives each agent's id and identity name; DAASH also records the gateway's health on loopback.
+  * **Hermes:** `hermes` on PATH; the default profile and named profiles where the CLI lists them.
+  * The runner reports `"agents": [{"kind", "ref", "name", "available", "detail"}]`.
+  * The coordinator upserts them as `runner` connected agents, already `connected` because installing the runner
+    was the owner's approval. If a name is taken, the host is added, e.g. "Fitz (m3u512gb)".
+  * An agent that disappears from the reports goes `offline`.
+  * `config.json` can list `share_agents` to limit what is offered.
+* *Work.* A `runner` connected agent's job is a `connected` `remote_jobs` row with `payload.runner_id`, `relay`
+  (`openclaw-agent` | `hermes-agent`) and `local_ref`. Only that runner may lease it (an exception to "runners
+  never lease connected jobs"). The lease flow, heartbeats, workspace sync, result upload and command checks are
+  as in DESIGN-0.3. Relay adapters:
+  * `openclaw-agent`: the job folder is created **inside the agent's own workspace** (`<workspace>/daash-jobs/<job8>/`,
+    from `openclaw config get`), so its file tools can reach it. The command is `openclaw agent --agent <ref>
+    --session-key daash:<job> --message-file - --json --timeout <s>`, run through the owner's running gateway with
+    the owner's CLI credentials and the agent's own model. The prompt names the absolute folder and says to work
+    only inside it. After the turn the runner uploads the changes and removes the folder.
+  * `hermes-agent`: `hermes chat --query-file - --format stream-json --in <job folder> --source tool`, with the
+    owner's own `HERMES_HOME` and profile. It does not use `--yolo`, so dangerous commands stay denied on the
+    owner's machine.
+* MCP for `runner` agents uses their `dca_` token, as for direct agents, but **without** the workspace file tools:
+  their files are the local job folder.
+
+
 ## 6. Agent-facing port
 
 A second listener serves only `/health`, `/mcp` and `/runner/*`: compose service `agent-api`, the same image,
@@ -227,15 +317,14 @@ When it is unset, DAASHboard says so and shows how to set it. Nothing on the age
   * The agent types table gains OpenClaw and Hermes Agent.
   * New **Connected agents** panel: name, protocol, address, status, capabilities, DAASH tools in use, last
     error, plus Test, Disable/Enable and Remove.
-  * **Connect an agent** form:
-    1. Name, protocol, URL, capabilities and max jobs. For A2A, DAASH fetches the card and shows its name and
-       skills.
-    2. The token. For A2A, DAASH **generates** the token the agent will accept from DAASH and shows the exact
-       `channels.a2a.peers.daash` snippet to add on the agent's side. For Hermes, the user pastes the API server key.
-    3. **Give it DAASH's tools**: DAASH generates the agent's MCP token and shows the `mcp.servers.daash`
-       snippet (OpenClaw) or the `mcp_servers.daash` snippet (Hermes) with `DAASH_AGENT_PUBLIC_URL`. Tokens are
-       shown once.
-    4. "Test connection".
+  * **Found on your network**: the results of discovery (5.8), each with **Connect**, plus "Look again" and
+    "Add by address". Firewalled hosts point to agent hosts.
+  * **Connect** (direct) shows the owner's single approval step (5.8), as a command with a Copy button and as
+    a message to send the agent, then waits and updates by itself when the agent accepts.
+  * **Connect agents on another machine** (5.9) shows the single install command with a Copy button, then lists
+    the agents the new runner reports.
+  * Each connected agent can be tested, enabled or disabled, have its tokens reset, or be removed. Its
+    capabilities and max jobs can be edited.
 * **Create a swarm / Settings defaults**: delivery rows can pick a connected agent ("Jane (A2A)"). The model
   select reads "its own model".
 * **Swarm**: roster badges ("Jane · A2A"), agent messages in the activity feed, and the tool calls of external
@@ -269,10 +358,10 @@ When it is unset, DAASHboard says so and shows how to set it. Nothing on the age
 
 1. Runner container: an `openclaw` and a `hermes` delivery agent on the local gateway, with DAASH memory being
    written (`remember` rows from external agents) and messages exchanged.
-2. A test OpenClaw gateway in Docker with the A2A channel and DAASH's MCP server, connected as an agent.
-3. The user's **Jane** (A2A, janes-mac-mini) and **Fitz** (A2A, m3u512gb). These need the user's agreement
-   and changes on those machines:
-   * a `daash` peer token and the `daash` MCP server in each agent's OpenClaw config
-   * DAASH's agent port reachable over Tailscale
-   * for Fitz, its gateway reachable from other machines (on 2026-11-11 it answered only on 127.0.0.1; the macOS
-     firewall is on)
+2. A test OpenClaw gateway in Docker (the A2A channel on), found by discovery and connected by running the
+   generated approval command inside its container. A test Hermes with its API server, the same way.
+3. **Jane** (janes-mac-mini, A2A, reachable): DAASH finds her. The user runs the approval command on her machine,
+   or sends her the message. DAASH notices the connection by itself.
+4. **Fitz** (m3u512gb, production, firewall unchanged): the user runs the one agent-host command there, following
+   step-by-step instructions written for them. Fitz then appears as a connected agent.
+5. A live swarm whose team mixes the built-in agent, a runner-launched CLI, Jane and Fitz.
