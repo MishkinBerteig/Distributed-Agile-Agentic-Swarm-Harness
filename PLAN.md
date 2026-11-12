@@ -153,14 +153,28 @@ their OpenClaw agents Jane (`janes-mac-mini`) and Fitz (`m3u512gb`) as the test.
 - [x] Runner: `openclaw` (`openclaw agent exec`, OpenClaw 2026.11.3) and `hermes` (`hermes chat --query-file -`,
   Hermes Agent v0.23.1, a private `HERMES_HOME` per job) run in the runner container on the local gateway. Every
   runner-launched CLI gets the DAASH MCP server for its job. All five CLIs called `remember` over MCP for real
-- [ ] Connected agents (in progress), with automatic discovery and one approval step by the agent's owner
-  (the user's direction, 2026-11-11):
-  - **direct**: A2A 1.0, OpenClaw's `a2a` channel and any A2A agent, or Hermes's API server. The approval step
-    is one `openclaw config patch` command, or a message the owner sends to their own agent. DAASH notices the
-    connection by itself
-  - **agent hosts**: for agents behind a firewall, like Fitz. One command installs a DAASH runner that dials
-    out, finds the local OpenClaw and Hermes agents, and relays work to them
-  - Escalation hands the task to another team member
+- [x] Connected agents, with automatic discovery and one approval step by the agent's owner (the user's direction,
+  2026-11-11). The code is in `app/connectors.py`, `approval.py`, `connected_*.py` and `agent_hosts.py`; the
+  owner's guide is docs/AGENT-HOSTS.md.
+  - **Direct.** A2A 1.0, through OpenClaw's `a2a` channel or any A2A agent, or Hermes's API server.
+    - Discovery probes `DAASH_DISCOVERY_HOSTS`. `scripts/tailnet-hosts.sh` writes that list, because Docker Desktop
+      cannot reach LAN addresses but can reach Tailscale names.
+    - The approval step is one `openclaw config patch --stdin` command with no restart, or a message the owner
+      sends their agent. For Hermes it is `hermes config set ...` plus `hermes gateway restart`.
+    - DAASH notices the approval within about 10 s.
+    - The agent works on the live workspace through DAASH's MCP file tools, or replies with `<<<FILE>>>` blocks.
+  - **Agent hosts,** for agents behind a firewall such as Fitz.
+    - The owner runs one command: `curl ... daash-runner.pyz && python3 daash-runner.pyz connect URL CODE`. It
+      installs a per-user service and needs no admin rights.
+    - The runner finds the machine's OpenClaw agents and Hermes profiles, gives them DAASH's tools, and relays
+      work through the agents' own CLIs and models.
+    - `disconnect` undoes all of it.
+  - Escalation for connected agents hands the task to another team member instead of changing the model.
+  - Verified live against throwaway OpenClaw 2026.10.9/2026.11.3 and Hermes v0.23.1 containers:
+    - Direct OpenClaw and Hermes agents connected through the generated approval step.
+    - A mixed OpenClaw and Hermes swarm finished both tasks on the first attempt, using `remember` and
+      `send_message`.
+    - A swarm whose only delivery agent ran on an agent host reached Done.
 - [x] Agent-facing port (`agent-api`, 8001: `/health`, `/mcp` and `/runner/*` only), so other machines never reach
   the admin API
 - [ ] DAASHboard: Connected agents panel and Connect form with generated config snippets, OpenClaw and Hermes in
