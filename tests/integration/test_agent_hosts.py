@@ -311,6 +311,18 @@ async def test_pinned_job_leased_only_by_its_runner_and_applied(api, agent_clien
     from app import services
     root = services.workspace_dir(settings, task.swarm_id)
     assert (root / ".daash" / "staging" / job.id / task.artifact).read_text() == BODY
+    # applied as the engine applies any remote result (app.remote.apply_staged)
+    from app import remote
+    written, _ = remote.apply_staged(root, job.id, done.result.get("deleted") or [])
+    assert written == [task.artifact] and h.workspace_file(task.artifact) == BODY
+    # the job has ended: its runner gets nothing more, and the agent's MCP calls are refused
+    r = await agent_client.post("/runner/lease", headers=bearer(token),
+                                json={"wait_seconds": 0, "free_slots": 1})
+    assert r.status_code == 204
+    late = await agent_client.post("/mcp", headers=bearer(dca), json={
+        "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+        "params": {"name": "remember", "arguments": {"content": "late", "job": job.id}}})
+    assert late.json()["result"]["content"][0]["text"] == mcp_server.JOB_ENDED
 
 
 async def test_expired_pinned_lease_is_requeued_for_the_same_runner(api, agent_client, h, pool,
