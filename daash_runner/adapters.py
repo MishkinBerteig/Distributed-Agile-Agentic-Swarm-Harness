@@ -430,12 +430,16 @@ def parse_openclaw(stdout: str, stderr: str, exit_code: int | None) -> Parsed:
 #: Hermes toolsets a DAASH job never gets: DAASH memory is the shared one (MCP `remember`/`recall`),
 #: and a job must not leave skills or cron jobs behind.
 HERMES_DISABLED_TOOLSETS = ("memory", "session_search", "skills", "cronjob")
+#: `_config_version` of Hermes Agent 0.23.1's config.yaml.
+HERMES_CONFIG_VERSION = 53
 
 
 def hermes_config(hcfg: Mapping[str, Any], spec: JobSpec, base_url: str) -> dict:
     """The job's `$HERMES_HOME/config.yaml` (written as JSON, which YAML reads as is)."""
     key_var = hcfg.get("api_key_env") or "DAASH_LLM_API_KEY"
     cfg: dict[str, Any] = {
+        # the config schema of the verified version; without it Hermes treats the file as ancient
+        "_config_version": int(hcfg.get("config_version") or HERMES_CONFIG_VERSION),
         "model": {"default": spec.model, "provider": "custom", "base_url": base_url,
                   "key_env": key_var, "context_length": int(hcfg.get("context_length") or 131072)},
         # the runner container is the sandbox; commands run in the job's workspace
@@ -471,8 +475,10 @@ def build_hermes(hcfg, spec: JobSpec, environ=None) -> Invocation:
         argv=argv, env=env, stdin=spec.prompt,
         files={os.path.join(home, "config.yaml"): json.dumps(cfg, indent=2, ensure_ascii=False)},
         dirs=[home],
-        # Every Hermes CLI attaches to a gateway of its HERMES_HOME, which outlives the CLI.
-        cleanup=[[hcfg["command"], "gateway", "stop"]],
+        # Every Hermes CLI attaches to a gateway of its HERMES_HOME, which outlives the CLI and keeps
+        # running a turn whose CLI was killed (timeout, cancel). `--yes` interrupts such a turn; without
+        # it `gateway stop` refuses while a session is live. Never `--all`: that is every gateway.
+        cleanup=[[hcfg["command"], "gateway", "stop", "--yes"]],
         # The job's copy of Hermes's dependency environment (hundreds of MB) is not needed afterwards.
         remove_after=[os.path.join(home, "installs"), os.path.join(home, "cache")])
 

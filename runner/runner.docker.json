@@ -29,6 +29,24 @@
         "DAASH_GATEWAY_URL": "http://m3u512gb.tail391a32.ts.net:12345/v1",
         "DAASH_LLM_API_KEY": "${DAASH_LLM_API_KEY}"
       }
+    },
+    "openclaw": {
+      "command": "openclaw",
+      "models": ["instant", "fast", "great", "amazing"],
+      "capabilities": ["edit_files", "run_code"],
+      "env": {
+        "DAASH_GATEWAY_URL": "http://m3u512gb.tail391a32.ts.net:12345/v1",
+        "DAASH_LLM_API_KEY": "${DAASH_LLM_API_KEY}"
+      }
+    },
+    "hermes": {
+      "command": "hermes",
+      "models": ["instant", "fast", "great", "amazing"],
+      "capabilities": ["edit_files", "run_code"],
+      "env": {
+        "DAASH_GATEWAY_URL": "http://m3u512gb.tail391a32.ts.net:12345/v1",
+        "DAASH_LLM_API_KEY": "${DAASH_LLM_API_KEY}"
+      }
     }
   }
 }

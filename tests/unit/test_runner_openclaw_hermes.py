@@ -162,13 +162,14 @@ def test_hermes_invocation():
     assert inv.env["HERMES_HOME"] == HOME and inv.dirs == [HOME]
     assert "OPENROUTER_API_KEY" not in inv.env and "OPENAI_API_KEY" not in inv.env
     # the gateway the CLI starts for that home is stopped afterwards; the dependency copy deleted
-    assert inv.cleanup == [["hermes", "gateway", "stop"]]
+    assert inv.cleanup == [["hermes", "gateway", "stop", "--yes"]]    # also interrupts a killed CLI's turn
     assert inv.remove_after == [f"{HOME}/installs", f"{HOME}/cache"]
 
 
 def test_hermes_config():
     inv = adapters.build("hermes", hm(max_turns=40), spec(), HOSTILE_ENV)
     cfg = json.loads(inv.files[f"{HOME}/config.yaml"])        # JSON is valid YAML
+    assert cfg["_config_version"] == 53                        # else Hermes skips it as "too old to migrate"
     assert cfg["model"] == {"default": "fast", "provider": "custom", "base_url": "http://gw:12345/v1",
                             "key_env": "DAASH_LLM_API_KEY", "context_length": 131072}
     assert cfg["terminal"]["backend"] == "local"
