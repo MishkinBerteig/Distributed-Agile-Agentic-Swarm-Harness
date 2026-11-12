@@ -400,8 +400,8 @@ def _table(head: list[str], rows: list[list[str]], cls: str = "") -> str:
 def _system_section() -> str:
     rows = [
         ["1", "<code># Vision</code>", "The swarm's Vision, as you wrote it.", "none"],
-        ["2", "<code># Values and Principles</code>", "Global settings (Values and Principles "
-         "on the start screen).", "none"],
+        ["2", "<code># Values and Principles</code>", "Values &amp; Principles on DAASHboard's "
+         "Settings page.", "none"],
         ["3", "<code># Mission</code>", "The team's Mission. Left out for the Swarm "
          "Coordinator.", "none"],
         ["4", "<code># Definition of Done</code>", "Vision level (from the Swarm Coordinator) "

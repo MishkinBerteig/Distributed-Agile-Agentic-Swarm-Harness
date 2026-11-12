@@ -8,6 +8,7 @@ import AddTask from './AddTask.jsx'
 function Roster({ agents, tasksById, onAgent }) {
   if (!agents.length) return <div className="muted">No agents.</div>
   return (
+    <div className="table-scroll">
     <table className="table compact roster">
       <thead><tr><th>Role</th><th>Name</th><th>Model</th><th>State</th><th>Task</th><th>Tokens</th><th>Calls/Err</th></tr></thead>
       <tbody>
@@ -31,6 +32,7 @@ function Roster({ agents, tasksById, onAgent }) {
         ))}
       </tbody>
     </table>
+    </div>
   )
 }
 

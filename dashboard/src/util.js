@@ -119,3 +119,16 @@ export const defaultCaps = (h) => HARNESS_DEFAULT_CAPS[h] || ['edit_files']
 export const sameCaps = (a, b) => [...a].sort().join() === [...b].sort().join()
 
 export const HARNESS_CHOICES = ['daash', 'openclaude', 'claude-code', 'codex']
+
+// Why an agent harness is or is not available (GET /availability `status`).
+export const HARNESS_STATUS = {
+  available: { text: 'Available', on: true },
+  offline: { text: 'Runner offline', on: false },
+  disabled: { text: 'Runner disabled', on: false },
+  no_runner: { text: 'No runner offers it', on: false },
+  gateway_unreachable: { text: 'LLM gateway unreachable', on: false },
+}
+export const statusText = (s) => (HARNESS_STATUS[s] ? HARNESS_STATUS[s].text : String(s))
+// Allowed harnesses that cannot run anything right now: their work waits, then falls back.
+export const unavailableAllowed = (harnesses) =>
+  (harnesses || []).filter((h) => h.allowed && h.status !== 'available')

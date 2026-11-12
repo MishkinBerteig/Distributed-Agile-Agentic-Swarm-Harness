@@ -87,7 +87,7 @@ export default function Runners() {
       ) : (
         <div className="table-scroll">
           <table className="table compact">
-            <thead><tr><th>Name</th><th>Host</th><th>Harnesses</th><th>Jobs</th><th>Last seen</th><th><span className="sr-only">Actions</span></th></tr></thead>
+            <thead><tr><th>Name</th><th>Host</th><th>Agents</th><th>Jobs</th><th>Last seen</th><th><span className="sr-only">Actions</span></th></tr></thead>
             <tbody>
               {list.map((r) => (
                 <tr key={r.id} className={r.enabled ? '' : 'dim'}>

@@ -105,6 +105,27 @@ async def test_online_help_needs_sign_in_like_the_rest_of_the_api(api, settings)
     assert body["html"].startswith('<header class="mast">') and 'id="jobs"' in body["html"]
 
 
+async def test_availability_lists_models_and_where_each_agent_runs(api):
+    """DAASHboard's Agents & models page: models in escalation order, and every agent harness
+    with the runners that offer it, judged against the defaults when no swarm is live."""
+    await runner_with(api, "box", harnesses=[{"harness": "codex", "models": ["fast", "great"],
+                                              "capabilities": ["edit_files", "run_code"]}])
+    body = (await api.get("/availability")).json()
+    assert body["gateway"]["reachable"] is True and body["scope"] is None
+    assert [m["name"] for m in body["models"]] == ["instant", "fast", "great", "amazing"]
+    assert [m["step"] for m in body["models"]] == [1, 2, 3, 4]
+    by = {h["harness"]: h for h in body["harnesses"]}
+    assert by["daash"]["status"] == "available" and by["daash"]["allowed"]
+    assert by["codex"]["status"] == "available" and by["codex"]["models"] == ["fast", "great"]
+    assert [r["name"] for r in by["codex"]["runners"]] == ["box"] and not by["codex"]["allowed"]
+    assert by["claude-code"]["status"] == "no_runner"
+    # a disabled runner's harness is listed, but not available
+    rid = by["codex"]["runners"][0]["id"]
+    assert (await api.patch(f"/runners/{rid}", json={"enabled": False})).status_code == 200
+    by = {h["harness"]: h for h in (await api.get("/availability")).json()["harnesses"]}
+    assert by["codex"]["status"] == "disabled"
+
+
 async def test_runner_endpoints_use_runner_tokens_not_admin_token(api, settings):
     settings.API_TOKEN = ADMIN
     _, token = await new_runner(api, "r1", admin=AUTH)

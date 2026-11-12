@@ -34,7 +34,7 @@ and keeps its work dir in the `runner-work` volume. The coordinator service must
 
 ## Run on a device (host)
 
-1. In the DAASHboard Runners panel (or `POST /runners {"name": "mac-mini"}`) create a runner; copy the
+1. In DAASHboard's Agents & models page, Runners panel (or `POST /runners {"name": "mac-mini"}`) create a runner; copy the
    token (shown once).
 2. Copy `runner/runner.example.json` to `runner.json` and edit (see below). Make sure the CLIs you list are
    on `PATH`; only those found are announced.
@@ -138,7 +138,7 @@ Anthropic key is never used.
 
 ## Troubleshooting
 
-* Runner not in the Runners panel / offline: check `<work-dir>/runner.log`; "401" = wrong, disabled or
+* Runner not in the Runners panel (Agents & models page) / offline: check `<work-dir>/runner.log`; "401" = wrong, disabled or
   deleted token; "coordinator error" = URL/network (backoff up to 60 s).
 * A harness missing from the panel: its `command` is not on `PATH` for the runner process.
 * Jobs end with `error` and "401/authentication_failed": for Claude Code use `ANTHROPIC_AUTH_TOKEN`, not

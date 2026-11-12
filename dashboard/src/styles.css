@@ -36,6 +36,7 @@ input, select, textarea { border: 1px solid var(--border); border-radius: 6px; p
 input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 textarea { resize: vertical; }
 
+a { color: var(--accent); }
 .muted { color: var(--muted); }
 .prewrap { white-space: pre-wrap; word-break: break-word; }
 .clip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
@@ -216,9 +217,7 @@ legend { font-weight: 600; font-size: 13px; padding: 0 4px; }
 /* 0.3: login, runners, harness mix, remote jobs */
 .login { max-width: 420px; margin: 40px auto; }
 .signout { margin-left: auto; }
-.help-link { margin-left: auto; color: var(--text); text-decoration: none; white-space: nowrap; }
-.help-link + .signout { margin-left: 0; }
-.table-scroll { overflow-x: auto; }
+.table-scroll { overflow-x: auto; position: relative; }
 .nowrap { white-space: nowrap; }
 .dim { opacity: .6; }
 .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 4px; }
@@ -245,3 +244,59 @@ label.inline input { width: auto; }
 .kcard-needs { margin-top: 4px; }
 .caps-pick { border: 0; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .caps-pick legend { font-size: 0.85em; }
+
+/* top bar and menu (TopBar.jsx): a row of links, a Menu button on narrow screens */
+.topbar { align-items: center; }
+.brand { text-decoration: none; white-space: nowrap; }
+.tagline { white-space: nowrap; }
+.mainnav { margin-left: 8px; }
+.mainnav-links { list-style: none; margin: 0; padding: 0; display: flex; gap: 2px; }
+.mainnav-links a { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 6px; color: var(--muted); text-decoration: none; font-weight: 600; white-space: nowrap; }
+.mainnav-links a:hover { color: var(--text); background: #f0f2f7; }
+.mainnav-links a[aria-current="page"] { color: var(--accent); background: var(--accent-soft); }
+.mainnav-links .chip { margin: 0; font-size: 11px; }
+.menu-toggle { display: none; white-space: nowrap; }
+@media (max-width: 1280px) { .tagline { display: none; } }
+@media (max-width: 860px) {
+  .topbar { padding: 10px 16px; }
+  .menu-toggle { display: inline-block; }
+  .mainnav { margin-left: auto; }
+  .mainnav-links { display: none; position: absolute; top: 100%; left: 0; right: 0; flex-direction: column; gap: 2px;
+    background: var(--surface); border-bottom: 1px solid var(--border); box-shadow: 0 8px 16px rgba(20, 28, 45, .08); padding: 6px 12px 10px; }
+  .mainnav-links.open { display: flex; }
+  .mainnav-links a { display: flex; padding: 10px 12px; }
+  .signout { margin-left: 8px; }
+  .container { padding-left: 16px; padding-right: 16px; }
+}
+
+/* pages */
+.page { max-width: 1240px; }
+.page-title { display: block; margin: 6px 0 4px; }
+.page-lede { margin: 0 0 14px; }
+.settings { display: grid; gap: 0; }
+.avail-list { list-style: none; margin: 0 0 8px; padding: 0; }
+.avail-list li { display: flex; justify-content: space-between; gap: 10px; padding: 5px 0; border-bottom: 1px solid #eef0f4; }
+
+/* model escalation order (SwarmConfigFields.jsx) */
+.ladder-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.ladder-list li { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ladder-step { width: 18px; text-align: right; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+.ladder-move { margin-left: auto; display: inline-flex; gap: 4px; }
+
+/* swarm lifecycle diagram (StateDiagram.jsx) */
+.lifecycle { margin: 10px 0 6px; }
+.lifecycle-scroll { overflow-x: auto; }
+.lifecycle-svg { display: block; width: 100%; max-width: 760px; min-width: 560px; height: auto; }
+.lifecycle figcaption { margin-top: 4px; font-size: 13px; max-width: 90ch; }
+.lc-node rect { fill: var(--surface); stroke: #c3c9d4; stroke-width: 1.4; }
+.lc-node text { font: 600 11px var(--font); fill: var(--muted); letter-spacing: .03em; }
+.lc-node.terminal rect { stroke-dasharray: 4 3; }
+.lc-node.current rect { fill: var(--accent); stroke: var(--accent); }
+.lc-node.current text { fill: #fff; }
+.lc-edge path { fill: none; stroke: #c3c9d4; stroke-width: 1.4; }
+.lc-edge text { font: 10.5px var(--font); fill: var(--muted); paint-order: stroke; stroke: var(--surface); stroke-width: 4px; stroke-linejoin: round; }
+.lc-edge .lc-auto { font-style: italic; font-size: 9.5px; }
+.lc-edge.on path { stroke: var(--accent); stroke-width: 2; }
+.lc-edge.on text { fill: var(--accent); font-weight: 700; }
+.lc-head { fill: #c3c9d4; }
+.lc-head.on { fill: var(--accent); }

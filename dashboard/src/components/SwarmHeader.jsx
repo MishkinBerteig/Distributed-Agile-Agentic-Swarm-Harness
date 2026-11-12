@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import { api } from '../api.js'
 import { ACTION_LABEL, SWARM_ACTIONS, actionsFor, fmtNum } from '../util.js'
 import { Bar, Chip, Collapsible, ErrorNote, useAction } from './Common.jsx'
+import StateDiagram from './StateDiagram.jsx'
 
 function Budgets({ metrics }) {
   const l = metrics && metrics.limits
@@ -56,6 +57,7 @@ export default function SwarmHeader({ swarm, metrics, onChanged }) {
           ))}
         </div>
       </div>
+      <StateDiagram state={state} />
       {swarm.paused_reason && state !== 'ACTIVE' && (
         <div className="warn-note"><strong>Paused:</strong> {swarm.paused_reason}</div>
       )}

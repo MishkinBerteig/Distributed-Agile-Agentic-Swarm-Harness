@@ -114,11 +114,24 @@ Design: docs/DESIGN-0.3.md. Runner guide: docs/RUNNER.md.
   told exactly what the author could not do; no-rubric reviews ask for an empty `criteria`; `delete_file` listed);
   a planned check that cannot run goes back to the planner once with the reason, then becomes a judged criterion
   with an event saying so
-- [x] DAASHboard online help: "How DAASH prompts its agents", a Help view inside DAASHboard (top-bar Help,
-  `#help`, sections linkable as `#help/<id>`). The coordinator renders it from `app/prompts.py` with sample data
-  so it cannot drift (`app/help.py`, `GET /help/prompts`, signed in like the rest of the API); DAASHboard styles
-  it (`dashboard/src/help.css`). No separate published copy
-- [x] Tests: unit 578 (~6 s), integration 176, e2e 12
+- [x] DAASHboard online help: "How DAASH prompts its agents", the Help page inside DAASHboard (`#/help`,
+  sections linkable as `#/help/<id>`). The coordinator renders it from `app/prompts.py` with sample data so it
+  cannot drift (`app/help.py`, `GET /help/prompts`, signed in like the rest of the API); DAASHboard styles it
+  (`dashboard/src/help.css`). No separate published copy
+- [x] DAASHboard navigation (user smoke test, 2026-11-11: "no menu or anything else that allows for
+  navigation"): a top-bar menu (a Menu button on narrow screens) with Swarm (carries the live swarm's state),
+  Past swarms, Agents & models, Settings and Help, addressed by URL hash (`#/agents`, ...) so Back works
+  - Swarm lifecycle diagram in the swarm header: every state and move from `SWARM_ACTIONS`, the current state
+    highlighted, the moves open now in the accent colour, automatic moves noted, and a sentence on what to do next
+  - Agents & models (`GET /availability`, `api_helpers.availability`): every agent type with its status
+    (available / runner offline / runner disabled / no runner / gateway unreachable), where it runs, what it can do,
+    its models and how this swarm uses it; models in escalation order with the roles that start on each; warns when
+    an allowed agent type cannot run; the Runners panel lives here. "Available now" summary beside Create a swarm
+  - Settings: Values & Principles and an editor for the defaults of new swarms (shared with Create a swarm's
+    Advanced configuration), now including the models allowed and their escalation order; each editor re-reads the
+    config before saving so neither undoes the other
+  - The Docker runner no longer offers the test suite's `fake` agent; tables scroll inside their cards on phones
+- [x] Tests: unit 580 (~6 s), integration 178, e2e 12
 - Live on the local gateway, all agent CLIs in the runner container (logs in `agents-workspace/coordinator/live-run/`):
   - *Tempconv* (OpenClaude): 3/3 tasks Done first attempt, vision review passed, 36 min; its suite (8 tests) passes.
   - *Textkit* (OpenClaude + Claude Code + Codex + native, rotation): 6 utilities/tests/README Done first attempt;
@@ -168,9 +181,11 @@ docker compose up --build -d    # db, redis, coordinator :8000, engine, dashboar
 # optional: external agent CLIs (set DAASH_RUNNER_BOOTSTRAP_TOKEN in .env first; see docs/RUNNER.md)
 docker compose --profile runner up --build -d runner
 ```
-DAASHboard: http://127.0.0.1:7173 — create a swarm (vision; optional teams, else the Swarm Coordinator forms them;
-advanced config for role models and limits), press ▶ Start, watch teams, Kanban, task drawers (criteria, verdicts,
-timeline, artifacts), metrics, activity feed. API docs: http://127.0.0.1:8000/docs.
+DAASHboard: http://127.0.0.1:7173 — the top-bar menu has Swarm, Past swarms, Agents & models (what agents and
+models are available, and runners), Settings (Values & Principles, defaults for new swarms) and Help. On Swarm,
+create a swarm (vision; optional teams, else the Swarm Coordinator forms them; advanced config for models, agents
+and limits), press Start, follow its state in the lifecycle diagram, watch teams, Kanban, task drawers (criteria,
+verdicts, timeline, artifacts), metrics, activity feed. API docs: http://127.0.0.1:8000/docs.
 
 ### Services
 - **coordinator** — FastAPI (`app/main.py`), runs `alembic upgrade head` at start; healthcheck on `/health`.
@@ -239,3 +254,6 @@ runner + CLI adapters, outside `app/`).
   live-run fixes. Not tagged.
 - **2026-11-09 — prompt review**: prompt wording fixes, invalid planned checks reported to the planner, DAASHboard
   online help for agent prompts, inside DAASHboard (2026-11-11: moved from a separate page into a Help view).
+- **2026-11-11 — DAASHboard navigation**: top-bar menu and pages (Swarm, Past swarms, Agents & models, Settings,
+  Help), swarm lifecycle diagram, agent and model availability (`GET /availability`), defaults editor with the
+  model escalation order.

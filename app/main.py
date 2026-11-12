@@ -204,6 +204,21 @@ async def get_models() -> dict:
         return {"models": [], "endpoint": settings.LLM_ENDPOINT, "reachable": False}
 
 
+@app.get("/availability")
+async def get_availability() -> dict:
+    """What swarms can use right now (DAASHboard's Agents & models page): every model in
+    escalation order and every agent harness with the runners that offer it. Judged against
+    the live swarm's settings, else the defaults for new swarms (`scope`)."""
+    gateway = await get_models()
+    live = await SwarmRepo(_p()).get_live()
+    cfg = live.config if live else (await ConfigRepo(_p()).get_global()).default_swarm_config
+    runners = (await list_runners())["runners"]
+    return {"gateway": {"endpoint": gateway["endpoint"], "reachable": gateway["reachable"]},
+            "scope": {"swarm_id": live.id, "swarm_name": live.name,
+                      "lifecycle_state": live.lifecycle_state} if live else None,
+            **H.availability(cfg, gateway["models"], gateway["reachable"], runners)}
+
+
 # -- swarms -----------------------------------------------------------------------------
 
 @app.get("/swarms")

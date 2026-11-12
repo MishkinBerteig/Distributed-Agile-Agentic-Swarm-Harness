@@ -69,6 +69,23 @@ async def test_models_reachable_and_unreachable(api, fake):
     assert r.status_code == 200 and r.json()["reachable"] is False and r.json()["models"] == []
 
 
+async def test_availability_follows_the_live_swarm_settings(api, fake):
+    cfg = {"allowed_models": ["instant", "fast"], "model_ladder": ["instant", "fast", "great"],
+           "role_models": {"mission_judgement": "fast", "quality_judgement": "fast",
+                           "mission_delivery": "instant", "classifier": "instant"},
+           "coordinator": {"model": "fast"}}
+    created = await make_swarm(api, config=cfg)
+    body = (await api.get("/availability")).json()
+    assert body["scope"]["swarm_id"] == created["id"] and body["scope"]["swarm_name"] == "S"
+    rows = {m["name"]: m for m in body["models"]}
+    assert rows["fast"]["step"] == 2 and rows["great"]["step"] is None
+    assert not rows["amazing"]["allowed"] and rows["amazing"]["offered"]
+    fake.configure({"outage_seconds": 60})
+    body = (await api.get("/availability")).json()
+    assert body["gateway"]["reachable"] is False
+    assert body["harnesses"][0]["status"] == "gateway_unreachable"
+
+
 # -- swarms ---------------------------------------------------------------------------------------
 
 async def test_create_swarm_with_and_without_teams(api, settings):

@@ -92,3 +92,72 @@ def test_task_patch_reopen_clears_stamps():
 def test_task_patch_reject_keeps_reason_and_enum_value():
     f = H.task_patch_fields({"status": TaskStatus.REJECTED, "rejection_reason": "off topic"})
     assert f == {"status": "Rejected", "rejection_reason": "off topic"}
+
+
+# -- availability (Agents & models page) ---------------------------------------------------
+
+def _runner(name, harnesses, online=True, enabled=True):
+    return {"id": f"r-{name}", "name": name, "online": online, "enabled": enabled,
+            "harnesses": harnesses}
+
+
+def _spec(harness, models=("instant", "fast"), caps=("edit_files", "run_code")):
+    return {"harness": harness, "models": list(models), "capabilities": list(caps)}
+
+
+def test_availability_models_in_escalation_order_with_roles():
+    from app.models import SwarmConfig
+    cfg = SwarmConfig(allowed_models=["instant", "fast", "great"],
+                      model_ladder=["instant", "fast", "great", "amazing"],
+                      role_models={"mission_judgement": "great", "quality_judgement": "great",
+                                   "mission_delivery": "fast", "classifier": "instant"},
+                      coordinator={"model": "great"})
+    out = H.availability(cfg, ["amazing", "fast", "great", "instant", "extra"], True, [])
+    rows = {m["name"]: m for m in out["models"]}
+    assert [m["name"] for m in out["models"]] == ["instant", "fast", "great", "amazing", "extra"]
+    assert [rows[m]["step"] for m in ("instant", "fast", "great")] == [1, 2, 3]
+    assert rows["amazing"]["step"] is None and not rows["amazing"]["allowed"]
+    assert rows["extra"]["offered"] and rows["extra"]["step"] is None
+    assert rows["great"]["roles"] == ["Swarm Coordinator", "Mission Judgement", "Quality Judgement"]
+    assert rows["fast"]["roles"] == ["Mission Delivery (first attempt)"]
+    # an unreachable gateway: whether a model is offered is unknown, and the built-in agent is down
+    down = H.availability(cfg, [], False, [])
+    assert {m["offered"] for m in down["models"]} == {None}
+    assert down["harnesses"][0]["harness"] == "daash"
+    assert down["harnesses"][0]["status"] == "gateway_unreachable"
+
+
+def test_availability_harness_status_from_runners():
+    from app.models import HarnessSpec, SwarmConfig
+    cfg = SwarmConfig(allowed_harnesses=["daash", "codex", "claude-code"],
+                      delivery_harnesses=[HarnessSpec(harness="codex", model=""),
+                                          HarnessSpec(harness="codex", model="")])
+    runners = [
+        _runner("box", [_spec("openclaude"), _spec("claude-code", models=["great"])]),
+        _runner("laptop", [_spec("claude-code", models=["instant"], caps=["edit_files",
+                                                                            "web_research"])],
+                online=False),
+        _runner("old", [_spec("codex")], online=False, enabled=False),
+        _runner("ci", [_spec("fake", models=[])]),
+    ]
+    out = H.availability(cfg, ["amazing", "fast", "great", "instant"], True, runners)
+    by = {h["harness"]: h for h in out["harnesses"]}
+    assert list(by) == ["daash", "openclaude", "claude-code", "codex", "fake"]
+    assert by["daash"]["builtin"] and by["daash"]["status"] == "available"
+    assert by["daash"]["capabilities"] == ["edit_files"]
+    assert by["daash"]["models"] == ["instant", "fast", "great", "amazing"]
+    assert by["openclaude"]["status"] == "available" and not by["openclaude"]["allowed"]
+    cc = by["claude-code"]
+    assert cc["status"] == "available" and cc["allowed"]
+    assert cc["models"] == ["instant", "great"]                       # ladder order
+    assert cc["capabilities"] == ["edit_files", "run_code", "web_research"]
+    assert [(r["name"], r["online"]) for r in cc["runners"]] == [("box", True), ("laptop", False)]
+    assert by["codex"]["status"] == "disabled" and by["codex"]["delivery_rows"] == 2
+    assert by["fake"]["label"] == "Fake CLI (tests only)" and by["fake"]["models"] is None
+    # no runner at all: the remote harnesses are listed with their default capabilities
+    bare = {h["harness"]: h for h in H.availability(cfg, [], True, [])["harnesses"]}
+    assert bare["codex"]["status"] == "no_runner" and bare["codex"]["runners"] == []
+    assert bare["codex"]["capabilities"] == ["edit_files", "run_code"]
+    assert "fake" not in bare
+    offline = H.availability(cfg, [], True, [_runner("x", [_spec("codex")], online=False)])
+    assert {h["harness"]: h["status"] for h in offline["harnesses"]}["codex"] == "offline"
