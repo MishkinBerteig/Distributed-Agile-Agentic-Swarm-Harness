@@ -24,7 +24,7 @@ SUMMARY_MAX = 4000
 TAIL_MAX = 20000
 PRUNE_AFTER_SECONDS = 3 * 24 * 3600
 REHELLO_SECONDS = 300
-CLEANUP_TIMEOUT = 60
+CLEANUP_TIMEOUT = 30          # below the 60 s lease: no heartbeats while it runs
 
 
 def mcp_endpoint(job: dict, coordinator_url: str) -> tuple[str, str]:
