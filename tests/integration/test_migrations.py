@@ -1,6 +1,10 @@
 """Alembic migrations: from an empty database and from the pre-0.1 head (docs/DESIGN-0.2.md A.2)."""
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+
 import asyncpg
 import pytest
 from alembic.config import Config
@@ -108,3 +112,38 @@ async def test_schema_constraints_hold(pool):
     await pool.execute("DELETE FROM swarms WHERE id = 's2'")   # cascades all the way down
     for table in ("teams", "tasks", "acceptance_criteria"):
         assert await pool.fetchval(f"SELECT count(*) FROM {table}") == 0
+
+
+async def columns(url: str, table: str) -> set[str]:
+    conn = await asyncpg.connect(url)
+    try:
+        rows = await conn.fetch("SELECT column_name FROM information_schema.columns "
+                                "WHERE table_schema = 'public' AND table_name = $1", table)
+        return {r["column_name"] for r in rows}
+    finally:
+        await conn.close()
+
+
+def alembic_downgrade(db_url: str, target: str) -> None:
+    env = {**os.environ, "DAASH_ALEMBIC_DATABASE_URL": db_url}
+    res = subprocess.run(
+        [sys.executable, "-m", "alembic", "-c", str(REPO_ROOT / "alembic.ini"), "downgrade",
+         target], cwd=REPO_ROOT, env=env, capture_output=True, text=True)
+    assert res.returncode == 0, res.stdout + res.stderr
+
+
+async def test_0_4_schema_is_one_migration_and_reversible(scratch_db):
+    """All of 0.4's schema (docs/DESIGN-0.4.md) is in f0a3c0d0e005, on top of the 0.3 head."""
+    assert script_head() == "f0a3c0d0e005"
+    run_alembic(scratch_db)
+    assert {"agent_messages", "connected_agents"} <= await tables(scratch_db)
+    assert "mcp_token_hash" in await columns(scratch_db, "remote_jobs")
+    assert await columns(scratch_db, "connected_agents") == {
+        "id", "name", "protocol", "url", "endpoint", "skill", "token", "mcp_token_hash",
+        "capabilities", "max_jobs", "enabled", "card", "last_ok_at", "last_error",
+        "mcp_seen_at", "created_at"}
+    alembic_downgrade(scratch_db, "f0a3c0d0e004")
+    assert not {"agent_messages", "connected_agents"} & await tables(scratch_db)
+    assert "mcp_token_hash" not in await columns(scratch_db, "remote_jobs")
+    run_alembic(scratch_db)
+    assert await version(scratch_db) == "f0a3c0d0e005"

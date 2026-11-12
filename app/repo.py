@@ -14,9 +14,10 @@ from typing import Any, Iterable, Mapping, Optional
 import asyncpg
 
 from app.models import (
-    Agent, AgentCall, AcceptanceCriterion, Feedback, GlobalConfig, Learning, Memory,
-    RemoteJob, Runner, Swarm, SwarmConfig, SwarmSnapshot, Task, TaskCreate, TaskEvent,
-    Team, TeamProposal, Verdict, harness_capabilities, required_capabilities, with_command_capability,
+    CONNECTED_HARNESS, Agent, AgentCall, AgentMessage, AcceptanceCriterion, ConnectedAgent,
+    Feedback, GlobalConfig, Learning, Memory, RemoteJob, Runner, Swarm, SwarmConfig,
+    SwarmSnapshot, Task, TaskCreate, TaskEvent, Team, TeamProposal, Verdict, harness_capabilities,
+    normalize_capabilities, required_capabilities, with_command_capability,
 )
 
 
@@ -664,18 +665,21 @@ class RemoteJobRepo(_Repo):
         return [_to(RemoteJob, r) for r in rows]
 
     async def requeue_expired(self, now: datetime) -> int:
-        """Leased jobs whose lease timed out (runner vanished) go back to the queue."""
+        """Leased jobs whose lease timed out (runner vanished) go back to the queue. Connected
+        jobs (docs/DESIGN-0.4.md section 5.5) have no runner lease and are never requeued."""
         res = await self._pool.execute(
             "UPDATE remote_jobs SET status = 'queued', runner_id = NULL, leased_at = NULL, "
             "lease_expires_at = NULL, expiries = expiries + 1 "
-            "WHERE status = 'leased' AND lease_expires_at < $1", now)
+            "WHERE status = 'leased' AND lease_expires_at < $1 AND harness <> $2",
+            now, CONNECTED_HARNESS)
         return int(res.split()[-1])
 
     async def lease_next(self, runner: Runner, harness_models: dict[str, list[str]],
                          now: datetime, lease_seconds: int = 60,
-                         harness_caps: Optional[dict[str, list[str]]] = None
-                         ) -> Optional[RemoteJob]:
-        """Lease the oldest queued job of an ACTIVE swarm that the runner can take.
+                         harness_caps: Optional[dict[str, list[str]]] = None,
+                         mcp_token_hash: Optional[str] = None) -> Optional[RemoteJob]:
+        """Lease the oldest queued job of an ACTIVE swarm that the runner can take, storing the
+        hash of the job's new MCP token (docs/DESIGN-0.4.md section 4.1) in the same update.
 
         FOR UPDATE SKIP LOCKED: concurrent runners never wait for, or double-lease, a job."""
         from app.remote import first_match  # local import: keeps repo importable without it
@@ -687,17 +691,19 @@ class RemoteJobRepo(_Repo):
                 f"SELECT j.id, j.harness, j.model, j.payload FROM remote_jobs j "
                 f"JOIN swarms s ON s.id = j.swarm_id "
                 f"WHERE j.status = 'queued' AND s.lifecycle_state = 'ACTIVE' "
-                f"AND j.harness = ANY($1::text[]) ORDER BY j.created_at, j.id "
-                f"FOR UPDATE OF j SKIP LOCKED LIMIT {LEASE_CANDIDATES}", list(harness_models))
+                f"AND j.harness = ANY($1::text[]) AND j.harness <> $2 ORDER BY j.created_at, j.id "
+                f"FOR UPDATE OF j SKIP LOCKED LIMIT {LEASE_CANDIDATES}", list(harness_models),
+                CONNECTED_HARNESS)
             pick = first_match([dict(r) for r in rows], harness_models, harness_caps)
             if pick is None:
                 return None
             row = await conn.fetchrow(
                 f"UPDATE remote_jobs SET status = 'leased', runner_id = $2, "
                 f"leased_at = $3::timestamptz, heartbeat_at = $3::timestamptz, "
-                f"lease_expires_at = $3::timestamptz + make_interval(secs => $4::double precision) "
+                f"lease_expires_at = $3::timestamptz + make_interval(secs => $4::double precision), "
+                f"mcp_token_hash = $5 "
                 f"WHERE id = $1 RETURNING {REMOTE_JOB_COLS}",
-                pick["id"], runner.id, now, float(lease_seconds))
+                pick["id"], runner.id, now, float(lease_seconds), mcp_token_hash)
         return _to(RemoteJob, row)
 
     async def heartbeat(self, job_id: str, runner_id: str, now: datetime,
@@ -733,6 +739,191 @@ class RemoteJobRepo(_Repo):
     async def abandon(self, job_id: str) -> Optional[RemoteJob]:
         """The coordinator gave up on the job (no runner, runner kept vanishing)."""
         return await self._close(job_id, "abandoned")
+
+    # -- DAASH MCP server (docs/DESIGN-0.4.md section 2.3) ------------------------------------------
+
+    async def by_mcp_token_hash(self, token_hash: str) -> Optional[RemoteJob]:
+        """The job a per-job MCP token (`djt_...`) was minted for, whatever its status now."""
+        if not token_hash:
+            return None
+        return _to(RemoteJob, await self._pool.fetchrow(
+            f"SELECT {REMOTE_JOB_COLS} FROM remote_jobs WHERE mcp_token_hash = $1", token_hash))
+
+    async def active_connected(self, connected_agent_id: str) -> list[RemoteJob]:
+        """Queued or leased jobs of one connected agent, oldest first."""
+        rows = await self._pool.fetch(
+            f"SELECT {REMOTE_JOB_COLS} FROM remote_jobs WHERE harness = $1 "
+            f"AND status IN ('queued', 'leased') AND payload->>'connected_agent_id' = $2 "
+            f"ORDER BY created_at, id", CONNECTED_HARNESS, connected_agent_id)
+        return [_to(RemoteJob, r) for r in rows]
+
+    async def count_mcp_call(self, job_id: str) -> None:
+        """payload.mcp_calls += 1 (DAASHboard shows that an agent really uses its tools)."""
+        await self._pool.execute(
+            "UPDATE remote_jobs SET payload = jsonb_set(payload, '{mcp_calls}', "
+            "to_jsonb(COALESCE((payload->>'mcp_calls')::int, 0) + 1)) WHERE id = $1", job_id)
+
+    async def record_mcp_file(self, job_id: str, path: str, written: bool = True) -> None:
+        """Add (or, for a deletion, remove) a workspace path in payload.mcp_files: the files a
+        connected agent wrote through MCP during this job (part of its deliverable)."""
+        if written:
+            await self._pool.execute(
+                "UPDATE remote_jobs SET payload = jsonb_set(payload, '{mcp_files}', CASE WHEN "
+                "COALESCE(payload->'mcp_files', '[]'::jsonb) ? $2::text "
+                "THEN payload->'mcp_files' "
+                "ELSE COALESCE(payload->'mcp_files', '[]'::jsonb) || to_jsonb($2::text) END) "
+                "WHERE id = $1", job_id, path)
+        else:
+            await self._pool.execute(
+                "UPDATE remote_jobs SET payload = jsonb_set(payload, '{mcp_files}', "
+                "COALESCE(payload->'mcp_files', '[]'::jsonb) - $2::text) WHERE id = $1",
+                job_id, path)
+
+
+# ---------------------------------------------------------------------------
+# Team messages and connected agents (docs/DESIGN-0.4.md sections 3 and 5.1)
+# ---------------------------------------------------------------------------
+
+MESSAGE_COLS = ("m.id, m.send_id, m.swarm_id, m.team_id, m.from_agent_id, m.to_agent_id, "
+                "m.audience, m.task_id, m.attempt, m.text, m.created_at, m.read_at")
+_MESSAGE_JOINS = ("LEFT JOIN agents fa ON fa.id = m.from_agent_id "
+                  "LEFT JOIN teams ft ON ft.id = fa.team_id "
+                  "LEFT JOIN agents ta ON ta.id = m.to_agent_id")
+_MESSAGE_NAMES = "fa.name AS from_name, ft.name AS from_team, ta.name AS to_name"
+#: Unread messages put into one prompt or returned by one read_messages call; the rest wait.
+MESSAGES_PER_READ = 30
+
+
+class MessageRepo(_Repo):
+    async def send(self, swarm_id: str, team_id: Optional[str], from_agent_id: str,
+                   to_agent_ids: Iterable[str], text: str, audience: str = "direct",
+                   task_id: Optional[str] = None,
+                   attempt: Optional[int] = None) -> list[AgentMessage]:
+        """One send: a row per recipient, sharing a send_id (fan-out)."""
+        send_id = _uid()
+        ids: list[str] = []
+        async with self._pool.acquire() as conn, conn.transaction():
+            for to in dict.fromkeys(to_agent_ids):
+                mid = _uid()
+                await conn.execute(
+                    "INSERT INTO agent_messages (id, send_id, swarm_id, team_id, from_agent_id, "
+                    "to_agent_id, audience, task_id, attempt, text) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+                    mid, send_id, swarm_id, team_id, from_agent_id, to, audience, task_id,
+                    attempt, text)
+                ids.append(mid)
+        return await self._by_ids(ids)
+
+    async def _by_ids(self, ids: list[str]) -> list[AgentMessage]:
+        if not ids:
+            return []
+        rows = await self._pool.fetch(
+            f"SELECT {MESSAGE_COLS}, {_MESSAGE_NAMES} FROM agent_messages m {_MESSAGE_JOINS} "
+            f"WHERE m.id = ANY($1::text[]) ORDER BY m.created_at, m.id", ids)
+        return [_to(AgentMessage, r) for r in rows]
+
+    async def unread(self, agent_id: str, limit: int = MESSAGES_PER_READ) -> list[AgentMessage]:
+        """Unread messages to the agent, oldest first (not marked read)."""
+        rows = await self._pool.fetch(
+            f"SELECT {MESSAGE_COLS}, {_MESSAGE_NAMES} FROM agent_messages m {_MESSAGE_JOINS} "
+            f"WHERE m.to_agent_id = $1 AND m.read_at IS NULL "
+            f"ORDER BY m.created_at, m.id LIMIT $2", agent_id, int(limit))
+        return [_to(AgentMessage, r) for r in rows]
+
+    async def mark_read(self, ids: Iterable[str]) -> int:
+        ids = list(ids)
+        if not ids:
+            return 0
+        res = await self._pool.execute(
+            "UPDATE agent_messages SET read_at = now() WHERE id = ANY($1::text[]) "
+            "AND read_at IS NULL", ids)
+        return int(res.split()[-1])
+
+    async def take_unread(self, agent_id: str,
+                          limit: int = MESSAGES_PER_READ) -> list[AgentMessage]:
+        """Unread messages to the agent, oldest first, marked read in the same statement (two
+        readers never get the same message)."""
+        rows = await self._pool.fetch(
+            f"WITH taken AS (UPDATE agent_messages SET read_at = now() WHERE id IN ("
+            f"SELECT id FROM agent_messages WHERE to_agent_id = $1 AND read_at IS NULL "
+            f"ORDER BY created_at, id LIMIT $2 FOR UPDATE SKIP LOCKED) RETURNING *) "
+            f"SELECT {MESSAGE_COLS}, {_MESSAGE_NAMES} FROM taken m {_MESSAGE_JOINS} "
+            f"ORDER BY m.created_at, m.id", agent_id, int(limit))
+        return [_to(AgentMessage, r) for r in rows]
+
+    async def sends_in_attempt(self, from_agent_id: str, task_id: Optional[str],
+                               attempt: Optional[int]) -> int:
+        """How many sends (not rows: a team message counts once) the agent made in this attempt."""
+        return int(await self._pool.fetchval(
+            "SELECT count(DISTINCT send_id) FROM agent_messages WHERE from_agent_id = $1 "
+            "AND task_id IS NOT DISTINCT FROM $2 AND attempt IS NOT DISTINCT FROM $3",
+            from_agent_id, task_id, attempt))
+
+    async def list_for_swarm(self, swarm_id: str, limit: int = 200) -> list[AgentMessage]:
+        """Newest first, one row per recipient (for DAASHboard)."""
+        rows = await self._pool.fetch(
+            f"SELECT {MESSAGE_COLS}, {_MESSAGE_NAMES} FROM agent_messages m {_MESSAGE_JOINS} "
+            f"WHERE m.swarm_id = $1 ORDER BY m.created_at DESC, m.id LIMIT $2",
+            swarm_id, int(limit))
+        return [_to(AgentMessage, r) for r in rows]
+
+
+CONNECTED_COLS = ("id, name, protocol, url, endpoint, skill, token, mcp_token_hash, capabilities, "
+                  "max_jobs, enabled, card, last_ok_at, last_error, mcp_seen_at, created_at")
+CONNECTED_UPDATABLE = ("name", "protocol", "url", "endpoint", "skill", "token", "mcp_token_hash",
+                       "capabilities", "max_jobs", "enabled", "card", "last_ok_at", "last_error")
+
+
+class ConnectedAgentRepo(_Repo):
+    """Connected agents (docs/DESIGN-0.4.md section 5.1). Minimal for 0.4's MCP server; the
+    connected-agents work extends it."""
+
+    async def create(self, name: str, protocol: str, url: str, *,
+                     endpoint: Optional[str] = None, skill: Optional[str] = None,
+                     token: Optional[str] = None, mcp_token_hash: Optional[str] = None,
+                     capabilities: Optional[list[str]] = None, max_jobs: int = 1,
+                     enabled: bool = True, card: Optional[dict] = None) -> ConnectedAgent:
+        """Raises asyncpg.UniqueViolationError if the name or MCP token hash exists."""
+        caps = normalize_capabilities(capabilities) if capabilities is not None else ["edit_files"]
+        row = await self._pool.fetchrow(
+            f"INSERT INTO connected_agents (id, name, protocol, url, endpoint, skill, token, "
+            f"mcp_token_hash, capabilities, max_jobs, enabled, card) "
+            f"VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING {CONNECTED_COLS}",
+            _uid(), name, protocol, url, endpoint, skill, token, mcp_token_hash, caps, max_jobs,
+            enabled, card)
+        return _to(ConnectedAgent, row)
+
+    async def get(self, agent_id: str) -> Optional[ConnectedAgent]:
+        return _to(ConnectedAgent, await self._pool.fetchrow(
+            f"SELECT {CONNECTED_COLS} FROM connected_agents WHERE id = $1", agent_id))
+
+    async def by_mcp_token_hash(self, token_hash: str) -> Optional[ConnectedAgent]:
+        if not token_hash:
+            return None
+        return _to(ConnectedAgent, await self._pool.fetchrow(
+            f"SELECT {CONNECTED_COLS} FROM connected_agents WHERE mcp_token_hash = $1",
+            token_hash))
+
+    async def list(self) -> list[ConnectedAgent]:
+        rows = await self._pool.fetch(
+            f"SELECT {CONNECTED_COLS} FROM connected_agents ORDER BY created_at, name")
+        return [_to(ConnectedAgent, r) for r in rows]
+
+    async def update(self, agent_id: str, **fields: Any) -> Optional[ConnectedAgent]:
+        sets, params = build_update(CONNECTED_UPDATABLE, fields)
+        row = await self._pool.fetchrow(
+            f"UPDATE connected_agents SET {sets} WHERE id = $1 RETURNING {CONNECTED_COLS}",
+            agent_id, *params)
+        return _to(ConnectedAgent, row)
+
+    async def touch_mcp(self, agent_id: str) -> None:
+        """The agent just called a DAASH tool over MCP."""
+        await self._pool.execute(
+            "UPDATE connected_agents SET mcp_seen_at = now() WHERE id = $1", agent_id)
+
+    async def delete(self, agent_id: str) -> bool:
+        res = await self._pool.execute("DELETE FROM connected_agents WHERE id = $1", agent_id)
+        return res.endswith(" 1")
 
 
 # ---------------------------------------------------------------------------

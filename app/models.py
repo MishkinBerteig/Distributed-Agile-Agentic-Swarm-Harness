@@ -375,6 +375,53 @@ class RemoteJob(BaseModel):
     finished_at: Optional[datetime] = None
 
 
+#: Remote-job harness of a connected agent (docs/DESIGN-0.4.md section 5.5): the engine talks to an
+#: existing agent directly; runners never lease these jobs.
+CONNECTED_HARNESS = "connected"
+
+
+class AgentMessage(BaseModel):
+    """One team message to one recipient (docs/DESIGN-0.4.md section 3). A message to the whole
+    team is stored once per recipient (same `send_id`), so read state is per recipient."""
+    id: str
+    send_id: str
+    swarm_id: str
+    team_id: Optional[str] = None
+    from_agent_id: str
+    to_agent_id: Optional[str] = None
+    audience: str = "direct"        # direct | team | coordinator
+    task_id: Optional[str] = None   # the sender's task when it sent
+    attempt: Optional[int] = None   # that task's attempt number (the send limit is per attempt)
+    text: str
+    created_at: datetime
+    read_at: Optional[datetime] = None
+    # joined for display (not columns)
+    from_name: Optional[str] = None
+    from_team: Optional[str] = None
+    to_name: Optional[str] = None
+
+
+class ConnectedAgent(BaseModel):
+    """An existing agent DAASH reaches over the network (docs/DESIGN-0.4.md section 5.1). The
+    bearer DAASH sends (`token`) and the MCP token hash are never part of the API form."""
+    id: str
+    name: str
+    protocol: str                   # a2a | hermes-api
+    url: str
+    endpoint: Optional[str] = None
+    skill: Optional[str] = None
+    token: Optional[str] = Field(default=None, exclude=True)
+    mcp_token_hash: Optional[str] = Field(default=None, exclude=True)
+    capabilities: list[str] = Field(default_factory=lambda: ["edit_files"])
+    max_jobs: int = 1
+    enabled: bool = True
+    card: Optional[dict[str, Any]] = None
+    last_ok_at: Optional[datetime] = None
+    last_error: Optional[str] = None
+    mcp_seen_at: Optional[datetime] = None
+    created_at: datetime
+
+
 class AcceptanceCriterion(BaseModel):
     id: str
     task_id: str
@@ -435,7 +482,7 @@ class TaskEvent(BaseModel):
     swarm_id: str
     team_id: Optional[str] = None
     task_id: Optional[str] = None
-    kind: str              # created|approved|rejected|committed|submitted|verdict|rework|done|failed|error|team|swarm|assessment|proposal|feedback
+    kind: str              # created|approved|rejected|committed|submitted|verdict|rework|done|failed|error|team|swarm|assessment|proposal|feedback|message|tool
     from_status: Optional[str] = None
     to_status: Optional[str] = None
     actor: str = "engine"  # agent id, "user" or "engine"
