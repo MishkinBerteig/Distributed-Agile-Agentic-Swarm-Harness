@@ -326,3 +326,12 @@ def test_stored_error_round_trip():
     assert C.split_stored_error(e.stored()) == ("token_rejected", "HTTP 401")
     assert C.split_stored_error("plain") == (None, "plain")
     assert C.split_stored_error(None) == (None, None)
+
+
+def test_runner_container_ids_are_not_discovery_hosts():
+    """A runner in Docker reports its container id as its host; discovery skips it."""
+    assert C.is_container_id("0ee8307037af")
+    assert C.is_container_id("a" * 64)
+    assert not C.is_container_id("m3u512gb")
+    assert not C.is_container_id("janes-mac-mini.tail391a32.ts.net")
+    assert not C.is_container_id("deadbeef")          # too short to be a container id

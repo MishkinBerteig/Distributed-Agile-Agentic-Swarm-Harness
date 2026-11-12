@@ -177,10 +177,32 @@ their OpenClaw agents Jane (`janes-mac-mini`) and Fitz (`m3u512gb`) as the test.
     - A swarm whose only delivery agent ran on an agent host reached Done.
 - [x] Agent-facing port (`agent-api`, 8001: `/health`, `/mcp` and `/runner/*` only), so other machines never reach
   the admin API
-- [ ] DAASHboard: Connected agents panel and Connect form with generated config snippets, OpenClaw and Hermes in
-  the agent types, connected agents in delivery rows, messages in the feed, Help topic "Connecting agents"
-- [ ] Tests in all three tiers (fake A2A agent container in e2e); live runs: OpenClaw and Hermes in the runner,
-  a test OpenClaw gateway over A2A, then Jane and Fitz
+- [x] DAASHboard, on the Agents & models page:
+  - Connected agents: one card per agent, with status explained in plain words, and Test, Enable or Disable,
+    Edit, Reset tokens and Remove.
+  - Found on your network, with Look again and Add by address.
+  - The Connect dialog shows the owner's one step (a command and a message, each with a Copy button). It turns
+    into "Connected ✓" by itself.
+  - Connect agents on another machine: the install command, then the machine and the agents it found, also by
+    itself.
+
+  Elsewhere:
+  - Delivery rows can pick a connected agent; its model reads "its own model".
+  - Roster badges.
+  - Team messages and grouped DAASH tool calls in the activity feed.
+  - A second Help topic, "Connecting agents" (`#/help/connect`).
+  - Every page fits a 390px phone screen.
+- [x] Tests:
+  - unit 738;
+  - integration 219;
+  - e2e 13, including a fake A2A agent that DAASH discovers, connects, approves and uses.
+- [ ] Live with the user's own agents:
+  - Jane, connected directly by her owner's one step;
+  - Fitz, through an agent host on m3u512gb (docs/AGENT-HOSTS.md);
+  - then a live swarm that mixes them.
+
+  On 2026-11-11 discovery on the dev stack found Jane, and listed m3u512gb:18789 as "listening but not
+  answering". m3u512gb reaches DAASH's agent port (`http://m5m128gb.tail391a32.ts.net:8001`).
 - Found during discovery (2026-11-11): Jane and Fitz already talk to each other over A2A. Jane's card is public at
   `http://janes-mac-mini:18789/.well-known/agent-card.json`. Fitz's gateway (OpenClaw 2026.10.9, model `instant`
   on the local gateway) answers only on 127.0.0.1, because the macOS firewall on m3u512gb is on. Hermes Agent is

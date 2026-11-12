@@ -242,7 +242,7 @@ async def discovery_hosts(pool: asyncpg.Pool, settings: Any,
     then the hosts of known runners, then the addresses of DAASH_DISCOVERY_SUBNETS."""
     hosts = list(extra) + connectors.parse_list(settings.DISCOVERY_HOSTS)
     for r in await RunnerRepo(pool).list():
-        if r.host and r.host not in hosts and r.enabled:
+        if r.host and r.host not in hosts and r.enabled and not connectors.is_container_id(r.host):
             hosts.append(r.host)
     subnet_hosts, problems = connectors.expand_subnets(settings.DISCOVERY_SUBNETS)
     hosts.extend(h for h in subnet_hosts if h not in hosts)

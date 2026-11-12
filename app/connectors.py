@@ -696,6 +696,12 @@ def parse_list(raw: str) -> list[str]:
     return [x.strip() for x in re.split(r"[,\s]+", raw or "") if x.strip()]
 
 
+def is_container_id(host: str) -> bool:
+    """A Docker container's default host name (12 or 64 hex characters). A runner inside a container
+    reports it as its host, but it names no machine that discovery could look at."""
+    return bool(re.fullmatch(r"[0-9a-f]{12}|[0-9a-f]{64}", (host or "").strip().lower()))
+
+
 def parse_ports(raw: str) -> list[int]:
     out: list[int] = []
     for x in parse_list(raw):
