@@ -666,11 +666,13 @@ class RemoteJobRepo(_Repo):
 
     async def requeue_expired(self, now: datetime) -> int:
         """Leased jobs whose lease timed out (runner vanished) go back to the queue. Connected
-        jobs (docs/DESIGN-0.4.md section 5.5) have no runner lease and are never requeued."""
+        jobs (docs/DESIGN-0.4.md section 5.5) have no runner lease and are never requeued, except
+        those an agent host leased (`payload.runner_id`, section 5.9): they stay pinned to it."""
         res = await self._pool.execute(
             "UPDATE remote_jobs SET status = 'queued', runner_id = NULL, leased_at = NULL, "
             "lease_expires_at = NULL, expiries = expiries + 1 "
-            "WHERE status = 'leased' AND lease_expires_at < $1 AND harness <> $2",
+            "WHERE status = 'leased' AND lease_expires_at < $1 "
+            "AND (harness <> $2 OR payload ? 'runner_id')",
             now, CONNECTED_HARNESS)
         return int(res.split()[-1])
 

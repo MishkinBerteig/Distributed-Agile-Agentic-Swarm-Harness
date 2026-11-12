@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     # 6), e.g. http://m5m128gb.tail391a32.ts.net:8001; shown in connected agents' and remote
     # runners' config snippets. Empty = not set (DAASHboard says how to set it).
     AGENT_PUBLIC_URL: str = ""
+    # The DAASH runner as a zipapp, built into the image (docs/DESIGN-0.4.md 5.9); served at
+    # /runner/daash-runner.pyz for the agent-host owner command.
+    RUNNER_ZIPAPP_PATH: str = "/opt/daash/daash-runner.pyz"
 
     # Connected agents (docs/DESIGN-0.4.md section 5). Discovery probes DISCOVERY_HOSTS (names or
     # IPs, comma-separated; e.g. Tailscale MagicDNS names, see scripts/tailnet-hosts.sh), the hosts

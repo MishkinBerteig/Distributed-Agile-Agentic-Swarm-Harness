@@ -43,6 +43,12 @@ def load_config(path: str | None, environ: Mapping[str, str] | None = None) -> d
             raw = json.load(fh)
     else:
         raw = {"harnesses": {n: {"command": c} for n, c in DEFAULT_COMMANDS.items() if n != "fake"}}
+    return config_from(raw, environ)
+
+
+def config_from(raw: dict, environ: Mapping[str, str] | None = None) -> dict:
+    """A config dict expanded and normalised like a loaded file (an agent host keeps its
+    harnesses, usually none, in ~/.daash-runner/config.json)."""
     cfg = expand(raw, environ)
     if not isinstance(cfg.get("harnesses"), dict):
         raise ValueError("config needs a 'harnesses' object")

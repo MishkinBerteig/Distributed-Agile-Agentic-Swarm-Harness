@@ -1,0 +1,96 @@
+{
+  "runId": "e10746b8-cfd6-4ef6-8dcd-a584f7011550",
+  "status": "timeout",
+  "summary": "aborted",
+  "timeoutPhase": "provider",
+  "providerStarted": true,
+  "result": {
+    "payloads": [
+      {
+        "text": "Request timed out before a response was generated. Please try again, or increase `agents.defaults.timeoutSeconds` in your config.",
+        "isError": true,
+        "mediaUrl": null
+      }
+    ],
+    "meta": {
+      "modelFallbackStopReason": "agent_run_terminal_timeout",
+      "durationMs": 4117,
+      "agentMeta": {
+        "sessionId": "cdb7643d-382d-47f7-89f8-648ff18bad78",
+        "sessionFile": "agent:main:daash:test0002",
+        "provider": "lmstudio",
+        "model": "fast",
+        "contextTokens": 128000,
+        "contextTokensSource": "resolved",
+        "agentHarnessId": "openclaw",
+        "credentialSource": {
+          "kind": "direct",
+          "evidence": "environment",
+          "authorization": "declared"
+        },
+        "contextBudgetStatus": {
+          "schemaVersion": 1,
+          "source": "pre-prompt-estimate",
+          "updatedAt": 1794454260988,
+          "provider": "lmstudio",
+          "model": "fast",
+          "route": "fits",
+          "shouldCompact": false,
+          "estimatedPromptTokens": 17319,
+          "contextTokenBudget": 128000,
+          "promptBudgetBeforeReserve": 108000,
+          "reserveTokens": 20000,
+          "effectiveReserveTokens": 20000,
+          "remainingPromptBudgetTokens": 90681,
+          "overflowTokens": 0,
+          "toolResultReducibleChars": 0,
+          "messageCount": 0,
+          "unwindowedMessageCount": 0,
+          "sessionId": "cdb7643d-382d-47f7-89f8-648ff18bad78"
+        },
+        "codeModeEngaged": false,
+        "assistantTurns": 1,
+        "bridgeCalls": {
+          "search": 0,
+          "describe": 0,
+          "call": 0
+        },
+        "terminalReceipt": {
+          "runId": "e10746b8-cfd6-4ef6-8dcd-a584f7011550",
+          "sessionId": "cdb7643d-382d-47f7-89f8-648ff18bad78",
+          "turnId": "e10746b8-cfd6-4ef6-8dcd-a584f7011550",
+          "requested": {
+            "provider": "lmstudio",
+            "model": "fast"
+          },
+          "effective": {
+            "provider": "lmstudio",
+            "model": "fast",
+            "responseModel": "fast"
+          },
+          "successfulToolNames": [],
+          "rerouted": false,
+          "terminalDisposition": "not-visible"
+        }
+      },
+      "aborted": false,
+      "finalPromptText": "Your working folder for this job is /home/runner/.openclaw/workspace/daash-jobs/test0002 . Work only inside it.\n1. Call the remember tool of the daash MCP server with content \"agent hosts work\".\n2. Create the file hello.md in that folder containing the word hello.\nThen reply DONE.",
+      "replayInvalid": true,
+      "livenessState": "paused",
+      "timeoutPhase": "provider",
+      "providerStarted": true,
+      "error": {
+        "kind": "incomplete_turn",
+        "message": "Request timed out before a response was generated. Please try again, or increase `agents.defaults.timeoutSeconds` in your config.",
+        "fallbackSafe": false
+      },
+      "executionTrace": {
+        "fallbackUsed": false
+      },
+      "terminalReply": {
+        "disposition": "empty"
+      }
+    },
+    "sourceReplyDeliveryState": "missing"
+  }
+}

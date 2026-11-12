@@ -1,0 +1,7 @@
+{
+  "ok": false,
+  "error": {
+    "type": "cli_error",
+    "message": "Unknown agent id \"nosuch\". Use \"openclaw agents list\" to see configured agents."
+  }
+}

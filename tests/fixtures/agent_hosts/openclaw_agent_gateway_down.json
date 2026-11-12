@@ -1,0 +1,7 @@
+{
+  "ok": false,
+  "error": {
+    "type": "cli_error",
+    "message": "Gateway not reachable at ws://127.0.0.1:18789 (ECONNREFUSED).\nStart it with `openclaw gateway run` or check `openclaw gateway status`.\nGateway target: ws://127.0.0.1:18789\nSource: local loopback\nConfig: /home/runner/.openclaw/openclaw.json\nBind: loopback"
+  }
+}

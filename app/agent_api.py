@@ -1,11 +1,13 @@
 """DAASH's agent-facing API (docs/DESIGN-0.4.md section 6): a second listener that serves only
-`GET /health`, the DAASH MCP server (`/mcp`) and the runner protocol (`/runner/*`), so they can
+`GET /health`, the DAASH MCP server (`/mcp`) and the runner protocol (`/runner/*`, including the
+agent-host zipapp, enrollment and disconnect of section 5.9), so they can
 be published to other machines without publishing the admin API.
 
 Run with ``uvicorn app.agent_api:app --port 8001`` (compose service `agent-api`, entrypoint mode
 `agent-api`). The coordinator (app.main) owns migrations; this app only opens the database.
-Every route here authenticates with its own tokens (runner tokens, MCP tokens); nothing here
-reaches an admin route, and there are no API docs pages.
+Every route here authenticates with its own credentials (runner tokens, MCP tokens, one-time
+connect codes; only the runner zipapp, which is public code, needs none); nothing here reaches an
+admin route, and there are no API docs pages.
 """
 from __future__ import annotations
 
@@ -16,7 +18,7 @@ from typing import Any, Optional
 import asyncpg
 from fastapi import FastAPI
 
-from app import mcp_server, runner_api
+from app import agent_hosts, mcp_server, runner_api
 from app.api_state import ModuleState
 from app.bus import DecisionBus
 from app.config import Settings
@@ -59,3 +61,5 @@ async def health() -> dict:
 _state = ModuleState(__name__)
 app.include_router(runner_api.build_router(_state))
 app.include_router(mcp_server.build_router(_state))
+# agent hosts (section 5.9): the runner zipapp, enrollment with a one-time code, disconnect
+app.include_router(agent_hosts.build_agent_router(_state))

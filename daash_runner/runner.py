@@ -1,4 +1,8 @@
-"""The runner loop: hello, lease, run jobs in worker threads, heartbeat, upload results."""
+"""The runner loop: hello, lease, run jobs in worker threads, heartbeat, upload results.
+
+On an agent host (docs/DESIGN-0.4.md 5.9) the runner also reports the machine's agents in every
+hello (`agent_host.report()`), hands the hello answer back (`agent_host.handle_hello()`: new DAASH
+tool tokens), and runs `connected` jobs by relaying them to one of those agents (daash_runner.relay)."""
 from __future__ import annotations
 
 import logging
@@ -12,7 +16,7 @@ import threading
 import time
 from typing import Any
 
-from . import adapters, workspace
+from . import adapters, relay, workspace
 from .client import AuthError, Client, CoordinatorError, HttpStatus
 from .checks import run_checks
 from .config import available_harnesses
@@ -25,6 +29,8 @@ TAIL_MAX = 20000
 PRUNE_AFTER_SECONDS = 3 * 24 * 3600
 REHELLO_SECONDS = 300
 CLEANUP_TIMEOUT = 30          # below the 60 s lease: no heartbeats while it runs
+#: Harness of jobs for connected agents; an agent host relays them (docs/DESIGN-0.4.md 5.9).
+CONNECTED_HARNESS = "connected"
 
 
 def mcp_endpoint(job: dict, coordinator_url: str) -> tuple[str, str]:
@@ -116,8 +122,10 @@ def _kill_group(proc: subprocess.Popen, grace: float = 3.0) -> None:
 
 class Runner:
     def __init__(self, client: Client, cfg: dict, work_dir: str, max_jobs: int = 1,
-                 host: str | None = None, environ: dict | None = None) -> None:
+                 host: str | None = None, environ: dict | None = None,
+                 agent_host: Any = None) -> None:
         self.client = client
+        self.agent_host = agent_host      # daash_runner.host.AgentHost on an agent host
         self.cfg = cfg
         self.work_dir = os.path.abspath(os.path.expanduser(work_dir))
         self.jobs_dir = os.path.join(self.work_dir, "jobs")
@@ -144,9 +152,14 @@ class Runner:
     # -- protocol -------------------------------------------------------------
 
     def hello(self) -> dict:
-        info = self.client.hello(self.host, VERSION, self.max_jobs, available_harnesses(self.cfg))
+        agents = self.agent_host.report() if self.agent_host is not None else None
+        info = self.client.hello(self.host, VERSION, self.max_jobs, available_harnesses(self.cfg),
+                                 agents=agents)
         self.name = info.get("name", self.name)
         self.heartbeat_seconds = float(info.get("heartbeat_seconds") or self.heartbeat_seconds)
+        if self.agent_host is not None:
+            for line in self.agent_host.handle_hello(info):
+                log.info("%s", line)
         return info
 
     def active_count(self) -> int:
@@ -208,7 +221,9 @@ class Runner:
         with self._lock:
             self._active[job["id"]] = t
         t.start()
-        log.info("leased job %s (%s/%s, task %s)", job["id"], job.get("harness"), job.get("model"), job.get("task_id"))
+        what = (f"{job.get('relay')} '{job.get('local_ref')}'" if job.get("harness") == CONNECTED_HARNESS
+                else f"{job.get('harness')}/{job.get('model')}")
+        log.info("leased job %s (%s, task %s)", job["id"], what, job.get("task_id"))
 
     def _job_thread(self, job: dict) -> None:
         jid = job["id"]
@@ -236,6 +251,8 @@ class Runner:
 
     def execute(self, job: dict) -> dict | None:
         """Run one job; returns the result payload, or None when the lease was cancelled."""
+        if job.get("harness") == CONNECTED_HARNESS:
+            return self.execute_relay(job)
         jid = job["id"]
         jdir = os.path.join(self.jobs_dir, jid)
         ws = os.path.join(jdir, "ws")
@@ -245,22 +262,9 @@ class Runner:
         if hcfg is None or harness not in adapters.ADAPTERS:
             return self._error_payload(f"this runner has no harness '{harness}' configured")
         started = time.monotonic()
-        tar_path = os.path.join(jdir, "workspace.tar.gz")
-        try:
-            self.client.download_workspace(jid, tar_path, job.get("workspace_url"))
-            workspace.safe_extract(tar_path, ws)
-        except workspace.UnsafeArchive as exc:
-            return self._error_payload(f"unsafe workspace archive: {exc}")
-        except HttpStatus as exc:
-            if exc.status in (404, 409):
-                log.info("job %s: workspace not available (%s), dropping", jid, exc.status)
-                return None
-            return self._error_payload(f"workspace download failed: {exc}")
-        finally:
-            try:
-                os.remove(tar_path)
-            except OSError:
-                pass
+        problem = self._fetch_workspace(job, jdir, ws)
+        if problem is not None:
+            return problem or None
         before = workspace.snapshot(ws)
 
         state = os.path.join(self.state_dir, harness)
@@ -274,17 +278,54 @@ class Runner:
                                 job_dir=jdir, workdir=ws, timeout_seconds=int(timeout),
                                 mcp_url=mcp_url, mcp_token=mcp_token)
         inv = adapters.build(harness, hcfg, spec, self.environ)
+        ran = self._run_cli(jid, inv, ws, jdir, timeout)
+        if isinstance(ran, dict):
+            return ran
+        state_flag, exit_code, stdout, stderr = ran
+        if state_flag == "cancelled":
+            log.info("job %s cancelled by the coordinator; dropped", jid)
+            return None
+        parsed = adapters.parse(harness, stdout, stderr, exit_code)
+        return self._collect(job, parsed, state_flag, timeout, ws, before, inv.env, stdout, stderr,
+                             exit_code, started)
+
+    # -- the steps every job shares ---------------------------------------------------------
+
+    def _fetch_workspace(self, job: dict, jdir: str, dest: str) -> dict | None:
+        """Download and safely extract the swarm workspace into `dest`. None = done; an error
+        payload; or {} when the job is no longer ours (drop it)."""
+        jid = job["id"]
+        tar_path = os.path.join(jdir, "workspace.tar.gz")
+        try:
+            self.client.download_workspace(jid, tar_path, job.get("workspace_url"))
+            workspace.safe_extract(tar_path, dest)
+        except workspace.UnsafeArchive as exc:
+            return self._error_payload(f"unsafe workspace archive: {exc}")
+        except HttpStatus as exc:
+            if exc.status in (404, 409):
+                log.info("job %s: workspace not available (%s), dropping", jid, exc.status)
+                return {}
+            return self._error_payload(f"workspace download failed: {exc}")
+        finally:
+            try:
+                os.remove(tar_path)
+            except OSError:
+                pass
+        return None
+
+    def _run_cli(self, jid: str, inv: adapters.Invocation, cwd: str, jdir: str, timeout: float):
+        """Start the CLI in its own process group and supervise it (heartbeats, timeout,
+        cancel). Returns (state flag, exit code, stdout, stderr), or an error payload."""
         out_path, err_path = os.path.join(jdir, "stdout.log"), os.path.join(jdir, "stderr.log")
         try:
             prepare_invocation(inv)
         except OSError as exc:
             return self._error_payload(f"could not write the CLI's config: {exc}")
-
         try:
             with open(out_path, "wb") as out, open(err_path, "wb") as err:
                 try:
                     proc = subprocess.Popen(  # noqa: S603 - argv is operator-configured harness CLI
-                        inv.argv, cwd=ws, env=inv.env, stdin=subprocess.PIPE, stdout=out, stderr=err,
+                        inv.argv, cwd=cwd, env=inv.env, stdin=subprocess.PIPE, stdout=out, stderr=err,
                         start_new_session=True)
                 except FileNotFoundError:
                     return self._error_payload(f"harness CLI '{inv.argv[0]}' not found on this runner")
@@ -295,17 +336,18 @@ class Runner:
                 threading.Thread(target=self._feed_stdin, args=(proc, inv.stdin), daemon=True).start()
                 state_flag = self._supervise(jid, proc, timeout)
         finally:
-            finish_invocation(inv, ws)
+            finish_invocation(inv, cwd)
+            with self._lock:
+                self._procs.pop(jid, None)
+        return state_flag, proc.returncode, _tail(out_path, 20_000_000), _tail(err_path, 200_000)
 
-        with self._lock:
-            self._procs.pop(jid, None)
-        if state_flag == "cancelled":
-            log.info("job %s cancelled by the coordinator; dropped", jid)
-            return None
-
-        stdout, stderr = _tail(out_path, 20_000_000), _tail(err_path, 200_000)
-        exit_code = proc.returncode
-        parsed = adapters.parse(harness, stdout, stderr, exit_code)
+    def _collect(self, job: dict, parsed: adapters.Parsed, state_flag: str, timeout: float, ws: str,
+                 before: dict, env: dict | None, stdout: str, stderr: str, exit_code,
+                 started: float) -> dict | None:
+        """The result payload: outcome, changed files, command checks. None = cancelled during
+        the checks (drop the job)."""
+        jid = job["id"]
+        limits = job.get("limits") or {}
         if state_flag == "timeout":
             parsed.outcome, parsed.error = "failed", f"the agent timed out after {int(timeout)} seconds"
         elif state_flag == "shutdown":
@@ -321,7 +363,7 @@ class Runner:
                 parsed.outcome, parsed.error, files, deleted = "failed", str(exc), [], []
         check_results: list[dict] = []
         if parsed.outcome == "submitted" and job.get("checks"):
-            check_results = self._run_checks(jid, job["checks"], ws, inv.env)
+            check_results = self._run_checks(jid, job["checks"], ws, env)
             if check_results is None:
                 log.info("job %s cancelled during its checks; dropped", jid)
                 return None
@@ -339,6 +381,75 @@ class Runner:
         log.info("job %s finished: outcome=%s files=%d deleted=%d exit=%s", jid, parsed.outcome,
                  len(files), len(deleted), exit_code)
         return payload
+
+    # -- agent hosts: relay a job to one of the owner's agents (docs/DESIGN-0.4.md 5.9) ----------
+
+    def execute_relay(self, job: dict) -> dict | None:
+        """A `connected` job pinned to this agent host: put a copy of the workspace where the
+        agent can work on it, hand it the job through its own CLI, then report the changes."""
+        jid = job["id"]
+        jdir = os.path.join(self.jobs_dir, jid)
+        os.makedirs(jdir, exist_ok=True)
+        relay_name, local_ref = str(job.get("relay") or ""), str(job.get("local_ref") or "")
+        if self.agent_host is None:
+            return self._error_payload("this runner is not an agent host (it has no local agents)")
+        if relay_name not in relay.RELAYS:
+            return self._error_payload(f"unknown relay '{relay_name}' (this runner knows "
+                                       f"{', '.join(relay.RELAYS)})")
+        agent = self.agent_host.resolve(relay_name, local_ref)
+        if agent is None:
+            return self._error_payload(f"agent '{local_ref}' ({relay_name}) is no longer on this machine")
+        if not agent.available:
+            return self._error_payload(f"{agent.name} is not available: {agent.detail}")
+        try:
+            folder = relay.job_folder(relay_name, agent, jdir, jid)
+        except ValueError as exc:
+            return self._error_payload(str(exc))
+        started = time.monotonic()
+        limits = job.get("limits") or {}
+        timeout = float(limits.get("timeout_seconds") or 1800)
+        remove_folder = relay_name == relay.OPENCLAW_RELAY
+        try:
+            if os.path.isdir(folder):
+                shutil.rmtree(folder, ignore_errors=True)
+            os.makedirs(folder, exist_ok=True)
+            problem = self._fetch_workspace(job, jdir, folder)
+            if problem is not None:
+                return problem or None
+            before = workspace.snapshot(folder)
+            text = relay.message(job, folder, self.agent_host.has_tools(agent))
+            env = self.agent_host.env()
+            if relay_name == relay.OPENCLAW_RELAY:
+                msg_path = os.path.join(jdir, "message.md")
+                fd = os.open(msg_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(text)
+                inv = relay.build_openclaw_agent(agent, job, msg_path, env, int(timeout))
+            else:
+                inv = relay.build_hermes_agent(agent, folder, env, text)
+            log.info("job %s: relaying to %s (%s) in %s", jid, agent.name, relay_name, folder)
+            ran = self._run_cli(jid, inv, folder, jdir, timeout)
+            if isinstance(ran, dict):
+                return ran
+            state_flag, exit_code, stdout, stderr = ran
+            if state_flag == "cancelled":
+                log.info("job %s cancelled by the coordinator; dropped", jid)
+                return None
+            parsed = relay.parse(relay_name, stdout, stderr, exit_code)
+            if parsed.outcome == "submitted":
+                written, removed = relay.apply_file_blocks(parsed.final_text, folder)
+                if written or removed:
+                    log.info("job %s: applied %d file block(s) and %d deletion(s) from the reply",
+                             jid, len(written), len(removed))
+            return self._collect(job, parsed, state_flag, timeout, folder, before, inv.env, stdout,
+                                 stderr, exit_code, started)
+        finally:
+            if remove_folder:
+                shutil.rmtree(folder, ignore_errors=True)
+                try:
+                    os.rmdir(os.path.dirname(folder))      # daash-jobs/, when empty
+                except OSError:
+                    pass
 
     def _run_checks(self, jid: str, checks: list, ws: str, env: dict | None) -> list[dict] | None:
         """Run the job's command checks in its workspace, heartbeating meanwhile. None = the lease
