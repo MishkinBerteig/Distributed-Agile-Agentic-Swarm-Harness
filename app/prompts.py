@@ -955,6 +955,9 @@ def connected_rules(job_id: str, file_tools: bool = True) -> str:
     if file_tools:
         s = ("Use the DAASH tools (MCP server `daash`) to read and write the shared workspace: "
              f"list_files, read_file, write_file, append_file, delete_file (pass job={job_id}). "
+             "Your own file tools do not reach the shared workspace; only DAASH's do (your "
+             "agent may list them as daash__write_file or mcp__daash__write_file, or find them "
+             "with its tool search). "
              "If you do not have DAASH tools, put every file you create or change in your reply "
              "as a block that starts with a line `<<<FILE path>>>` and ends with a line "
              "`<<<END FILE>>>` (the full new content in between), and a line `<<<DELETE path>>>` "

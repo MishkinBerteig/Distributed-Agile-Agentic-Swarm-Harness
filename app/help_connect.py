@@ -113,7 +113,8 @@ def _approval() -> str:
     step = approval.approval_step(oc, SAMPLE_PEER, SAMPLE_MCP, SAMPLE_PUBLIC)
     hstep = approval.approval_step(he, SAMPLE_KEY, SAMPLE_MCP, SAMPLE_PUBLIC)
     restart = (f"Then <code>{_e(approval.OPENCLAW_RESTART)}</code>." if approval.OPENCLAW_RESTART
-               else "No restart is needed: the gateway picks the change up by itself.")
+               else "No restart is needed: the gateway picks the change up by itself within "
+                    "a second or two. " + _e(approval.OPENCLAW_RELOAD_OFF_NOTE))
     return (
         '<section id="approval"><h2>The one approval step</h2>'
         "<p><em>Connect</em> creates the agent as <strong>waiting for approval</strong> and "
@@ -217,7 +218,8 @@ def _work() -> str:
         f"{MAX_FILE_BYTES:,} bytes each); DAASH writes them with the same rules as its own "
         "agent's file tools.</li>"
         f"<li>DAASH asks how it is going every {int(_default('CONNECTED_POLL_SECONDS'))} "
-        "seconds, well under OpenClaw's limit of 30 requests a minute.</li>"
+        "seconds (more slowly when the agent has several DAASH tasks), to stay under "
+        "OpenClaw's limit of 30 requests a minute for each peer.</li>"
         "<li>The final reply is the summary. The task then goes to Review and is judged like "
         "any other work.</li>"
         "<li>If the work is sent back, DAASH cannot give the agent a stronger model, so it "
@@ -271,6 +273,8 @@ def _limits() -> str:
         "<li>An OpenClaw gateway forgets its A2A tasks when it restarts. DAASH notices and sends "
         "the task again, without counting an attempt.</li>"
         "<li>A2A messages are text only, and OpenClaw accepts at most 64 KiB per message.</li>"
+        "<li>OpenClaw offers MCP tools to its model through its own tool search, so an agent "
+        "may need a nudge to use DAASH's tools; the work message names them.</li>"
         "<li>DAASH does not see a connected agent's model or token use, so they are not in the "
         "token and cost totals.</li>"
         "<li>Command checks need a runner; a directly connected agent has none, so tasks with "

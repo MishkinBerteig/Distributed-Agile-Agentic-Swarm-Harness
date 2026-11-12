@@ -6,8 +6,11 @@ DAASH generates everything; the owner only pastes it. Pure: no I/O.
   DAASH as the peer `daash` with its own bearer token, and adds DAASH's MCP server (`daash`) with
   the agent's `dca_` token. The same patch can instead be sent to the agent as a message, for an
   agent that may change its own configuration for its owner.
-* Hermes Agent: the `.env` lines that enable its API server with a key, and the
-  `mcp_servers.daash` entry for its `config.yaml`.
+* Hermes Agent: `hermes config set` commands that give its API server a key and a network
+  address (both land in the profile's `.env`) and add `mcp_servers.daash` to its
+  `config.yaml`, then `hermes gateway restart` (the API server binds only at start; verified on
+  v0.23.1, where any valid API_SERVER_KEY of 16+ characters turns the server on, the default
+  host is 127.0.0.1, and the MCP entry alone would hot-reload within a minute).
 * Any other A2A agent: what to configure, in words (A2A has no standard config format).
 """
 from __future__ import annotations
@@ -21,10 +24,15 @@ from app.connectors import HERMES_PORT
 A2A_PEER = "daash"                     # DAASH's peer name in the agent's A2A config
 MCP_SERVER = "daash"                   # DAASH's MCP server name in the agent's config
 HEREDOC_MARK = "DAASH_PATCH"
-#: A config patch on a running OpenClaw gateway takes effect without a restart (hot reload),
-#: verified against OpenClaw 2026.11.3; kept as data so the snippet says so when a version needs
-#: one.
+#: A config patch on a running OpenClaw gateway takes effect without a restart (hot reload,
+#: about a second; verified against OpenClaw 2026.11.3); kept as data so the snippet says so
+#: when a version needs one.
 OPENCLAW_RESTART: Optional[str] = None
+#: Only when the owner turned config hot reload off (gateway.reload.mode "off") does the patch
+#: say "Restart the gateway to apply"; then this restarts it (verified on 2026.11.3).
+OPENCLAW_RELOAD_OFF_NOTE = ("If the command says \"Restart the gateway to apply\" (config "
+                            "reload is turned off on this gateway), run `openclaw gateway "
+                            "restart` once.")
 HERMES_RESTART = "hermes gateway restart"
 
 
@@ -92,22 +100,32 @@ def hermes_mcp_yaml(mcp_token: str, public_url: Optional[str]) -> str:
             f"    connect_timeout: 15")
 
 
-def hermes_command(api_key: str, mcp_token: str, public_url: Optional[str]) -> str:
-    """One paste for the Hermes owner: append the .env lines and the MCP entry, restart."""
-    return (f"cat >> \"${{HERMES_HOME:-$HOME/.hermes}}/.env\" <<'{HEREDOC_MARK}'\n"
-            f"{hermes_env(api_key)}\n{HEREDOC_MARK}\n"
-            f"cat >> \"${{HERMES_HOME:-$HOME/.hermes}}/config.yaml\" <<'{HEREDOC_MARK}'\n"
-            f"{hermes_mcp_yaml(mcp_token, public_url)}\n{HEREDOC_MARK}\n"
+def hermes_mcp_json(mcp_token: str, public_url: Optional[str]) -> str:
+    """The `mcp_servers.daash` value for `hermes config set` (a JSON literal it parses)."""
+    return json.dumps({"url": mcp_url(public_url),
+                       "headers": {"Authorization": f"Bearer {mcp_token}"},
+                       "timeout": 120, "connect_timeout": 20})
+
+
+def hermes_command(api_key: str, mcp_token: str, public_url: Optional[str],
+                   port: int = HERMES_PORT) -> str:
+    """One paste for the Hermes owner, in the profile Hermes uses (no file paths to guess, no
+    duplicate keys): the API server's key, host and port go to its .env, DAASH's MCP server to
+    its config.yaml, then the gateway restarts so the API server listens on the network."""
+    return (f"hermes config set API_SERVER_KEY {api_key}\n"
+            f"hermes config set API_SERVER_HOST 0.0.0.0\n"
+            f"hermes config set API_SERVER_PORT {port}\n"
+            f"hermes config set mcp_servers.{MCP_SERVER} '{hermes_mcp_json(mcp_token, public_url)}'\n"
             f"{HERMES_RESTART}")
 
 
 def hermes_message(agent_name: str, api_key: str, mcp_token: str,
                    public_url: Optional[str]) -> str:
-    return (f"Hi {agent_name}, please connect yourself to DAASH, my agent swarm. Add these lines "
-            f"to your Hermes .env file:\n\n```\n{hermes_env(api_key)}\n```\n\nadd this to your "
-            f"config.yaml (merge it if mcp_servers already exists):\n\n```yaml\n"
-            f"{hermes_mcp_yaml(mcp_token, public_url)}\n```\n\nthen restart your gateway "
-            f"(`{HERMES_RESTART}`) and tell me when it is done.")
+    return (f"Hi {agent_name}, please connect yourself to DAASH, my agent swarm, so it can give "
+            "you tasks. Run these commands exactly as they are; they turn on your API server for "
+            "DAASH and add DAASH's tools as the MCP server \"daash\". The last one restarts your "
+            "gateway, so tell me first that you are about to do it, then that it is done.\n\n"
+            f"```\n{hermes_command(api_key, mcp_token, public_url)}\n```")
 
 
 def a2a_instructions(peer_token: str, mcp_token: str, public_url: Optional[str]) -> str:
@@ -142,8 +160,9 @@ def approval_step(agent: Any, peer_token: Optional[str], mcp_token: str,
             "message": hermes_message(agent.name, peer_token or "<your key>", mcp_token,
                                       public_url),
             "where": "on the machine where Hermes Agent runs, as its owner",
-            "note": "To use a key of your own instead, put it in API_SERVER_KEY and paste the "
-                    "same key into DAASH."})
+            "note": "If the restart says live sessions would be interrupted, wait for them or "
+                    "run `hermes gateway restart --yes`. To use a key of your own, use it in "
+                    "API_SERVER_KEY (16 characters or more) and paste the same key into DAASH."})
         return out
     out["a2a_token"] = peer_token
     if agent.kind == "openclaw":
@@ -152,7 +171,8 @@ def approval_step(agent: Any, peer_token: Optional[str], mcp_token: str,
             "command": openclaw_command(peer_token or "", mcp_token, public_url),
             "restart": OPENCLAW_RESTART,
             "message": openclaw_message(agent.name, peer_token or "", mcp_token, public_url),
-            "where": "on the machine where the OpenClaw gateway runs, as its owner"})
+            "where": "on the machine where the OpenClaw gateway runs, as its owner",
+            "note": OPENCLAW_RELOAD_OFF_NOTE})
         return out
     text = a2a_instructions(peer_token or "", mcp_token, public_url)
     out.update({"command": text, "message": f"Hi {agent.name}, please connect yourself to "

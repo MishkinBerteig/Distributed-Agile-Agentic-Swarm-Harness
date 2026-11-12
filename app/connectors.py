@@ -546,12 +546,14 @@ class HermesClient:
         return h
 
     async def _request(self, method: str, path: str, *, json: Any = None,
-                       timeout: float = RPC_TIMEOUT, auth: bool = True) -> Any:
+                       timeout: float = RPC_TIMEOUT, auth: bool = True,
+                       headers: Optional[dict] = None) -> Any:
         where = self.base
         try:
             async with _client(self.transport, timeout) as client:
                 resp = await client.request(method, self.base + path, json=json,
-                                            headers=self._headers() if auth else {})
+                                            headers={**(self._headers() if auth else {}),
+                                                     **(headers or {})})
         except httpx.HTTPError as exc:
             raise _http_error(exc, where) from None
         if resp.status_code == 404 and path.startswith("/v1/runs/"):
@@ -575,9 +577,14 @@ class HermesClient:
         """The cheap check: the authenticated model list (no model tokens spent)."""
         await self._request("GET", "/v1/models", timeout=CHECK_TIMEOUT)
 
-    async def start(self, text: str, session_id: str) -> HermesRun:
+    async def start(self, text: str, session_id: str,
+                    idempotency_key: Optional[str] = None) -> HermesRun:
+        """POST /v1/runs (202 {run_id, status}). With an Idempotency-Key a resend returns the
+        same run instead of starting the work twice."""
         body = {"input": text, "session_id": session_id}
-        out = await self._request("POST", "/v1/runs", json=body, timeout=SEND_TIMEOUT)
+        out = await self._request("POST", "/v1/runs", json=body, timeout=SEND_TIMEOUT,
+                                  headers={"Idempotency-Key": idempotency_key}
+                                  if idempotency_key else None)
         run = run_from_json(out)
         if not run.id:
             raise ConnectorError("protocol", "Hermes did not return a run id")
@@ -612,15 +619,17 @@ async def check_agent(agent: Any, *, transport: Optional[httpx.AsyncBaseTranspor
         raise ConnectorError("protocol", f"DAASH cannot check a {agent.protocol!r} agent itself")
 
 
-async def start_work(agent: Any, text: str, session: str, *,
+async def start_work(agent: Any, text: str, session: str, *, message_id: Optional[str] = None,
                      transport: Optional[httpx.AsyncBaseTransport] = None) -> Progress:
+    """Send the work. `message_id` should be stable per job: OpenClaw answers a resend of the
+    same messageId and contextId with the same task, so a retry never starts the work twice."""
     if agent.protocol == "a2a":
         t = await A2AClient(agent.endpoint or "", agent.token, transport=transport).send(
-            text, session)
+            text, session, message_id)
         return Progress(t.id, _a2a_progress_state(t.state), t.text)
     if agent.protocol == "hermes-api":
         r = await HermesClient(agent.url or "", agent.token, transport=transport).start(
-            text, session)
+            text, session, message_id)
         return Progress(r.id, _run_progress_state(r.state), r.text or r.error)
     raise ConnectorError("protocol", f"cannot send work to a {agent.protocol!r} agent directly")
 

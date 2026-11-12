@@ -229,6 +229,7 @@ class ConnectedWork:
         await repo.merge_payload(job.id, {"prompt": text})
         try:
             progress = await connectors.start_work(ca, text, job.payload["context_id"],
+                                                   message_id=f"daash-{job.id}",
                                                    transport=self.connector_transport)
         except ConnectorError as exc:
             return await self._connected_trouble(swarm, team, agent, task, ca, job.id, exc,
@@ -292,7 +293,13 @@ class ConnectedWork:
             if progress.state != "working":
                 return await self._finish_connected(swarm, team, agent, task, ca, job.id,
                                                     progress)
-            await asyncio.sleep(self.connected_poll_seconds)
+            await asyncio.sleep(await self._poll_interval(ca))
+
+    async def _poll_interval(self, ca: ConnectedAgent) -> float:
+        """connected_poll_seconds per active job of the agent: OpenClaw allows 30 requests a
+        minute per peer across all of its tasks, so several jobs poll more slowly."""
+        active = len(await self.repos.remote_jobs.active_connected(ca.id))
+        return self.connected_poll_seconds * max(1, active)
 
     async def _connected_trouble(self, swarm: Swarm, team: Team, agent: Agent, task: Task,
                                  ca: ConnectedAgent, job_id: str, exc: ConnectorError,

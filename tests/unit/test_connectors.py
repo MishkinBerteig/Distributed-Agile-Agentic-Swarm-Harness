@@ -196,7 +196,8 @@ class StubHermes:
             body = json.loads(req.content)
             rid = f"run_{len(self.runs) + 1}"
             self.runs[rid] = {"status": "running", "input": body.get("input"),
-                              "session_id": body.get("session_id")}
+                              "session_id": body.get("session_id"),
+                              "idempotency_key": req.headers.get("idempotency-key")}
             return httpx.Response(202, json={"run_id": rid, "status": "started"})
         parts = req.url.path.split("/")
         if len(parts) >= 4 and parts[2] == "runs":
@@ -238,7 +239,8 @@ async def test_hermes_through_the_engine_interface():
     t = transport(stub.handler)
     ca = SimpleNamespace(protocol="hermes-api", url="http://h:8642", token="k", endpoint=None)
     await C.check_agent(ca, transport=t)
-    p = await C.start_work(ca, "x", "s", transport=t)
+    p = await C.start_work(ca, "x", "s", message_id="daash-job-1", transport=t)
+    assert stub.runs[p.external_id]["idempotency_key"] == "daash-job-1"
     stub.runs[p.external_id].update(status="failed", error={"message": "model gone"})
     p = await C.poll_work(ca, p.external_id, transport=t)
     assert p.state == "failed" and p.text == "model gone"

@@ -118,6 +118,14 @@ def test_hermes_step():
     assert 'url: "http://d:8001/mcp"' in step["mcp_yaml"]
     assert 'Authorization: "Bearer dca_Z"' in step["mcp_yaml"]
     assert step["command"].endswith(approval.HERMES_RESTART) and step["api_key"] == "daash_hermes_K"
+    lines = step["command"].splitlines()
+    assert lines[:3] == ["hermes config set API_SERVER_KEY daash_hermes_K",
+                         "hermes config set API_SERVER_HOST 0.0.0.0",
+                         "hermes config set API_SERVER_PORT 8642"]
+    mcp = json.loads(re.match(r"hermes config set mcp_servers\.daash '(.*)'$", lines[3]).group(1))
+    assert mcp["url"] == "http://d:8001/mcp" and mcp["headers"] == {
+        "Authorization": "Bearer dca_Z"}
+    assert step["command"] in step["message"]
 
 
 def test_generic_a2a_step():
