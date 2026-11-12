@@ -114,11 +114,13 @@ export const HARNESS_DEFAULT_CAPS = {
   openclaude: ['edit_files', 'run_code'],
   'claude-code': ['edit_files', 'run_code'],
   codex: ['edit_files', 'run_code'],
+  openclaw: ['edit_files', 'run_code'],
+  hermes: ['edit_files', 'run_code'],
 }
 export const defaultCaps = (h) => HARNESS_DEFAULT_CAPS[h] || ['edit_files']
 export const sameCaps = (a, b) => [...a].sort().join() === [...b].sort().join()
 
-export const HARNESS_CHOICES = ['daash', 'openclaude', 'claude-code', 'codex']
+export const HARNESS_CHOICES = ['daash', 'openclaude', 'claude-code', 'codex', 'openclaw', 'hermes']
 
 // Why an agent harness is or is not available (GET /availability `status`).
 export const HARNESS_STATUS = {

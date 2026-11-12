@@ -142,7 +142,9 @@ def test_availability_harness_status_from_runners():
     ]
     out = H.availability(cfg, ["amazing", "fast", "great", "instant"], True, runners)
     by = {h["harness"]: h for h in out["harnesses"]}
-    assert list(by) == ["daash", "openclaude", "claude-code", "codex", "fake"]
+    assert list(by) == ["daash", "openclaude", "claude-code", "codex", "openclaw", "hermes", "fake"]
+    assert by["openclaw"]["label"] == "OpenClaw" and by["hermes"]["label"] == "Hermes Agent"
+    assert by["hermes"]["status"] == "no_runner" and by["hermes"]["capabilities"] == ["edit_files", "run_code"]
     assert by["daash"]["builtin"] and by["daash"]["status"] == "available"
     assert by["daash"]["capabilities"] == ["edit_files"]
     assert by["daash"]["models"] == ["instant", "fast", "great", "amazing"]
