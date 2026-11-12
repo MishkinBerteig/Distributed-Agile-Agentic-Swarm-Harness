@@ -140,24 +140,42 @@ Design: docs/DESIGN-0.3.md. Runner guide: docs/RUNNER.md.
     attempt, every task proven by a runner-executed command (`Ran 15 tests ... OK`), each agent touched only its
     own file, vision review passed, ~16 min, p90 5.3 min.
 
-### After 0.3 (in priority order; 1 and 2 are the user's direction from the 2026-11-09 prompt review)
-1. DAASH tools for every agent it calls, as an MCP server (or skill) that external agents can use immediately:
-   memory (`remember`/`recall`), subtasks, team proposals and votes, and messages to team members. Memory is a
-   critical part of the system; today only native agents have these tools, and no agent has used `remember` yet.
-2. Self-organizing teams: routing becomes dynamic, with team members aware of each other and able to message one
-   another. "Escalate to a stronger model" only works where DAASH picks the model (native, Claude Code,
-   OpenClaude, Codex); for agents DAASH reaches only by messages (e.g. OpenClaw) escalation should mean handing
-   the work to another team member.
-3. Harden remote runs: per-harness model/cost accounting in metrics, per-runner concurrency vs gateway capacity,
-   runner auto-update, HTTPS/Tailscale deployment notes; enable `DAASH_API_TOKEN` by default when the coordinator
-   is published beyond localhost. Capability-aware Mission Judgement approval; keep external agents inside their
-   task's scope (a Claude Code agent also wrote the next task's tests); more harness adapters (e.g. OpenClaw).
-4. Run agent-written automation scripts (learning mechanism 2) on runners, building on command checks; a
+### Milestone 0.4 — DAASH tools for every agent, OpenClaw and Hermes Agent, connected agents (in progress)
+Design: docs/DESIGN-0.4.md. Started 2026-11-11 at the user's direction: "make sure that OpenClaw and Hermes Agent
+can be used in this next version ... it's important to allow DAASH to connect to already-existing agents", with
+their OpenClaw agents Jane (`janes-mac-mini`) and Fitz (`m3u512gb`) as the test.
+- [ ] DAASH MCP server (`/mcp`, streamable HTTP): memory, subtasks, proposals and votes, team roster, messages,
+  current task. Per-job tokens for runner-launched CLIs, a per-agent token for connected agents. One shared tool
+  module with the built-in agent
+- [ ] Team messages (`send_message` / `read_messages`) for every agent; unread messages in the next prompt
+- [ ] Runner: `openclaw` (`openclaw agent exec`) and `hermes` (`hermes chat --query-file -`) adapters in the runner
+  container on the local gateway; every runner-launched CLI gets the DAASH MCP server for its job
+- [ ] Connected agents: existing agents reached over A2A 1.0 (OpenClaw's `a2a` channel, and any A2A agent) or
+  Hermes's API server; DAASH tools or reply file blocks for the workspace; escalation hands the task to another
+  team member
+- [ ] Agent-facing port (`agent-api`, 8001: `/mcp`, `/runner/*` only) so other machines never reach the admin API
+- [ ] DAASHboard: Connected agents panel and Connect form with generated config snippets, OpenClaw and Hermes in
+  the agent types, connected agents in delivery rows, messages in the feed, Help topic "Connecting agents"
+- [ ] Tests in all three tiers (fake A2A agent container in e2e); live runs: OpenClaw and Hermes in the runner,
+  a test OpenClaw gateway over A2A, then Jane and Fitz
+- Found during discovery (2026-11-11): Jane and Fitz already talk to each other over A2A. Jane's card is public at
+  `http://janes-mac-mini:18789/.well-known/agent-card.json`. Fitz's gateway (OpenClaw 2026.10.9, model `instant`
+  on the local gateway) answers only on 127.0.0.1, because the macOS firewall on m3u512gb is on. Hermes Agent is
+  not running anywhere yet.
+
+### After 0.4 (in priority order)
+1. Self-organizing teams: routing becomes dynamic, with team members aware of each other (0.4 adds messaging and
+   the roster tool, and hands a connected agent's failed task to another member instead of escalating a model).
+2. Harden remote runs: per-harness model/cost accounting in metrics, per-runner concurrency vs gateway capacity,
+   runner auto-update, HTTPS deployment notes; enable `DAASH_API_TOKEN` by default when the coordinator is
+   published beyond localhost. Capability-aware Mission Judgement approval; keep external agents inside their
+   task's scope (a Claude Code agent also wrote the next task's tests); more adapters.
+3. Run agent-written automation scripts (learning mechanism 2) on runners, building on command checks; a
    command-check scenario in e2e; let the native harness request runner execution.
-5. Research tools for the native harness (web fetch/search with required citations) so fact-checking is grounded.
-6. Long soak run at README scale (10M+ tokens); real embedding model by default; richer RAG over transcripts;
+4. Research tools for the native harness (web fetch/search with required citations) so fact-checking is grounded.
+5. Long soak run at README scale (10M+ tokens); real embedding model by default; richer RAG over transcripts;
    multiple providers per swarm; push updates (SSE) instead of polling.
-7. Later: manage learnings shared across swarms (sharing across projects is intended); cap the swarm feedback
+6. Later: manage learnings shared across swarms (sharing across projects is intended); cap the swarm feedback
    injected into prompts.
 
 Decisions from the prompt review (2026-11-09):
