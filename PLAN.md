@@ -85,7 +85,7 @@ Design: docs/DESIGN-0.2.md. (`v0.1` is tagged at f1e5526.)
   the same limit as a runaway guard); Quality Judgement's Definition of Ready may not forbid a file from
   existing (it blocked the team's own refinement tasks).
 
-### Milestone 0.3 — Distributed, heterogeneous harnesses (built overnight 2026-11-08/09; not tagged)
+### Milestone 0.3 — Distributed, heterogeneous harnesses (done; tagged `v0.3` with a GitHub release, 2026-11-11)
 Design: docs/DESIGN-0.3.md. Runner guide: docs/RUNNER.md.
 - [x] Pull-based runner `daash_runner/` (stdlib only; any device): hello, long-poll lease, heartbeat, workspace
   sync, result upload; adapters for **OpenClaude**, **Claude Code**, **Codex** (all verified on the local gateway,
@@ -172,7 +172,7 @@ Decisions from the prompt review (2026-11-09):
 - **State consistency**: PostgreSQL is the only source of record; Redis holds only expiring signals; the engine is
   restart-safe (BUSY agents reset, open tasks resumed).
 
-## 7. Current System State (0.3, on `main`)
+## 7. Current System State (0.3, tagged `v0.3`)
 
 ### Run it
 ```bash
@@ -251,9 +251,11 @@ runner + CLI adapters, outside `app/`).
 - **2026-11-09 — 0.3**: distributed heterogeneous harnesses (runner, OpenClaude/Claude Code/Codex adapters, runner
   container, auth, remote work in the engine, dashboard), vision review, agent capabilities (`edit_files` /
   `run_code` / `web_research` per harness; capability-aware assignment, rework reassignment and leasing),
-  live-run fixes. Not tagged.
+  live-run fixes.
 - **2026-11-09 — prompt review**: prompt wording fixes, invalid planned checks reported to the planner, DAASHboard
   online help for agent prompts, inside DAASHboard (2026-11-11: moved from a separate page into a Help view).
 - **2026-11-11 — DAASHboard navigation**: top-bar menu and pages (Swarm, Past swarms, Agents & models, Settings,
   Help), swarm lifecycle diagram, agent and model availability (`GET /availability`), defaults editor with the
   model escalation order.
+- **2026-11-11 — 0.3 released**: tagged `v0.3` (prompt review, online help and DAASHboard navigation included) and
+  published as the first GitHub release.
