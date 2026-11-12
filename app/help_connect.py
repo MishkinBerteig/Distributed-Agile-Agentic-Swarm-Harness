@@ -133,11 +133,15 @@ def _approval() -> str:
         + _pre(step["command"], "Example: the command (with sample tokens)", True)
         + _pre(step["message"], "Example: the message to the agent")
         + '<h3 id="approval-hermes">Hermes Agent</h3>'
-        "<p>Turn on Hermes's API server with a key, give it DAASH's MCP server, and restart its "
-        "gateway. DAASH suggests a strong key; to use your own, put it in "
+        "<p>Give Hermes's API server a key and a network address, give it DAASH's MCP server, "
+        "and restart its gateway: the API server starts listening only at a restart. The "
+        "commands use <code>hermes config set</code>, so they change the profile Hermes really "
+        "uses. DAASH suggests a strong key; to use your own (16 characters or more), put it in "
         "<code>API_SERVER_KEY</code> and paste the same key into DAASH.</p>"
-        + _pre(hstep["command"], "Example: the command (with sample secrets)", True)
-        + _pre(hstep["env"], "The .env lines")
+        "<p>Before this step a Hermes API server does not listen on the network, so discovery "
+        "cannot find it: use <em>Add by address</em> and choose Hermes.</p>"
+        + _pre(hstep["command"], "Example: the commands (with sample secrets)", True)
+        + _pre(hstep["env"], "The same settings as .env lines")
         + _pre(hstep["mcp_yaml"], "The config.yaml entry")
         + '<h3 id="approval-a2a">Other A2A agents</h3>'
         "<p>A2A has no standard configuration format, so DAASH tells you what to set: the "
