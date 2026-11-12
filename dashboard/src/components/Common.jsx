@@ -1,5 +1,47 @@
-import React, { useState } from 'react'
-import { statusClass } from '../util.js'
+import React, { useEffect, useRef, useState } from 'react'
+import { copyText, statusClass } from '../util.js'
+
+// A Copy button for `text`; says "Copied" for a moment, or how to copy by hand if it could not.
+export function CopyButton({ text, label = 'Copy', onFail }) {
+  const [state, setState] = useState('')
+  const timer = useRef(null)
+  useEffect(() => () => clearTimeout(timer.current), [])
+  const copy = async () => {
+    const ok = await copyText(text)
+    setState(ok ? 'ok' : 'fail')
+    if (!ok && onFail) onFail()
+    clearTimeout(timer.current)
+    timer.current = setTimeout(() => setState(''), 2500)
+  }
+  return (
+    <button type="button" className="btn small copy-btn" onClick={copy} aria-live="polite">
+      {state === 'ok' ? 'Copied ✓' : state === 'fail' ? 'Select it and copy' : label}
+    </button>
+  )
+}
+
+// A block of text to paste somewhere else (a command, a message), with its Copy button.
+export function CopyBlock({ title, text, copyLabel = 'Copy', children }) {
+  const pre = useRef(null)
+  const selectAll = () => {
+    const sel = window.getSelection && window.getSelection()
+    if (!sel || !pre.current) return
+    const range = document.createRange()
+    range.selectNodeContents(pre.current)
+    sel.removeAllRanges()
+    sel.addRange(range)
+  }
+  return (
+    <div className="copy-block">
+      <div className="copy-head">
+        {title && <span className="copy-title">{title}</span>}
+        <CopyButton text={text} label={copyLabel} onFail={selectAll} />
+      </div>
+      {children}
+      <pre ref={pre} className="cmd" tabIndex={0}>{text}</pre>
+    </div>
+  )
+}
 
 export const Spinner = ({ label }) => (
   <span className="spinner-wrap"><span className="spinner" aria-hidden="true" />{label && <span> {label}</span>}</span>

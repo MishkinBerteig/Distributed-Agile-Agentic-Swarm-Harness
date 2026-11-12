@@ -64,7 +64,7 @@ export function DefaultsEditor() {
       {!draft ? (cfg.error ? <ErrorNote error={cfg.error} /> : <Spinner label="Loading" />) : (
         <>
           <SwarmConfigFields cfg={draft} setCfg={setDraft} gatewayModels={(models.data && models.data.models) || []}
-            harnesses={avail.data && avail.data.harnesses} />
+            harnesses={avail.data && avail.data.harnesses} connected={avail.data && avail.data.connected_agents} />
           <ErrorNote error={error} />
           <div className="row">
             <button className="btn primary" onClick={save} disabled={busy || !changed}>{busy ? <Spinner label="Saving" /> : 'Save defaults'}</button>

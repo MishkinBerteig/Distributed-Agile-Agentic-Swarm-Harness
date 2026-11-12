@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 
 // DAASHboard pages, addressed by the URL hash so links, Back and Forward work:
-// #/ (the swarm), #/swarms, #/agents, #/settings, #/help, #/help/<section>.
+// #/ (the swarm), #/swarms, #/agents, #/agents/<section> (e.g. connected, found, hosts),
+// #/settings, #/help, #/help/<section> (the prompts guide), #/help/<topic>[/<section>]
+// (e.g. #/help/connect/approval). `sub` is everything after the page.
 export const PAGES = [
   { id: 'swarm', label: 'Swarm', hash: '#/' },
   { id: 'swarms', label: 'Past swarms', hash: '#/swarms' },

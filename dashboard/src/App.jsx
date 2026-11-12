@@ -4,13 +4,18 @@ import { useLoad, usePolling } from './hooks/usePolling.js'
 import { useRoute } from './router.js'
 import { ErrorNote, Spinner } from './components/Common.jsx'
 import AgentsPage, { Status } from './components/AgentsPage.jsx'
-import { unavailableAllowed } from './util.js'
+import { connectedStatus, unavailableAllowed } from './util.js'
 import CreateSwarm from './components/CreateSwarm.jsx'
 import { PreviousSwarms, SettingsPage } from './components/GlobalSettings.jsx'
 import Help from './components/Help.jsx'
 import LiveSwarm from './components/LiveSwarm.jsx'
 import Login from './components/Login.jsx'
 import TopBar from './components/TopBar.jsx'
+
+const ConnectedState = ({ agent }) => {
+  const st = connectedStatus(agent)
+  return <span className="nowrap" title={st.explain}><span className={`dot ${st.tone}`} aria-hidden="true" />{st.text}</span>
+}
 
 // Beside Create a swarm: what a new swarm could use right now, linking to the details.
 function AvailableNow() {
@@ -34,7 +39,20 @@ function AvailableNow() {
           {missing.length > 0 && (
             <div className="warn-note">{missing.map((h) => h.label).join(', ')}: allowed by default, but not available now.</div>
           )}
-          <a href="#/agents">Agents &amp; models: details and runners</a>
+          <h3 className="avail-sub">Connected agents</h3>
+          {(d.connected_agents || []).length ? (
+            <ul className="avail-list">
+              {d.connected_agents.map((a) => (
+                <li key={a.id} className={a.enabled ? '' : 'dim'}>
+                  <span>{a.label}</span><ConnectedState agent={a} />
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="muted">None yet. Your own OpenClaw or Hermes agents can join a swarm: <a href="#/agents/connected">connect
+              one</a>.</p>
+          )}
+          <a href="#/agents">Agents &amp; models: details, connected agents and runners</a>
         </>
       )}
     </section>
@@ -76,7 +94,7 @@ function SignedIn({ route, showSignOut, onSignOut }) {
           <PreviousSwarms activeId={swarm ? swarm.id : null} />
         </main>
       )}
-      {route.page === 'agents' && <AgentsPage />}
+      {route.page === 'agents' && <AgentsPage section={route.sub} />}
       {route.page === 'settings' && <SettingsPage />}
       {route.page === 'help' && <Help section={route.sub} />}
     </>

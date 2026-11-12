@@ -20,7 +20,11 @@ export default function LiveSwarm({ swarm, onSwarmChanged }) {
   const id = swarm.id
   const board = usePolling(() => api.getBoard(id), [id])
   const metrics = usePolling(() => api.getMetrics(id), [id])
-  const events = usePolling(() => api.getEvents(id, 100), [id])
+  // 200: DAASH tool calls of external agents can be many; the feed groups them.
+  const events = usePolling(() => api.getEvents(id, 200), [id])
+  const connected = usePolling(() => api.listConnected(), [], { interval: 15000 })
+  const connectedById = useMemo(() => Object.fromEntries(
+    ((connected.data && connected.data.connected_agents) || []).map((a) => [a.id, a])), [connected.data])
   const [taskId, setTaskId] = useState(null)
   const [agent, setAgent] = useState(null)
   const [tab, setTab] = useState('Activity')
@@ -62,7 +66,7 @@ export default function LiveSwarm({ swarm, onSwarmChanged }) {
       ) : (
         <div className="teams">
           {teams.map((e) => (
-            <TeamCard key={e.team.id} entry={e} teamsById={teamsById}
+            <TeamCard key={e.team.id} entry={e} teamsById={teamsById} connectedById={connectedById}
               onOpenTask={setTaskId} onAgent={setAgent} onChanged={refreshAll} />
           ))}
         </div>
@@ -88,8 +92,13 @@ export default function LiveSwarm({ swarm, onSwarmChanged }) {
           onChanged={refreshAll} onOpenTask={setTaskId} onOpenFile={openFile} />
       )}
       {agent && (
-        <Modal title={`${agent.name} - recent calls`} onClose={() => setAgent(null)} wide>
-          <AgentCalls agent={agent} />
+        <Modal title={agent.harness === 'connected' && connectedById[agent.provider]
+          ? `${agent.name} (${connectedById[agent.provider].name}) - activity` : `${agent.name} - recent calls`}
+          onClose={() => setAgent(null)} wide>
+          <AgentCalls agent={agent} connected={agent.harness === 'connected' ? (connectedById[agent.provider] || null) : undefined}
+            activity={((events.data && events.data.events) || []).filter((e) => e.actor === agent.id
+              && (e.kind === 'tool' || e.kind === 'message'))}
+            names={names} teamNames={teamNames} onOpenTask={(t) => { setAgent(null); setTaskId(t) }} />
         </Modal>
       )}
     </div>

@@ -1,11 +1,27 @@
 import React, { useState } from 'react'
 import { api } from '../api.js'
-import { capLabel, creatorLabel, fmtNum } from '../util.js'
+import { CONNECTED, capLabel, connectedBadge, connectedStatus, creatorLabel, fmtNum } from '../util.js'
 import { Chip, Collapsible, ErrorNote, Spinner, useAction } from './Common.jsx'
 import Kanban from './Kanban.jsx'
 import AddTask from './AddTask.jsx'
 
-function Roster({ agents, tasksById, onAgent }) {
+// The model cell of a delivery agent filled by a connected agent (its row keeps the connected
+// agent's id in `provider`): "its own model" and a badge such as "Jane · A2A".
+export function ConnectedBadge({ agentRow, ca }) {
+  const st = ca ? connectedStatus(ca) : null
+  const title = ca
+    ? `Connected agent ${ca.name}: ${ca.kind_label}, ${ca.direct ? `reached directly over ${ca.protocol_label}` : 'through an agent host'}. ${st.text}.`
+    : `Connected agent ${agentRow.provider} (no longer in Agents & models)`
+  return (
+    <>
+      <span className="muted">its own model</span>{' '}
+      <span className="chip connected-badge" title={title}>{ca ? connectedBadge(ca) : 'removed connected agent'}</span>
+      {ca && ca.availability !== 'available' && <span className={`nowrap ca-mini t-${st.tone}`}> {st.text.toLowerCase()}</span>}
+    </>
+  )
+}
+
+function Roster({ agents, tasksById, onAgent, connectedById = {} }) {
   if (!agents.length) return <div className="muted">No agents.</div>
   return (
     <div className="table-scroll">
@@ -16,9 +32,10 @@ function Roster({ agents, tasksById, onAgent }) {
           <tr key={a.id}>
             <td>{a.role.replace(/_/g, ' ')}</td>
             <td><button type="button" className="link" onClick={() => onAgent(a)}>{a.name}</button></td>
-            <td>{a.model}{a.harness && a.harness !== 'daash' && (
-              <> <span className="chip harness-badge" title={`harness: ${a.harness}`}>{a.harness}</span></>
-            )}
+            <td>{a.harness === CONNECTED ? <ConnectedBadge agentRow={a} ca={connectedById[a.provider]} /> : <>
+              {a.model}{a.harness && a.harness !== 'daash' && (
+                <> <span className="chip harness-badge" title={`harness: ${a.harness}`}>{a.harness}</span></>
+              )}</>}
               {(a.capabilities || []).length > 0 && (
                 <div className="caps" title={`capabilities: ${a.capabilities.map(capLabel).join(', ')}`}>
                   {a.capabilities.map((c) => <span key={c} className="chip cap-chip">{capLabel(c)}</span>)}
@@ -58,7 +75,7 @@ function Standards({ team, onChanged }) {
   )
 }
 
-export default function TeamCard({ entry, teamsById, onOpenTask, onAgent, onChanged }) {
+export default function TeamCard({ entry, teamsById, onOpenTask, onAgent, onChanged, connectedById }) {
   const { team, agents, tasks } = entry
   const agentsById = Object.fromEntries(agents.map((a) => [a.id, a]))
   const tasksById = Object.fromEntries(tasks.map((t) => [t.id, t]))
@@ -73,7 +90,7 @@ export default function TeamCard({ entry, teamsById, onOpenTask, onAgent, onChan
         created by {creatorLabel(team, teamsById)} · generation {team.generation}
         {team.next_focus && <> · focus: {team.next_focus}</>}
       </div>
-      <Roster agents={agents} tasksById={tasksById} onAgent={onAgent} />
+      <Roster agents={agents} tasksById={tasksById} onAgent={onAgent} connectedById={connectedById} />
       <Standards team={team} onChanged={onChanged} />
       <Kanban tasks={tasks} agentsById={agentsById} onOpen={onOpenTask} />
       <AddTask team={team} onAdded={onChanged} />

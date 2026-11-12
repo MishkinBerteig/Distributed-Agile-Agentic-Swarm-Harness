@@ -121,6 +121,11 @@ export const defaultCaps = (h) => HARNESS_DEFAULT_CAPS[h] || ['edit_files']
 export const sameCaps = (a, b) => [...a].sort().join() === [...b].sort().join()
 
 export const HARNESS_CHOICES = ['daash', 'openclaude', 'claude-code', 'codex', 'openclaw', 'hermes']
+// Display names (app/api_helpers.py HARNESS_LABELS), used until GET /availability answers.
+export const HARNESS_NAMES = {
+  daash: 'DAASH built-in agent', openclaude: 'OpenClaude', 'claude-code': 'Claude Code', codex: 'Codex',
+  openclaw: 'OpenClaw', hermes: 'Hermes Agent', fake: 'Fake CLI (tests only)', connected: 'Connected agents',
+}
 
 // Why an agent harness is or is not available (GET /availability `status`).
 export const HARNESS_STATUS = {
@@ -134,3 +139,81 @@ export const statusText = (s) => (HARNESS_STATUS[s] ? HARNESS_STATUS[s].text : S
 // Allowed harnesses that cannot run anything right now: their work waits, then falls back.
 export const unavailableAllowed = (harnesses) =>
   (harnesses || []).filter((h) => h.allowed && h.status !== 'available')
+
+// -- connected agents (DESIGN-0.4 section 5) ---------------------------------------------------
+
+// A delivery row filled by a connected agent: {harness: 'connected', connected_agent: <id>}.
+export const CONNECTED = 'connected'
+
+// GET /connected-agents `availability`: a short status and what it means for a first-time user.
+export const CONNECTED_STATUS = {
+  available: { text: 'Available', tone: 'on',
+    explain: 'The last check passed. It can take tasks.' },
+  pending: { text: 'Waiting for approval', tone: 'wait',
+    explain: 'Connected in DAASH, but its owner has not applied the approval step yet. DAASH checks by itself every few seconds.' },
+  unchecked: { text: 'Not checked yet', tone: 'wait',
+    explain: 'Approved, but DAASH has not tested it since. Use Test, or wait a minute.' },
+  unreachable: { text: 'Unreachable', tone: 'off',
+    explain: 'DAASH got no answer at its address. Its tasks wait and retry without using up attempts; after the swarm’s remote fallback time, DAASH’s built-in agent does them.' },
+  token_rejected: { text: 'Token rejected', tone: 'off',
+    explain: 'It refused DAASH’s token: the approval step was not applied, or was undone. Reset tokens to get a new step for its owner.' },
+  offline: { text: 'Offline', tone: 'off',
+    explain: 'Its agent host is offline, or no longer reports this agent. It comes back by itself when that machine and its DAASH runner run again.' },
+  disabled: { text: 'Disabled', tone: 'off',
+    explain: 'You turned it off. Delivery rows that use it get DAASH’s built-in agent meanwhile.' },
+}
+export const connectedStatus = (a) =>
+  CONNECTED_STATUS[a && a.availability] || { text: String((a && a.availability) || 'unknown'), tone: 'off', explain: '' }
+
+// "Jane · A2A", "Fitz · agent host": the roster badge of a connected agent.
+export const connectedBadge = (a) => (a ? `${a.name} · ${a.protocol_label || a.protocol}` : 'connected agent')
+
+// "fake-jane:18789" from "http://fake-jane:18789/...".
+export function hostPort(url) {
+  if (!url) return ''
+  try { const u = new URL(url); return u.port ? `${u.hostname}:${u.port}` : u.hostname } catch { return String(url) }
+}
+
+// Where a connected agent runs, in words.
+export function connectedWhere(a) {
+  if (a.protocol === 'runner') return a.runner ? `on agent host ${a.runner.name}` : 'on an agent host'
+  return a.url ? `at ${hostPort(a.url)}` : ''
+}
+
+// "in 42m 3s" / "3m 10s ago" for an ISO time.
+export function relTime(iso) {
+  if (!iso) return ''
+  const t = new Date(iso).getTime()
+  if (Number.isNaN(t)) return String(iso)
+  const sec = (t - Date.now()) / 1000
+  return sec >= 0 ? `in ${humanDuration(Math.max(sec, 1))}` : `${humanDuration(-sec)} ago`
+}
+
+// Copy text to the clipboard; falls back to a hidden textarea where the async API is missing
+// (DAASHboard opened over plain http from another machine). Resolves true when it worked.
+export async function copyText(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch { /* fall back below */ }
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.setAttribute('readonly', '')
+    ta.style.position = 'fixed'
+    ta.style.top = '-1000px'
+    document.body.appendChild(ta)
+    ta.select()
+    const ok = document.execCommand('copy')
+    document.body.removeChild(ta)
+    return ok
+  } catch { return false }
+}
+
+// The DAASH tool a `tool` event names ("Delivery-1 (Jane) used DAASH tool write_file (...)").
+export function toolOfEvent(ev) {
+  const m = /used DAASH tool ([A-Za-z_]+)/.exec((ev && ev.detail) || '')
+  return m ? m[1] : 'tool'
+}

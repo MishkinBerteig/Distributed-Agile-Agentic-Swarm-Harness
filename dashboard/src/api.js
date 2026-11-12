@@ -59,8 +59,10 @@ export const api = {
   getConfig: () => request('GET', '/config'),
   putConfig: (cfg) => request('PUT', '/config', cfg),
   getModels: () => request('GET', '/models'),
+  getHelpTopics: () => request('GET', '/help'),
   getHelp: (topic) => request('GET', `/help/${enc(topic)}`),
   getAvailability: () => request('GET', '/availability'),
+  getAgentEndpoint: () => request('GET', '/agent-endpoint'),
 
   listSwarms: () => request('GET', '/swarms'),
   createSwarm: (payload) => request('POST', '/swarms', payload),
@@ -94,4 +96,24 @@ export const api = {
   listRemoteJobs: (swarm_id) => request('GET', `/remote-jobs${q({ swarm_id })}`),
 
   getDecisions: (limit = 50) => request('GET', `/decisions${q({ limit })}`),
+
+  // Connected agents (DESIGN-0.4 sections 5.7-5.9). Tokens of the owner's approval step come
+  // back only from connect and reset-tokens.
+  listConnected: () => request('GET', '/connected-agents'),
+  getConnected: (id) => request('GET', `/connected-agents/${enc(id)}`),
+  connectAgent: (payload) => request('POST', '/connected-agents', payload),
+  patchConnected: (id, patch) => request('PATCH', `/connected-agents/${enc(id)}`, patch),
+  checkConnected: (id) => request('POST', `/connected-agents/${enc(id)}/check`),
+  retryConnected: (id) => request('POST', `/connected-agents/${enc(id)}/retry`),
+  resetConnectedTokens: (id) => request('POST', `/connected-agents/${enc(id)}/reset-tokens`),
+  deleteConnected: (id) => request('DELETE', `/connected-agents/${enc(id)}`),
+  listDiscoveries: () => request('GET', '/connected-agents/discoveries'),
+  discover: (hosts) => request('POST', '/connected-agents/discover', hosts && hosts.length ? { hosts } : {}),
+  probeAddress: (address) => request('POST', '/connected-agents/probe', { address }),
+
+  // Agent hosts (DESIGN-0.4 section 5.9): one-time codes for the owner's install command.
+  createEnrollment: () => request('POST', '/runner-enrollments'),
+  listEnrollments: () => request('GET', '/runner-enrollments'),
+  getEnrollment: (id) => request('GET', `/runner-enrollments/${enc(id)}`),
+  deleteEnrollment: (id) => request('DELETE', `/runner-enrollments/${enc(id)}`),
 }

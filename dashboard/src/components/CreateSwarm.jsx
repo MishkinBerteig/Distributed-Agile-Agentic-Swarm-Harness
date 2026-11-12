@@ -65,7 +65,7 @@ export default function CreateSwarm({ onCreated }) {
       <Collapsible title="Advanced configuration">
         {!swarmCfg ? (cfg.error ? <ErrorNote error={cfg.error} /> : <Spinner label="Loading defaults" />) : (
           <SwarmConfigFields cfg={swarmCfg} setCfg={setSwarmCfg} gatewayModels={gatewayModels}
-            harnesses={avail.data && avail.data.harnesses} />
+            harnesses={avail.data && avail.data.harnesses} connected={avail.data && avail.data.connected_agents} />
         )}
       </Collapsible>
 
