@@ -258,6 +258,62 @@ class FakeA2AAgent:
             "requests": len(self.requests)}
 
 
+class FakeHermesAPI(FakeA2AAgent):
+    """The same scripted agent behind a Hermes Agent API server (v0.23 shapes, verified against
+    a real one): public `GET /health` {"status", "platform": "hermes-agent", "version"},
+    Bearer-key `GET /v1/models`, `POST /v1/runs` {input, session_id} -> 202 {run_id, status},
+    `GET /v1/runs/{id}` {status: queued|running|completed|failed|cancelled, output, usage},
+    `POST /v1/runs/{id}/stop`. `token` is the API_SERVER_KEY (None = API server off: 404)."""
+
+    STATES = {"TASK_STATE_WORKING": "running", "TASK_STATE_COMPLETED": "completed",
+              "TASK_STATE_FAILED": "failed"}
+
+    def __init__(self, name: str = "Hermes", **kw: Any) -> None:
+        super().__init__(name, **kw)
+        self.stopped: list[str] = []
+        self.sessions: list[str] = []
+
+    async def handle(self, method: str, path: str, headers: dict, body: bytes
+                     ) -> tuple[int, Any]:
+        if not self.token:
+            return 404, {"error": "not found"}
+        if method == "GET" and path in ("/health", "/v1/health"):
+            return 200, {"status": "ok", "platform": "hermes-agent", "version": "0.23.1"}
+        ok = headers.get("authorization", "") == f"Bearer {self.token}"
+        self.requests.append({"method": f"{method} {path}", "auth": ok})
+        if not ok:
+            return 401, {"error": {"message": "Invalid gateway API key (API_SERVER_KEY)",
+                                   "type": "gateway_auth_error", "code": "gateway_auth_failed"}}
+        if method == "GET" and path == "/v1/models":
+            return 200, {"object": "list", "data": [{"id": "hermes-agent", "object": "model"}]}
+        if method == "POST" and path == "/v1/runs":
+            req = json.loads(body or b"{}")
+            self.sessions.append(str(req.get("session_id") or ""))
+            t = FakeTask(id=f"run_{uuid.uuid4().hex}", context_id=str(req.get("session_id")),
+                         text=str(req.get("input") or ""))
+            self.tasks[t.id] = t
+            self.background.append(asyncio.get_running_loop().create_task(self._work(t)))
+            return 202, {"run_id": t.id, "status": "started", "replayed": False}
+        parts = path.strip("/").split("/")
+        if len(parts) >= 3 and parts[:2] == ["v1", "runs"]:
+            t = self.tasks.get(parts[2])
+            if t is None:
+                return 404, {"error": {"message": "Run not found", "code": "run_not_found"}}
+            if len(parts) == 4 and parts[3] == "stop" and method == "POST":
+                self.stopped.append(t.id)
+                t.state, t.reply = "TASK_STATE_FAILED", "stopped"
+                return 200, {"run_id": t.id, "status": "stopping"}
+            status = self.STATES.get(t.state, "running")
+            if t.id in self.stopped:
+                status = "cancelled"
+            return 200, {"object": "hermes.run", "run_id": t.id, "status": status,
+                         "session_id": t.context_id,
+                         "output": t.reply if status == "completed" else "",
+                         "error": t.reply if status == "failed" else None,
+                         "usage": {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12}}
+        return 404, {"error": "not found"}
+
+
 def _rpc_error(mid: Any, code: int, message: str) -> dict:
     return {"jsonrpc": "2.0", "id": mid, "error": {"code": code, "message": message}}
 

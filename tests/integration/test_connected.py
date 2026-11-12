@@ -338,6 +338,34 @@ async def test_max_jobs_caps_rows_of_one_agent(api, h, jane, pool):
     await h.close()
 
 
+async def test_hermes_api_job_reaches_done(api, h, pool, monkeypatch):
+    from app import main
+    from tests.fakes.fake_a2a_agent import FakeHermesAPI
+    herm = FakeHermesAPI(mcp_transport=httpx.ASGITransport(app=main.app),
+                         mcp_url="http://test/mcp")
+    t = httpx.MockTransport(herm.httpx_handler)
+    monkeypatch.setattr(main, "connector_transport", t)
+    h.engine.jobs.connector_transport = t
+    h.engine.jobs.connected_poll_seconds = 0.02
+    r = await api.post("/connected-agents", json={"address": "herm", "protocol": "hermes-api",
+                                                  "name": "Hermes"})
+    assert r.status_code == 201, r.text
+    out = r.json()
+    key = out["approval"]["api_key"]
+    herm.approve(key, mcp_token=out["approval"]["mcp_token"])     # the owner's .env + restart
+    assert [c.name for c in await h.engine.check_connected_pending()] == ["Hermes"]
+    cfg = connected_config(HarnessSpec(harness="connected", connected_agent=out["agent"]["id"]))
+    team, agent, task = await swarm_with_task(h, cfg)
+    await h.run_until(lambda: status_of_done(h, task), label="task Done")
+    d = (await h.tasks.get(task.id)).deliverable
+    assert (d["connected_agent"], d["protocol"], d["files"]) == ("Hermes", "hermes-api",
+                                                                 ["intro.md"])
+    assert herm.sessions and herm.sessions[0].endswith("-a0")
+    assert {"write_file", "remember", "send_message"} <= {c[0] for c in herm.tool_calls}
+    assert any("(Hermes, via the Hermes API) submitted" in e.detail
+               for e in await h.event_list())
+
+
 # -- discovery ------------------------------------------------------------------------------------
 
 async def test_discovery_and_add_by_address(api, h, jane, pool, monkeypatch):

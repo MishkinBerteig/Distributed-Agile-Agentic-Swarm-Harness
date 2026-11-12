@@ -311,6 +311,25 @@ def test_connect_help_fragment_is_safe_and_rendered_from_the_code():
         assert must in text
 
 
+async def test_teammates_address_a_connected_agent_by_its_own_name():
+    from app import agent_tools as A
+    from tests.unit.agent_fakes import World
+    w = World()
+    jane_row = w.d2.model_copy(update={"harness": "connected", "provider": "ca-1"})
+    w.repos.agents.by_id[jane_row.id] = jane_row
+    w.repos.connected.by_id["ca-1"] = ca()
+    aliases, labels = await A.connected_names(w.repos, "s1", "tm1")
+    assert aliases == {"jane": jane_row.id}
+    assert labels[jane_row.id] == "Jane, a connected agent over A2A"
+    assert await A.connected_names(w.repos, "s1", "tm2") == ({}, labels)
+    reg = A.ToolRegistry(A.build_agent_tools(w.ctx(name_aliases=aliases, agent_labels=labels),
+                                             workspace=False))
+    out = await reg.call("send_message", {"to": "Jane", "text": "hello"})
+    assert not out.error and out.output == "message sent to Delivery-2"
+    roster = (await reg.call("team_roster", {})).output
+    assert "- Delivery-2: Mission Delivery, Jane, a connected agent over A2A" in roster
+
+
 def test_default_names():
     from app import connectors as C
     oc = C.parse_card({"name": "OpenClaw", "description": "OpenClaw agent gateway",
