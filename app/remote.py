@@ -33,7 +33,7 @@ TRANSCRIPT_MAX = 20_000
 PROMPT_LISTING_CLIP = 2000
 STAGING_DIR = ".daash/staging"
 #: Folders an agent CLI keeps its own state in; never part of a deliverable.
-CLI_STATE_DIRS = (".git", ".claude", ".codex", ".openclaude", "node_modules")
+CLI_STATE_DIRS = (".git", ".claude", ".codex", ".openclaude", ".openclaw", ".hermes", "node_modules")
 #: Generated files an agent's tooling leaves behind (running Python, tests, editors). They are
 #: dropped from results silently: never deliverables, and binary caches must not reach prompts.
 GENERATED_DIRS = ("__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".venv", "venv",

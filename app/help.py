@@ -376,7 +376,8 @@ def _jobs() -> list[dict]:
              example=lambda: P.work_prompt(TASK, TASK.criteria, None, "", (),
                                            capabilities=NATIVE, messages=MESSAGES)),
         dict(role="delivery", id="work-cli", name="Do the work (external agent)",
-             when="A task assigned to an OpenClaude, Claude Code or Codex agent is In Progress. "
+             when="A task assigned to an OpenClaude, Claude Code, Codex, OpenClaw or Hermes Agent "
+                  "agent is In Progress. "
                   "A runner picks up the job.",
              adds=["The same as the built-in agent, without proposals, plus \"do not ask "
                    "questions\". The agent works on a copy of the workspace with its own tools.",
@@ -551,18 +552,26 @@ def _tools_section() -> str:
 def _cli_section() -> str:
     return (
         '<section id="external"><h2>External agents</h2>'
-        "<p>OpenClaude, Claude Code and Codex agents run through a runner. DAASH sends the "
-        "runner the system message and the job message. The runner adds the system message "
-        "to the CLI's own system prompt and passes the job message on standard input.</p>"
+        "<p>OpenClaude, Claude Code, Codex, OpenClaw and Hermes Agent agents run through a "
+        "runner. DAASH sends the runner the system message and the job message. The runner "
+        "adds the system message to the CLI's own system prompt where the CLI has one, and "
+        "passes the job message on standard input.</p>"
         + _table(["Agent", "System message", "Job message", "Model"], [
             ["Claude Code, OpenClaude", "<code>--append-system-prompt</code>", "stdin, with "
              "<code>-p</code>", "<code>--model</code>"],
             ["Codex", "<code>-c developer_instructions=&hellip;</code>", "stdin, with "
              "<code>exec -</code>", "<code>-m</code>"],
+            ["OpenClaw", "first in the job message (<code>agent exec</code> has no system "
+             "prompt option)", "stdin, with <code>agent exec --message-file -</code>",
+             "<code>--model daash/&hellip;</code>"],
+            ["Hermes Agent", "<code>agent.system_prompt</code> in the job's own "
+             "<code>config.yaml</code>", "stdin, with <code>chat --query-file -</code>",
+             "<code>-m</code>"],
         ])
         + "<p>External agents use their own tools for files and code, and DAASH's tools "
           "(memory, team messages, the team roster, subtasks and proposals) through DAASH's MCP "
-          "server; the runner configures it for each job.</p>"
+          "server, with a token that works only for that job while it runs; the runner "
+          "configures it for each job.</p>"
         + "</section>")
 
 
@@ -614,7 +623,8 @@ def _rules_section() -> str:
         f"for each failed attempt. Any job that gets {ESCALATE_AFTER} unusable replies in a "
         "row moves one step up.</p>"
         '<p class="note">DAASH picks the model only where it can. The built-in agent, Claude '
-        "Code, OpenClaude and Codex accept a model from DAASH. An agent that DAASH reaches "
+        "Code, OpenClaude, Codex, OpenClaw and Hermes Agent accept a model from DAASH. An "
+        "agent that DAASH reaches "
         "only by messages may not let it choose; for such agents, escalation will mean "
         "something else, such as handing the task to another team member.</p>"
         f"<p>Every built-in call uses temperature {_TEMPERATURE} and a reply budget of "
@@ -664,7 +674,8 @@ def prompts_html() -> str:
         '<div class="part"><h3>Job message</h3><p>What to do now.</p><ol><li><code>Job:</code> '
         "and its rules</li><li>What this job needs to see: tasks, files, listings, earlier "
         "feedback</li><li>The exact JSON to reply with, and one example</li></ol></div></div>"
-        "<p>External agents (OpenClaude, Claude Code, Codex) receive the same two messages "
+        "<p>External agents (OpenClaude, Claude Code, Codex, OpenClaw, Hermes Agent) receive "
+        "the same two messages "
         "through a runner.</p></section>")
     return (
         f'<header class="mast"><span class="eyebrow">DAASHboard help</span><h1>{_e(TITLE)}</h1>'
