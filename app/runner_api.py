@@ -4,7 +4,12 @@ both the admin API (app.main) and the agent-facing API (app.agent_api) mount
 
 Since 0.4 a lease also mints the job's DAASH MCP token (section 4.1): the Job JSON carries
 `"mcp": {"path": "/mcp", "token": "djt_..."}`, returned only in that lease, its sha256 stored on
-the job. The token's tools work while the job is leased (app.mcp_server)."""
+the job. The token's tools work while the job is leased (app.mcp_server).
+
+Agent hosts (section 5.9, app.agent_hosts): a hello may carry `agents` (the agents on the runner's
+machine), which are upserted as `runner` connected agents; the response then carries `agents` (as
+DAASH knows them) and `agent_tokens` (new `dca_` MCP tokens, once). A runner first leases the
+`connected` jobs pinned to it (`payload.runner_id`), then the usual harness jobs."""
 from __future__ import annotations
 
 import asyncio
@@ -19,6 +24,7 @@ from pydantic import BaseModel, Field
 
 from app import remote as R
 from app import services
+from app.agent_hosts import AgentHostRepo, normalize_reported_agents
 from app.api_state import require_pool
 from app.mcp_server import MCP_PATH, new_job_token
 from app.models import RemoteJob, Runner, SwarmStatus
@@ -34,6 +40,8 @@ class HelloRequest(BaseModel):
     version: str = ""
     max_jobs: int = Field(1, ge=1, le=64)
     harnesses: list[Any] = Field(default_factory=list)
+    # agent hosts (section 5.9): the agents on the runner's machine; None = not an agent host
+    agents: Optional[list[Any]] = None
 
 
 class LeaseRequest(BaseModel):
@@ -85,9 +93,16 @@ def build_router(state: Any) -> APIRouter:
         await RunnerRepo(pool()).update(runner.id, host=req.host[:200], version=req.version[:80],
                                         max_jobs=req.max_jobs, harnesses=caps)
         lease_seconds = state.settings.RUNNER_LEASE_SECONDS
-        return {"runner_id": runner.id, "name": runner.name, "poll_seconds": R.POLL_SECONDS,
-                "heartbeat_seconds": R.heartbeat_seconds_for(lease_seconds),
-                "lease_seconds": lease_seconds}
+        out = {"runner_id": runner.id, "name": runner.name, "poll_seconds": R.POLL_SECONDS,
+               "heartbeat_seconds": R.heartbeat_seconds_for(lease_seconds),
+               "lease_seconds": lease_seconds}
+        if req.agents is not None:
+            synced = await AgentHostRepo(pool()).sync_agents(
+                runner.id, (req.host or runner.host or runner.name)[:200],
+                normalize_reported_agents(req.agents))
+            out["agents"] = synced["agents"]
+            out["agent_tokens"] = synced["tokens"]
+        return out
 
     @router.post("/runner/lease")
     async def runner_lease(req: LeaseRequest, runner: Runner = Depends(runner_auth)):
@@ -101,6 +116,10 @@ def build_router(state: Any) -> APIRouter:
             await repo.requeue_expired(now)
             active = (await RunnerRepo(pool()).active_job_counts()).get(runner.id, 0)
             if active < runner.max_jobs:
+                pinned = await AgentHostRepo(pool()).lease_pinned(
+                    runner.id, now, state.settings.RUNNER_LEASE_SECONDS)
+                if pinned is not None:      # an agent host's relay job (section 5.9)
+                    return {"job": job_for_runner(pinned)}
                 token = new_job_token()
                 job = await repo.lease_next(runner, caps, now,
                                             state.settings.RUNNER_LEASE_SECONDS,

@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from app import api_helpers as H
 from app import help as help_pages
 from app import help_connect
-from app import connected_api, mcp_server, runner_api
+from app import agent_hosts, connected_api, mcp_server, runner_api
 from app import connected_service as CS
 from app import remote as R
 from app import services
@@ -692,6 +692,9 @@ async def patch_runner(runner_id: str, req: RunnerPatchRequest) -> dict:
     runner = await RunnerRepo(_p()).update(runner_id, enabled=req.enabled)
     if runner is None:
         raise HTTPException(404, "runner not found")
+    if not req.enabled:     # an agent host's agents cannot be reached any more (DESIGN-0.4 5.9)
+        await agent_hosts.AgentHostRepo(_p()).set_runner_agents_offline(
+            runner_id, agent_hosts.DISABLED_ERROR)
     return await _runner_view(runner)
 
 
@@ -727,5 +730,8 @@ async def list_remote_jobs(swarm_id: Optional[str] = None) -> dict:
 _state = ModuleState(__name__)
 app.include_router(runner_api.build_router(_state))
 app.include_router(mcp_server.build_router(_state))
+# agent hosts (docs/DESIGN-0.4.md 5.9): connect codes (admin) and enroll/zipapp/disconnect (/runner/*)
+app.include_router(agent_hosts.build_admin_router(_state))
+app.include_router(agent_hosts.build_agent_router(_state))
 # Connected agents (docs/DESIGN-0.4.md section 5): admin only, never on the agent-facing port.
 app.include_router(connected_api.build_router(_state))

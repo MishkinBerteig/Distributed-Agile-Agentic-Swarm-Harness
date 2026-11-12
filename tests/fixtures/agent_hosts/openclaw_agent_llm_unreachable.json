@@ -1,0 +1,9 @@
+{
+  "ok": false,
+  "runId": "6a8d25bd-0911-48db-8ec7-83311e05780a",
+  "origin": "gateway",
+  "error": {
+    "type": "cli_error",
+    "message": "Couldn't connect to the AI service. Check your connection, then try again. For details, open Settings \u2192 Logs in the Control UI or run `openclaw logs --follow`."
+  }
+}

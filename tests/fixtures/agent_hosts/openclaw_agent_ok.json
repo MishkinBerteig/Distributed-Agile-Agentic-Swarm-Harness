@@ -1,0 +1,152 @@
+{
+  "runId": "a6a5d4e8-3cbf-468d-91b9-1bf7b407141c",
+  "status": "ok",
+  "summary": "completed",
+  "result": {
+    "payloads": [
+      {
+        "text": "DONE",
+        "mediaUrl": null
+      }
+    ],
+    "meta": {
+      "durationMs": 35289,
+      "agentMeta": {
+        "sessionId": "3712edec-0c64-4963-bd5b-d3f16657fc49",
+        "sessionFile": "agent:main:daash:test0001",
+        "provider": "lmstudio",
+        "model": "fast",
+        "contextTokens": 128000,
+        "contextTokensSource": "resolved",
+        "agentHarnessId": "openclaw",
+        "credentialSource": {
+          "kind": "direct",
+          "evidence": "environment",
+          "authorization": "declared"
+        },
+        "usage": {
+          "input": 14734,
+          "output": 493,
+          "cacheRead": 41632,
+          "cacheWrite": 0,
+          "reasoningTokens": 246,
+          "total": 56859,
+          "cost": {
+            "total": 0
+          }
+        },
+        "lastCallUsage": {
+          "input": 316,
+          "output": 49,
+          "cacheRead": 14400,
+          "cacheWrite": 0,
+          "cost": {
+            "total": 0
+          },
+          "contextUsage": {
+            "state": "available",
+            "promptTokens": 14716,
+            "totalTokens": 14765
+          },
+          "reasoningTokens": 45,
+          "total": 14765
+        },
+        "promptTokens": 14716,
+        "contextBudgetStatus": {
+          "schemaVersion": 1,
+          "source": "pre-prompt-estimate",
+          "updatedAt": 1794454201734,
+          "provider": "lmstudio",
+          "model": "fast",
+          "route": "fits",
+          "shouldCompact": false,
+          "estimatedPromptTokens": 17319,
+          "contextTokenBudget": 128000,
+          "promptBudgetBeforeReserve": 108000,
+          "reserveTokens": 20000,
+          "effectiveReserveTokens": 20000,
+          "remainingPromptBudgetTokens": 90681,
+          "overflowTokens": 0,
+          "toolResultReducibleChars": 0,
+          "messageCount": 0,
+          "unwindowedMessageCount": 0,
+          "sessionId": "3712edec-0c64-4963-bd5b-d3f16657fc49"
+        },
+        "codeModeEngaged": false,
+        "assistantTurns": 4,
+        "bridgeCalls": {
+          "search": 1,
+          "describe": 1,
+          "call": 1
+        },
+        "terminalReceipt": {
+          "runId": "a6a5d4e8-3cbf-468d-91b9-1bf7b407141c",
+          "sessionId": "3712edec-0c64-4963-bd5b-d3f16657fc49",
+          "turnId": "a6a5d4e8-3cbf-468d-91b9-1bf7b407141c",
+          "requested": {
+            "provider": "lmstudio",
+            "model": "fast"
+          },
+          "effective": {
+            "provider": "lmstudio",
+            "model": "fast",
+            "responseModel": "fast"
+          },
+          "successfulToolNames": [
+            "tool_search",
+            "exec",
+            "tool_describe",
+            "daash__remember",
+            "tool_call"
+          ],
+          "rerouted": false,
+          "terminalDisposition": "visible"
+        }
+      },
+      "aborted": false,
+      "finalPromptText": "Your working folder for this job is /home/runner/.openclaw/workspace/daash-jobs/test0001 . Work only inside it.\n1. Call the remember tool of the daash MCP server with content \"agent hosts work\".\n2. Create the file hello.md in that folder containing the word hello.\nThen reply DONE.",
+      "finalAssistantVisibleText": "DONE",
+      "finalAssistantRawText": "DONE",
+      "replayInvalid": true,
+      "livenessState": "working",
+      "stopReason": "stop",
+      "executionTrace": {
+        "winnerProvider": "lmstudio",
+        "winnerModel": "fast",
+        "attempts": [
+          {
+            "provider": "lmstudio",
+            "model": "fast",
+            "result": "success",
+            "stage": "assistant"
+          }
+        ],
+        "fallbackUsed": false,
+        "runner": "embedded"
+      },
+      "requestShaping": {
+        "thinking": "off"
+      },
+      "completion": {
+        "stopReason": "stop",
+        "finishReason": "stop"
+      },
+      "toolSummary": {
+        "calls": 5,
+        "tools": [
+          "tool_search",
+          "exec",
+          "tool_describe",
+          "daash__remember",
+          "tool_call"
+        ],
+        "failures": 0
+      },
+      "terminalReply": {
+        "disposition": "visible",
+        "text": "DONE"
+      }
+    },
+    "sourceReplyDeliveryState": "missing"
+  }
+}

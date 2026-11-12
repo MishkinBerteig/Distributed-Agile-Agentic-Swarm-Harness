@@ -173,8 +173,11 @@ def _host() -> str:
         "installing the runner was the approval.</p>"
         "<p>The runner relays each task to the agent through the agent's own command line, "
         "with the owner's own login and the agent's own model, in a folder inside the agent's "
-        "workspace that it removes afterwards. Dangerous commands stay denied on the owner's "
-        "machine.</p>"
+        "workspace that it removes afterwards. The agent keeps its own tool rules (Hermes "
+        "keeps denying dangerous commands on the owner's machine).</p>"
+        "<p>To undo everything, the owner runs <code>python3 ~/daash-runner.pyz "
+        "disconnect</code> on that machine; <code>python3 ~/daash-runner.pyz status</code> "
+        "shows what is connected. The step-by-step guide is docs/AGENT-HOSTS.md.</p>"
         "</section>")
 
 
