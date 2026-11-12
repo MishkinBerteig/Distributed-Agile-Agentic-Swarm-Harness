@@ -11,13 +11,15 @@ import re
 import shutil
 from typing import Any, Mapping
 
-KNOWN_HARNESSES = ("openclaude", "claude-code", "codex", "fake")
+KNOWN_HARNESSES = ("openclaude", "claude-code", "codex", "openclaw", "hermes", "fake")
 _VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 DEFAULT_COMMANDS = {
     "openclaude": "openclaude",
     "claude-code": "claude",
     "codex": "codex",
+    "openclaw": "openclaw",
+    "hermes": "hermes",
     "fake": "python3",
 }
 

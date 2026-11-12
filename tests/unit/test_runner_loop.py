@@ -27,6 +27,7 @@ class Stub:
         self.lease_calls = 0
         self.lock = threading.Lock()
         self.workspace_files = {"README.md": b"# shared\n", "old.md": b"old\n"}
+        self.mcp = None                    # a tests.fakes.fake_mcp_server.FakeMCP serving POST /mcp
 
 
 def make_server(stub: Stub):
@@ -65,6 +66,12 @@ def make_server(stub: Stub):
             self._send(200, buf.getvalue(), "application/gzip")
 
         def do_POST(self):
+            if self.path == "/mcp" and stub.mcp is not None:     # DAASH MCP (job token, not runner token)
+                if self.headers.get("Authorization") != f"Bearer {stub.mcp.token}":
+                    return self._send(401, {"detail": "bad job token"})
+                msg = self._body()
+                reply = stub.mcp.handle(msg)
+                return self._send(202) if reply is None else self._send(200, reply)
             if not self._auth():
                 return
             body = self._body()

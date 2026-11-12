@@ -17,13 +17,60 @@ from .client import AuthError, Client, CoordinatorError, HttpStatus
 from .checks import run_checks
 from .config import available_harnesses
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 log = logging.getLogger("daash_runner")
 
 SUMMARY_MAX = 4000
 TAIL_MAX = 20000
 PRUNE_AFTER_SECONDS = 3 * 24 * 3600
 REHELLO_SECONDS = 300
+CLEANUP_TIMEOUT = 30          # below the 60 s lease: no heartbeats while it runs
+
+
+def mcp_endpoint(job: dict, coordinator_url: str) -> tuple[str, str]:
+    """(url, token) of the job's DAASH MCP server (docs/DESIGN-0.4.md 4.1), or ("", "").
+
+    The lease names a path; the URL is built from the runner's own coordinator URL, so it works
+    wherever the runner reaches the coordinator. A lease without `mcp` (older coordinator) or with
+    anything but an absolute path means the job runs without DAASH tools."""
+    mcp = job.get("mcp")
+    if not isinstance(mcp, dict):
+        return "", ""
+    path, token = str(mcp.get("path") or ""), str(mcp.get("token") or "")
+    if not token or not path.startswith("/") or path.startswith("//"):
+        return "", ""
+    return coordinator_url.rstrip("/") + path, token
+
+
+def prepare_invocation(inv: adapters.Invocation) -> None:
+    """Create the adapter's private folders and config files (owner-only)."""
+    for d in inv.dirs:
+        os.makedirs(d, mode=0o700, exist_ok=True)
+    for path, content in inv.files.items():
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(content)
+
+
+def finish_invocation(inv: adapters.Invocation, cwd: str) -> None:
+    """After the CLI: run the adapter's cleanup commands (e.g. stop a Hermes gateway the CLI
+    started in the background), then delete what it no longer needs. Never raises."""
+    for argv in inv.cleanup:
+        try:
+            subprocess.run(argv, cwd=cwd, env=inv.env, stdin=subprocess.DEVNULL,  # noqa: S603
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           timeout=CLEANUP_TIMEOUT, start_new_session=True, check=False)
+        except (OSError, subprocess.SubprocessError) as exc:
+            log.warning("cleanup command %s failed: %s", argv[:3], exc)
+    for path in inv.remove_after:
+        if os.path.isdir(path) and not os.path.islink(path):
+            shutil.rmtree(path, ignore_errors=True)
+        else:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
 
 def prune_jobs(jobs_dir: str, max_age_seconds: float = PRUNE_AFTER_SECONDS, now: float | None = None) -> int:
@@ -219,26 +266,36 @@ class Runner:
         state = os.path.join(self.state_dir, harness)
         os.makedirs(state, exist_ok=True)
         task = job.get("task") or {}
-        spec = adapters.JobSpec(model=job.get("model", ""), system_prompt=job.get("system_prompt", ""),
-                                prompt=job.get("prompt", ""), state_dir=state, artifact=task.get("artifact") or "")
-        inv = adapters.build(harness, hcfg, spec, self.environ)
         limits = job.get("limits") or {}
         timeout = float(min(limits.get("timeout_seconds") or hcfg["timeout_seconds"], hcfg["timeout_seconds"]))
+        mcp_url, mcp_token = mcp_endpoint(job, self.client.base)
+        spec = adapters.JobSpec(model=job.get("model", ""), system_prompt=job.get("system_prompt", ""),
+                                prompt=job.get("prompt", ""), state_dir=state, artifact=task.get("artifact") or "",
+                                job_dir=jdir, workdir=ws, timeout_seconds=int(timeout),
+                                mcp_url=mcp_url, mcp_token=mcp_token)
+        inv = adapters.build(harness, hcfg, spec, self.environ)
         out_path, err_path = os.path.join(jdir, "stdout.log"), os.path.join(jdir, "stderr.log")
+        try:
+            prepare_invocation(inv)
+        except OSError as exc:
+            return self._error_payload(f"could not write the CLI's config: {exc}")
 
-        with open(out_path, "wb") as out, open(err_path, "wb") as err:
-            try:
-                proc = subprocess.Popen(  # noqa: S603 - argv is operator-configured harness CLI
-                    inv.argv, cwd=ws, env=inv.env, stdin=subprocess.PIPE, stdout=out, stderr=err,
-                    start_new_session=True)
-            except FileNotFoundError:
-                return self._error_payload(f"harness CLI '{inv.argv[0]}' not found on this runner")
-            except OSError as exc:
-                return self._error_payload(f"could not start '{inv.argv[0]}': {exc}")
-            with self._lock:
-                self._procs[jid] = proc
-            threading.Thread(target=self._feed_stdin, args=(proc, inv.stdin), daemon=True).start()
-            state_flag = self._supervise(jid, proc, timeout)
+        try:
+            with open(out_path, "wb") as out, open(err_path, "wb") as err:
+                try:
+                    proc = subprocess.Popen(  # noqa: S603 - argv is operator-configured harness CLI
+                        inv.argv, cwd=ws, env=inv.env, stdin=subprocess.PIPE, stdout=out, stderr=err,
+                        start_new_session=True)
+                except FileNotFoundError:
+                    return self._error_payload(f"harness CLI '{inv.argv[0]}' not found on this runner")
+                except OSError as exc:
+                    return self._error_payload(f"could not start '{inv.argv[0]}': {exc}")
+                with self._lock:
+                    self._procs[jid] = proc
+                threading.Thread(target=self._feed_stdin, args=(proc, inv.stdin), daemon=True).start()
+                state_flag = self._supervise(jid, proc, timeout)
+        finally:
+            finish_invocation(inv, ws)
 
         with self._lock:
             self._procs.pop(jid, None)

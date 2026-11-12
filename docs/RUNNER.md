@@ -1,18 +1,23 @@
-# DAASH runner (0.3)
+# DAASH runner (0.4)
 
 The runner lets a team's Mission Delivery agents work through an external agent CLI (OpenClaude,
-Claude Code, Codex) on any device. It is **pull-based**: the runner dials out to the coordinator, so it
-works behind NAT or over Tailscale. Contract: docs/DESIGN-0.3.md sections 5 and 7. Code: `daash_runner/`
-(Python 3.10+, standard library only: no venv, no `pip install`).
+Claude Code, Codex, OpenClaw, Hermes Agent) on any device. It is **pull-based**: the runner dials out to
+the coordinator, so it works behind NAT or over Tailscale. Contract: docs/DESIGN-0.3.md sections 5 and 7,
+docs/DESIGN-0.4.md section 4. Code: `daash_runner/` (Python 3.10+, standard library only: no venv, no
+`pip install`).
+
+Every CLI the runner launches gets **DAASH's tools over MCP** for its job (memory, team messages, the
+team roster, subtasks, team proposals and votes; see "DAASH tools" below).
 
 ## What it does
 
 hello (announce harnesses and models) -> long-poll `lease` while a slot is free -> download the swarm
 workspace tar -> safe extract into `<work-dir>/jobs/<job_id>/ws/` -> snapshot (sha256) -> run the CLI in
 a new process group -> heartbeat every 15 s -> diff the folder (changed, new, deleted; `.git/ .claude/
-.codex/ .openclaude/ node_modules/ .daash/` ignored) -> upload result. A `cancelled` heartbeat or the job
-timeout kills the CLI's whole process group. SIGINT/SIGTERM stops running CLIs and reports `error` for
-them. Job folders (with `stdout.log`/`stderr.log`) are kept 3 days. Log: `<work-dir>/runner.log` (rotating).
+.codex/ .openclaude/ .openclaw/ .hermes/ node_modules/ .daash/` ignored) -> upload result. A `cancelled`
+heartbeat or the job timeout kills the CLI's whole process group. SIGINT/SIGTERM stops running CLIs and
+reports `error` for them. Job folders (with `stdout.log`/`stderr.log`, and `cli/` for the config the
+runner generated for that job's CLI) are kept 3 days. Log: `<work-dir>/runner.log` (rotating).
 
 Outcomes: `submitted` (CLI finished with a final answer), `failed` (no answer, non-zero exit, timeout,
 result over the job limits; counts as an attempt) and `error` (infrastructure: CLI missing, gateway
@@ -27,7 +32,8 @@ docker compose --profile runner up --build -d runner
 docker compose logs -f runner
 ```
 The `runner` service (profile `runner`, not started by default) is built from `Dockerfile.runner`
-(node 22 + python3 + the three CLIs pinned to the verified versions), runs as a non-root user, sits on the
+(node 24 + python3 + the five CLIs pinned to the verified versions, `tini` as PID 1), runs as a non-root
+user, sits on the
 `frontend` network (egress to the gateway, reaches `http://coordinator:8000`), uses `runner/runner.docker.json`
 and keeps its work dir in the `runner-work` volume. The coordinator service must receive the same
 `DAASH_RUNNER_BOOTSTRAP_TOKEN` for the bootstrap runner to exist.
@@ -70,7 +76,35 @@ A 401 at startup exits with code 2; later 401s and coordinator outages are retri
   limit applies if smaller).
 * Harness-specific keys: `permission_mode` (openclaude, claude-code), `small_model` (claude-code, default
   `instant`), `sandbox` (codex: `workspace-write` default, `read-only`, `danger-full-access`, or `bypass`),
-  `api_key_env` (codex, default `DAASH_LLM_API_KEY`).
+  `api_key_env` (codex, openclaw, hermes: the env var holding the gateway key, default
+  `DAASH_LLM_API_KEY`), `thinking` (openclaw `--thinking` level), `context_window` / `max_tokens`
+  (openclaw model metadata, default 131072 / 16384), `max_turns` (hermes, default 90),
+  `context_length` (hermes, default 131072). openclaw and hermes take the gateway from
+  `DAASH_GATEWAY_URL` in `env` (the OpenAI-compatible `/v1` URL), as codex does.
+
+## DAASH tools (MCP)
+
+Every CLI the runner launches gets DAASH's MCP server, named `daash`, for its job (docs/DESIGN-0.4.md 4.2).
+The lease carries `"mcp": {"path": "/mcp", "token": "djt_..."}`; the runner builds the URL from **its own**
+coordinator URL (`--coordinator` + path), so the tools work wherever the runner reaches the coordinator. The
+job token goes into the CLI's environment as `DAASH_MCP_TOKEN`; the per-job config files refer to it
+(`${DAASH_MCP_TOKEN}`) and never contain it. It stops working when the job ends. A lease without `mcp` (a
+0.3 coordinator) runs the CLI without DAASH tools. The tools then appear to the agent as `remember`,
+`recall`, `team_roster`, `send_message`, `read_messages`, `create_subtask`, `propose_team`,
+`vote_on_proposal`, `list_proposals`, `current_task` (Claude Code shows them as `mcp__daash__<tool>`).
+
+| CLI | How it gets the `daash` server |
+|---|---|
+| claude-code, openclaude | `--mcp-config <job>/cli/mcp.json --strict-mcp-config --allowedTools mcp__daash`; the file holds `{"mcpServers": {"daash": {"type": "http", "url": URL, "headers": {"Authorization": "Bearer ${DAASH_MCP_TOKEN}"}}}}`. `--strict-mcp-config` ignores any other MCP config (a workspace `.mcp.json`). `--allowedTools mcp__daash` is **required** whenever the permission mode is not a bypass mode: without it `-p` answers "Claude requested permissions to use mcp__daash__remember, but you haven't granted it yet". |
+| codex | `-c mcp_servers.daash.url="URL" -c mcp_servers.daash.bearer_token_env_var="DAASH_MCP_TOKEN" -c mcp_servers.daash.default_tools_approval_mode="approve"`. The approval mode is **required** with `--sandbox workspace-write`: without it the call fails with "MCP tool call requires approval, but approval policy is never". |
+| openclaw | `mcp.servers.daash: {url, transport: "streamable-http", headers: {Authorization: "Bearer ${DAASH_MCP_TOKEN}"}}` in the job's `--config` file (OpenClaw substitutes `${VAR}`). |
+| hermes | `mcp_servers.daash: {url, headers: {Authorization: "Bearer ${DAASH_MCP_TOKEN}"}, timeout, connect_timeout}` in the job's `$HERMES_HOME/config.yaml`. |
+| fake | `DAASH_MCP_URL` and `DAASH_MCP_TOKEN` in the environment. With `DAASH_FAKE_MCP=remember,send_message` (or `all`) it calls those tools over stdlib JSON-RPC before writing the artifact (`DAASH_FAKE_MCP_TO`, default `team`; `DAASH_FAKE_MCP_STRICT=1` fails the run if a call fails). |
+
+Verified on 2026-11-11 in the runner image: each of the five CLIs listed the tools of a stub MCP server
+(`tests/fakes/fake_mcp_server.py`, streamable HTTP, bearer token) and called `remember` when asked to,
+with the config above (claude-code in both `bypassPermissions` and `acceptEdits`, codex in both `bypass` and
+`workspace-write`).
 
 ## Verified CLI invocations
 
@@ -117,9 +151,49 @@ allow (`bwrap: No permissions to create a new namespace`, commands and `apply_pa
 config uses `"sandbox": "bypass"` (`--dangerously-bypass-approvals-and-sandbox`); the container is the
 sandbox. On a host keep `workspace-write`.
 
-Every adapter removes inherited `ANTHROPIC_*`, `OPENAI_*`, `CODEX_*`, `CLAUDE_*` credential/endpoint variables
-from the job environment before applying the config, so a user's own Claude Code login, OpenAI account or
-Anthropic key is never used.
+**openclaw** (OpenClaw **2026.11.3**, npm `openclaw`; needs node >= 24.16; verified 2026-11-11, ~25-30 s)
+```
+openclaw agent exec --config <job>/cli/openclaw/openclaw.json --state-dir <job>/cli/openclaw/state \
+  --message-file - --cwd <job>/ws --json --model daash/<m> --timeout <job timeout - 30>   # message on stdin
+```
+`agent exec` runs one embedded turn without a gateway. It has no system-prompt option, so the message is the
+system prompt, `---`, then the prompt. The per-job config has `models.mode: "replace"` with one provider
+`daash` (`baseUrl` = `DAASH_GATEWAY_URL`, `api: "openai-completions"`, `apiKey: "${DAASH_LLM_API_KEY}"`,
+one model entry per configured model with `compat.supportsUsageInStreaming: true`, without which the gateway
+reports no token usage), `agents.defaults.model.primary = daash/<m>` and the `daash` MCP server. Env:
+`OPENCLAW_HOME`, `OPENCLAW_STATE_DIR`, `OPENCLAW_CONFIG_PATH` = per-job folders (so neither `~/.openclaw` nor
+its plugins or credentials are read), `OPENCLAW_NO_AUTO_UPDATE=1`. Output: one pretty-printed JSON envelope
+`{"ok", "status": "ok"|"error"|"timeout", "final", "payloads", "usage": {"input", "output", "cacheRead",
+"cacheWrite", ...}, "error": {"message", "kind"}}`; `input` excludes cached input. Exit 0 ok, 1 error, 2
+timeout. Outcomes: exit 2/`timeout` = failed, except "Couldn't connect to the AI service" (the gateway is
+unreachable, which also ends as a timeout) = error; a bad key ("Couldn't sign in to the AI service", stderr
+`reason=auth ... 401`) = error. Seen: 9,321 in + 18,336 cached / 405 out. Files it writes are mode 0600.
+
+**hermes** (Hermes Agent **v0.23.1**, commit `3b421578`; verified 2026-11-11, ~40-45 s of which ~20 s is setup)
+```
+hermes chat --query-file - --format stream-json --yolo --in <job>/ws -m <m> --max-turns 90 --source tool
+```
+Env `HERMES_HOME=<job>/cli/hermes-home`, whose `config.yaml` (written as JSON, which YAML reads as is) sets
+`model: {provider: custom, base_url: DAASH_GATEWAY_URL, key_env: DAASH_LLM_API_KEY, default: <m>,
+context_length}`, `agent.system_prompt` (DAASH's system prompt), `terminal.backend: local` (the container is
+the sandbox), memory and user profile off, `agent.disabled_toolsets: [memory, session_search, skills,
+cronjob]` (DAASH memory is the shared one; a job leaves no skills or cron jobs behind),
+`auth.adopt_external_logins: false` (Hermes would otherwise borrow a Codex or Claude Code login), update checks
+and telemetry off, and the `daash` MCP server. Since v0.22 the CLI is a client of a gateway per
+`HERMES_HOME`, which it starts in the background and which outlives it (killing the CLI does not stop the
+turn). After every job (also on timeout or cancel) the runner runs `hermes gateway stop --yes` with the
+job's `HERMES_HOME` (without `--yes` it refuses while a killed CLI's turn is still running; never `--all`,
+which would stop every gateway of the user), then deletes the home's `installs/` and `cache/`. A per-job home is a "borrowing" data root: on its first command Hermes prepares
+its own dependency environment (~20 s, ~420 MB, removed after the job). A named profile under a shared home
+would avoid that, but profiles share one gateway and read keys only from their own `.env` file, so DAASH
+uses per-job homes. Output: JSONL `system`, `text`, `tool_use`, `tool_result`, then `{"type": "result",
+"exit_code", "text", "tokens": {"input", "output", "cache_read", ...}, "error"?}`; `input` includes cached
+input. Exit 3 (gateway owner lost) = error; a result `error` that looks like infrastructure ("No API key ...",
+401, unreachable) = error. Seen: 31,744 in (20,960 cached) / 322 out.
+
+Every adapter removes inherited `ANTHROPIC_*`, `OPENAI_*`, `CODEX_*`, `CLAUDE_*`, `OPENCLAW_*` home/config,
+`HERMES_HOME` and other credential/endpoint variables from the job environment before applying the config,
+so a user's own Claude Code login, OpenAI account, Anthropic key, OpenClaw or Hermes setup is never used.
 
 ## Security notes
 
@@ -131,10 +205,15 @@ Anthropic key is never used.
   cannot give, so the agent works without running code). Switch them to `bypassPermissions` /
   `fullAccess` only on a dedicated machine or VM. The container config (`runner/runner.docker.json`) uses
   full access because the container is the sandbox.
+* `openclaw` and `hermes` run unsandboxed (OpenClaw's `agent exec` uses the full headless execution policy;
+  Hermes runs with `--yolo` and the `local` terminal backend), so they are in the container config only and
+  not in `runner/runner.example.json`. On a host, offer them only on a dedicated machine or VM.
 * The runner token authorises leasing jobs and downloading the swarm workspace; treat it as a secret and
   disable or delete the runner in the DAASHboard to revoke it. Coordinator URLs should be on a trusted
   network (Tailscale) or HTTPS: tokens travel in a header.
 * Workspace tars are extracted with absolute paths, `..`, links and special files rejected.
+* The DAASH MCP token (`DAASH_MCP_TOKEN`) is valid only for its job while the job runs. Code the agent runs
+  can read it (as it can read the gateway key); it can only act as that agent on that task.
 
 ## Troubleshooting
 
@@ -147,3 +226,11 @@ Anthropic key is never used.
 * Codex "bwrap: No permissions to create a new namespace": use `"sandbox": "bypass"` inside Docker.
 * Job stuck: look at `<work-dir>/jobs/<job_id>/stdout.log` and `stderr.log`; the timeout kills the CLI.
 * `docker build -f Dockerfile.runner` is the only supported way to get the CLIs on the container path.
+  Hermes Agent is installed by its official installer pinned to the release commit (`HERMES_COMMIT` build
+  arg), as the runner user, in `~/.hermes` (about 2.3 GB: its own Python, node and tools).
+* An agent says it cannot use the DAASH tools: check the job's `cli/` folder and `stderr.log`; Claude Code
+  needs `--allowedTools mcp__daash` outside bypass mode, Codex needs `default_tools_approval_mode`
+  outside `bypass` (both set by the adapters). A coordinator older than 0.4 sends no `mcp` block.
+* Hermes jobs start ~20 s slower than the others: that is Hermes preparing the job's own dependency
+  environment (see above). `hermes ... gateway` processes left behind: the runner stops them after every
+  job; in the container `tini` reaps them.

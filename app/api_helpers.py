@@ -124,9 +124,10 @@ def task_patch_fields(patch: dict[str, Any]) -> dict[str, Any]:
 
 #: Display names for agent harnesses. "fake" is the test suite's scripted CLI.
 HARNESS_LABELS = {"daash": "DAASH built-in agent", "openclaude": "OpenClaude",
-                  "claude-code": "Claude Code", "codex": "Codex", "fake": "Fake CLI (tests only)"}
+                  "claude-code": "Claude Code", "codex": "Codex", "openclaw": "OpenClaw",
+                  "hermes": "Hermes Agent", "fake": "Fake CLI (tests only)"}
 #: Harnesses always listed, even when no runner offers them; others appear when a runner does.
-LISTED_HARNESSES = ("daash", "openclaude", "claude-code", "codex")
+LISTED_HARNESSES = ("daash", "openclaude", "claude-code", "codex", "openclaw", "hermes")
 _ROLE_LABELS = (("coordinator", "Swarm Coordinator"), ("mission_judgement", "Mission Judgement"),
                 ("quality_judgement", "Quality Judgement"),
                 ("mission_delivery", "Mission Delivery (first attempt)"),

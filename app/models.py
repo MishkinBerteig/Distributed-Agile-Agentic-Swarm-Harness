@@ -169,7 +169,8 @@ DEFAULT_MODEL_LADDER: list[str] = ["instant", "fast", "great", "amazing"]
 #: Harness names (docs/DESIGN-0.3.md section 1): "daash" is the native tool loop, the rest run
 #: on external agent CLIs through a pull-based runner ("fake" is the scripted test CLI).
 NATIVE_HARNESS = "daash"
-KNOWN_HARNESSES: tuple[str, ...] = ("daash", "openclaude", "claude-code", "codex", "fake")
+KNOWN_HARNESSES: tuple[str, ...] = ("daash", "openclaude", "claude-code", "codex", "openclaw", "hermes",
+                                    "fake")
 
 
 #: What an agent can do (docs/DESIGN-0.3.md section 11). `edit_files` is implied for every task.
@@ -187,6 +188,8 @@ HARNESS_CAPABILITIES: dict[str, list[str]] = {
     "openclaude": ["edit_files", "run_code"],
     "claude-code": ["edit_files", "run_code"],
     "codex": ["edit_files", "run_code"],
+    "openclaw": ["edit_files", "run_code"],
+    "hermes": ["edit_files", "run_code"],
     "fake": ["edit_files", "run_code"],
 }
 
