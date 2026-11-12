@@ -309,3 +309,17 @@ def test_connect_help_fragment_is_safe_and_rendered_from_the_code():
                  "DAASH_AGENT_PUBLIC_URL", "Tailscale", "write_file", "send_message",
                  "hands the task to another team member"):
         assert must in text
+
+
+def test_default_names():
+    from app import connectors as C
+    oc = C.parse_card({"name": "OpenClaw", "description": "OpenClaw agent gateway",
+                       "skills": [{"id": "main", "name": "main"}]})
+    assert CS.default_name(oc, "openclaw", "janes-mac-mini.tail1.ts.net") == \
+        "OpenClaw (janes-mac-mini)"
+    named = C.parse_card({"name": "OpenClaw", "skills": [{"id": "jane", "name": "Jane"}]})
+    assert CS.default_name(named, "openclaw", "x") == "Jane"
+    several = C.parse_card({"name": "Team gate", "skills": [{"id": "a", "name": "A"},
+                                                            {"id": "b", "name": "B"}]})
+    assert CS.default_name(several, "a2a", "10.0.0.5") == "Team gate"
+    assert CS.default_name(C.CardInfo(name=""), "a2a", "10.0.0.5") == "A2A agent (10.0.0.5)"

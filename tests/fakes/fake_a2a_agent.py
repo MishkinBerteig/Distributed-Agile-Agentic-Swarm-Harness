@@ -73,8 +73,12 @@ class FakeA2AAgent:
     def __init__(self, name: str = "Jane", *, mode: str = "mcp", token: Optional[str] = None,
                  mcp_url: str = "", mcp_token: str = "",
                  mcp_transport: Optional[httpx.AsyncBaseTransport] = None,
-                 advertised: str = "http://10.9.9.9:18789", work_delay: float = 0.0) -> None:
+                 advertised: str = "http://10.9.9.9:18789", work_delay: float = 0.0,
+                 channel_on: bool = True) -> None:
         self.name = name
+        #: False = like an OpenClaw gateway before its owner turned the a2a channel on: no card,
+        #: no /a2a/v1 (HTTP 404); approve() turns it on
+        self.channel_on = channel_on
         self.mode = mode
         self.token = token
         self.mcp_url = mcp_url
@@ -95,6 +99,7 @@ class FakeA2AAgent:
         """What DAASH's approval step does to a real gateway: DAASH becomes a trusted peer with
         `token`, and the agent gets DAASH's MCP server."""
         self.token = token
+        self.channel_on = True
         if mcp_url:
             self.mcp_url = mcp_url
         if mcp_token:
@@ -118,10 +123,10 @@ class FakeA2AAgent:
     async def handle(self, method: str, path: str, headers: dict, body: bytes
                      ) -> tuple[int, Any]:
         if method == "GET" and path in ("/.well-known/agent-card.json", "/.well-known/agent.json"):
-            return 200, self.card()
+            return (200, self.card()) if self.channel_on else (404, {"error": "Not Found"})
         if method == "GET" and path in ("/health", "/healthz"):
             return 200, {"ok": True, "status": "live"}
-        if path != "/a2a/v1" or method != "POST":
+        if path != "/a2a/v1" or method != "POST" or not self.channel_on:
             return 404, {"error": "not found"}
         auth = headers.get("authorization", "")
         ok = bool(self.token) and auth == f"Bearer {self.token}"

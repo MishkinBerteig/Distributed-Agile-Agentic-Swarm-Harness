@@ -108,6 +108,32 @@ async def test_connect_pending_until_the_owner_approves(api, h, jane, pool):
     assert "write_file" in {t["name"] for t in r.json()["result"]["tools"]}
 
 
+async def test_connect_before_the_a2a_channel_exists(api, h, jane, pool):
+    """A gateway whose owner has not turned A2A on serves no card: connecting still works and
+    the approval step is what makes it answer; the card is fetched once it does."""
+    jane.channel_on = False
+    r = await api.post("/connected-agents", json={"address": "jane", "protocol": "a2a",
+                                                  "kind": "openclaw"})
+    assert r.status_code == 201, r.text
+    out = r.json()
+    a = out["agent"]
+    assert (a["name"], a["url"], a["endpoint"], a["card"]) == (
+        "OpenClaw (jane)", "http://jane:18789", "http://jane:18789/a2a/v1", None)
+    assert await h.engine.check_connected_pending() == []
+    got = (await api.get(f"/connected-agents/{a['id']}")).json()
+    assert got["error_kind"] == "unreachable"            # 404 at the endpoint before approval
+    jane.approve(out["approval"]["a2a_token"])
+    assert len(await h.engine.check_connected_pending()) == 1
+    got = (await api.get(f"/connected-agents/{a['id']}")).json()
+    assert got["status"] == "connected" and got["card"]["skills"][0]["name"] == "Jane"
+    # Hermes before its API server is enabled: nothing answers, the step is still given
+    r = await api.post("/connected-agents", json={"address": "herm", "protocol": "hermes-api"})
+    assert r.status_code == 201, r.text
+    h_out = r.json()
+    assert h_out["agent"]["url"] == "http://herm:8642" and h_out["agent"]["kind"] == "hermes"
+    assert "API_SERVER_KEY=" + h_out["approval"]["api_key"] in h_out["approval"]["env"]
+
+
 async def test_reset_retry_patch_and_delete(api, h, jane, pool):
     out = await connect_and_approve(api, h, jane)
     aid = out["agent"]["id"]

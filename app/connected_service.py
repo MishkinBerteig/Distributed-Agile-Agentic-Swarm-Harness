@@ -92,6 +92,12 @@ async def check_and_record(pool: asyncpg.Pool, ca: ConnectedAgent, *,
         return (await repo.record_check(ca.id, False, exc.stored()) or ca), exc
     if ca.status == "pending":
         flipped = await repo.mark_connected(ca.id)
+        if flipped is not None and ca.protocol == "a2a" and not ca.card and ca.url:
+            try:    # an OpenClaw gateway serves its card only once the a2a channel is on
+                card, _ = await connectors.fetch_card(ca.url, transport=transport)
+                flipped = await repo.update(ca.id, card=card) or flipped
+            except ConnectorError:
+                pass
         if flipped is not None:
             await _event(pool, f"{ca.name} accepted DAASH's connection "
                                f"({KIND_LABELS.get(ca.kind, ca.kind)}, "
@@ -316,6 +322,20 @@ async def unique_name(pool: asyncpg.Pool, wanted: str, host: str = "") -> str:
         if await repo.get_by_name(c) is None:
             return c
     return f"{base} {int(time.time())}"
+
+
+GENERIC_NAMES = ("openclaw", "main", "default", "agent", "a2a agent", "assistant", "")
+
+
+def default_name(info: connectors.CardInfo, kind: str, host: str) -> str:
+    """A connected agent's suggested name: its one agent's name from the card, else the card's
+    name, unless they are generic ("main", "OpenClaw"); then "OpenClaw (host)"."""
+    names = [s["name"] for s in info.skills] if len(info.skills) == 1 else []
+    for n in names + [info.name]:
+        if (n or "").strip().lower() not in GENERIC_NAMES:
+            return n.strip()
+    short = host.split(".")[0] if host and not host[0].isdigit() else host
+    return f"{KIND_LABELS.get(kind, 'Agent') if kind != 'a2a' else 'A2A agent'} ({short})"
 
 
 def pending_until(settings: Any, now: Optional[datetime] = None) -> datetime:

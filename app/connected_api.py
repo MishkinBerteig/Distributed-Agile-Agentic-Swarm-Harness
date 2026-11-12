@@ -139,20 +139,18 @@ def build_router(state: Any) -> APIRouter:
         endpoint = skill = None
         if protocol == "a2a":
             if card is None:
+                # Before the owner's approval an OpenClaw gateway serves no Agent Card (its a2a
+                # channel is off), so the card is optional: the endpoint is then the usual path.
                 try:
                     card, _ = await connectors.fetch_card(target_url, transport=transport())
-                except ConnectorError as exc:
-                    if not req.endpoint:
-                        raise HTTPException(422, f"No A2A Agent Card at {target_url}: {exc}. "
-                                                 "Give the agent's JSON-RPC endpoint to connect "
-                                                 "anyway.")
+                except ConnectorError:
+                    card = None
             info = connectors.parse_card(card) if card else connectors.CardInfo(
-                name=f"A2A agent on {host}")
+                name="", kind=kind if kind in ("openclaw", "a2a") else "a2a")
             endpoint = connectors.endpoint_for(target_url, info, req.endpoint)
             kind = req.kind or kind or info.kind
-            skills = info.skills
-            skill = req.skill or (skills[0]["id"] if len(skills) == 1 else None)
-            wanted = req.name or (skills[0]["name"] if len(skills) == 1 else info.name)
+            skill = req.skill or (info.skills[0]["id"] if len(info.skills) == 1 else None)
+            wanted = req.name or CS.default_name(info, kind, host)
             peer_token = approval.new_peer_token()
         else:
             kind = "hermes"
@@ -202,7 +200,12 @@ def build_router(state: Any) -> APIRouter:
             addr = connectors.parse_address(req.address)
         except ValueError as exc:
             raise HTTPException(422, str(exc))
-        if req.protocol and addr.port is not None:
+        if req.protocol:
+            # the owner has not turned anything on yet: connect to the usual port without
+            # probing (the approval step is what makes the agent answer)
+            if addr.port is None and not addr.path and addr.scheme == "http":
+                addr = addr.with_port(connectors.HERMES_PORT if req.protocol == "hermes-api"
+                                      else connectors.OPENCLAW_PORT)
             return (addr.origin + addr.path, req.protocol,
                     "hermes" if req.protocol == "hermes-api" else req.kind, None, addr.host,
                     None)
@@ -215,7 +218,9 @@ def build_router(state: Any) -> APIRouter:
                 raise HTTPException(422, f"{req.address}: {connectors.SILENT_DETAIL}")
             raise HTTPException(422, f"No agent answered at {req.address}. A bare host name is "
                                      f"tried on ports {', '.join(map(str, connectors.DEFAULT_PORTS))}"
-                                     "; give host:port or the Agent Card URL otherwise.")
+                                     "; give host:port or the Agent Card URL otherwise. A Hermes "
+                                     "API server that is not enabled yet does not answer: choose "
+                                     "Hermes (protocol hermes-api) to get its approval step.")
         f = hits[0]
         url = f.url if not addr.path or addr.path.endswith(".json") else addr.origin + addr.path
         rows = await DiscoveryRepo(pool()).list()
