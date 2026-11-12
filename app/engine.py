@@ -16,7 +16,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
 
-from app import policy
+from app import connected_service, policy
 from app.bus import DecisionBus
 from app.config import Settings
 from app.db import create_pool
@@ -320,6 +320,7 @@ class Engine:
             await stop.wait()
             return
         await self.start()
+        watcher = asyncio.create_task(self._watch_connected(stop), name="connected-approvals")
         try:
             while not stop.is_set():
                 try:
@@ -331,7 +332,31 @@ class Engine:
                 except asyncio.TimeoutError:
                     pass
         finally:
+            watcher.cancel()
+            await asyncio.gather(watcher, return_exceptions=True)
             await self.shutdown()
+
+    async def check_connected_pending(self) -> list:
+        """One round of approval detection for pending connected agents (docs/DESIGN-0.4.md
+        section 5.8): the cheap check of each; the ones that pass become connected."""
+        transport = getattr(self.jobs, "connector_transport", None) if self.jobs else None
+        return await connected_service.check_pending(self.pool, transport=transport)
+
+    async def _watch_connected(self, stop: asyncio.Event) -> None:
+        """Every DAASH_CONNECTED_PENDING_CHECK_SECONDS, whether or not a swarm is live."""
+        while not stop.is_set():
+            try:
+                for ca in await self.check_connected_pending():
+                    log.info("connected agent %s accepted DAASH's connection", ca.name)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - never kill the watcher
+                log.exception("connected agent approval check failed")
+            try:
+                await asyncio.wait_for(stop.wait(),
+                                       self.settings.CONNECTED_PENDING_CHECK_SECONDS)
+            except asyncio.TimeoutError:
+                pass
 
     # -- one tick ----------------------------------------------------------------
 
@@ -422,7 +447,7 @@ class Engine:
         label = JOB_LABELS.get(action.kind, action.kind.value)
         if isinstance(exc, LLMError):
             if exc.code == "remote":
-                reason = "the remote runner had an infrastructure problem"
+                reason = "the remote runner or connected agent had an infrastructure problem"
             else:
                 reason = ("the language model gateway is unreachable or overloaded"
                           if is_infrastructure_error(exc) else "the model gave an unusable answer")

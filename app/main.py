@@ -19,7 +19,9 @@ from pydantic import BaseModel, Field
 
 from app import api_helpers as H
 from app import help as help_pages
-from app import mcp_server, runner_api
+from app import help_connect
+from app import connected_api, mcp_server, runner_api
+from app import connected_service as CS
 from app import remote as R
 from app import services
 from app.api_state import ModuleState, agent_endpoint_info
@@ -35,8 +37,8 @@ from app.models import (
 )
 from app.policy import transition as policy_transition
 from app.repo import (
-    AgentRepo, CallRepo, ConfigRepo, EventRepo, FeedbackRepo, LearningRepo, ProposalRepo,
-    RemoteJobRepo, RunnerRepo, SwarmRepo, TaskRepo, TeamRepo, VerdictRepo,
+    AgentRepo, CallRepo, ConfigRepo, ConnectedAgentRepo, EventRepo, FeedbackRepo, LearningRepo,
+    ProposalRepo, RemoteJobRepo, RunnerRepo, SwarmRepo, TaskRepo, TeamRepo, VerdictRepo,
 )
 from app.routing import validate_config
 
@@ -48,6 +50,8 @@ bus: DecisionBus = DecisionBus(settings.REDIS_URL, ttl_seconds=settings.BUS_TTL_
                                signals_max=settings.BUS_SIGNALS_MAX)
 llm: Any = services.build_llm(settings)
 embedder: Any = build_embedder(settings.EMBEDDING_MODEL, settings.EMBEDDING_USE_MODEL)
+#: httpx transport for connected-agent checks and discovery (None = the network; tests fake it)
+connector_transport: Any = None
 BOOTSTRAP_RUNNER = "local-runner"
 
 
@@ -142,8 +146,11 @@ async def _swarm_detail(swarm: Swarm) -> dict:
     return {**_j(swarm), "teams": _j(teams), "agents": _j(agents)}
 
 
-def _check_config(cfg) -> None:
-    errors = validate_config(cfg)
+async def _check_config(cfg) -> None:
+    connected = None
+    if any(d.harness == "connected" for d in cfg.delivery_harnesses):
+        connected = {a.id: a for a in await ConnectedAgentRepo(_p()).list()}
+    errors = validate_config(cfg, connected)
     if errors:
         raise HTTPException(400, "Invalid swarm config: " + "; ".join(errors))
 
@@ -169,11 +176,25 @@ async def agent_endpoint() -> dict:
 
 # -- online help (DAASHboard) --------------------------------------------------------------
 
+@app.get("/help")
+async def help_topics() -> dict:
+    """DAASHboard's Help topics, in menu order (each served at /help/<id>)."""
+    return {"topics": [{"id": "prompts", "title": help_pages.TITLE},
+                       {"id": "connect", "title": help_connect.TITLE}]}
+
+
 @app.get("/help/prompts")
 async def help_prompts() -> dict:
     """DAASHboard's Help view: how DAASH prompts its agents, rendered from app/prompts.py with
     sample data. `html` is a fragment that DAASHboard styles (dashboard/src/help.css)."""
     return {"title": help_pages.TITLE, "html": help_pages.prompts_html()}
+
+
+@app.get("/help/connect")
+async def help_connect_page() -> dict:
+    """DAASHboard's second Help topic: connecting agents that already exist (docs/DESIGN-0.4.md
+    section 7), as an HTML fragment like /help/prompts."""
+    return {"title": help_connect.TITLE, "html": help_connect.connect_html()}
 
 
 @app.get("/config")
@@ -183,7 +204,7 @@ async def get_config() -> dict:
 
 @app.put("/config")
 async def put_config(cfg: GlobalConfig) -> dict:
-    _check_config(cfg.default_swarm_config)
+    await _check_config(cfg.default_swarm_config)
     await ConfigRepo(_p()).put_global(cfg)
     return _j(await ConfigRepo(_p()).get_global())
 
@@ -199,18 +220,24 @@ async def get_models() -> dict:
 
 
 @app.get("/availability")
-async def get_availability() -> dict:
+async def get_availability(check: bool = True) -> dict:
     """What swarms can use right now (DAASHboard's Agents & models page): every model in
-    escalation order and every agent harness with the runners that offer it. Judged against
-    the live swarm's settings, else the defaults for new swarms (`scope`)."""
+    escalation order, every agent harness with the runners that offer it, and every connected
+    agent (docs/DESIGN-0.4.md section 5.7; direct ones are checked at most once a minute, unless
+    `check=false`). Judged against the live swarm's settings, else the defaults for new swarms
+    (`scope`)."""
     gateway = await get_models()
     live = await SwarmRepo(_p()).get_live()
     cfg = live.config if live else (await ConfigRepo(_p()).get_global()).default_swarm_config
     runners = (await list_runners())["runners"]
+    connected = await CS.availability_rows(_p(), cfg, runners, transport=connector_transport,
+                                           check=check)
     return {"gateway": {"endpoint": gateway["endpoint"], "reachable": gateway["reachable"]},
             "scope": {"swarm_id": live.id, "swarm_name": live.name,
                       "lifecycle_state": live.lifecycle_state} if live else None,
-            **H.availability(cfg, gateway["models"], gateway["reachable"], runners)}
+            **H.availability(cfg, gateway["models"], gateway["reachable"], runners),
+            "connected_agents": connected,
+            "agent_endpoint": agent_endpoint_info(settings.AGENT_PUBLIC_URL)}
 
 
 # -- swarms -----------------------------------------------------------------------------
@@ -230,7 +257,7 @@ async def get_active_swarm():
 async def create_swarm(req: SwarmCreate) -> dict:
     repo = SwarmRepo(_p())
     cfg = req.config or (await ConfigRepo(_p()).get_global()).default_swarm_config
-    _check_config(cfg)
+    await _check_config(cfg)
     live = await repo.get_live()
     if live is not None:
         raise HTTPException(409, f"A live swarm already exists: '{live.name}' "
@@ -265,7 +292,7 @@ async def update_swarm(swarm_id: str, req: SwarmUpdate) -> dict:
             swarm.lifecycle_state != SwarmStatus.CREATED.value:
         raise HTTPException(409, "The vision can only be changed while the swarm is CREATED.")
     if fields.get("config") is not None:
-        _check_config(req.config)
+        await _check_config(req.config)
     fields = {k: v for k, v in fields.items() if v is not None}
     if "config" in fields:
         fields["config"] = req.config
@@ -700,3 +727,5 @@ async def list_remote_jobs(swarm_id: Optional[str] = None) -> dict:
 _state = ModuleState(__name__)
 app.include_router(runner_api.build_router(_state))
 app.include_router(mcp_server.build_router(_state))
+# Connected agents (docs/DESIGN-0.4.md section 5): admin only, never on the agent-facing port.
+app.include_router(connected_api.build_router(_state))

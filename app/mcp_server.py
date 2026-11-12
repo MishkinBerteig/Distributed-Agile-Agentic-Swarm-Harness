@@ -19,6 +19,9 @@ Identity (section 2.3), `Authorization: Bearer ...`; missing or unknown -> HTTP 
 * connected-agent token `dca_...`: one per connected agent (`connected_agents.mcp_token_hash`).
   It maps to the agent's active connected jobs (remote_jobs rows with harness "connected" and
   `payload.connected_agent_id`); every tool takes an optional `job` argument to pick one.
+  Directly connected agents (`a2a`, `hermes-api`) also get the workspace file tools, which edit
+  the live swarm workspace; agents on an agent host (`runner`) work on a local copy, so they do
+  not (section 2.1).
 Every call re-checks the job, the swarm (ACTIVE) and the task (In-Progress), records a `tool`
 event, counts `payload.mcp_calls` and, for connected agents, sets `mcp_seen_at`.
 """
@@ -36,7 +39,8 @@ from fastapi.responses import JSONResponse
 
 from app import agent_tools
 from app.agent_tools import AgentContext, Repos, build_agent_tools, tool_specs
-from app.models import CONNECTED_HARNESS, ConnectedAgent, RemoteJob, SwarmStatus, TaskStatus
+from app.models import (CONNECTED_HARNESS, DIRECT_PROTOCOLS, ConnectedAgent, RemoteJob,
+                        SwarmStatus, TaskStatus)
 from app.remote import bearer_token, hash_token
 from app.tools import ToolRegistry
 
@@ -142,13 +146,21 @@ def mcp_tools(workspace: bool, job_arg: bool) -> list[dict]:
     return out
 
 
+def has_file_tools(identity: Identity) -> bool:
+    """Only directly connected agents edit the live workspace through DAASH (section 2.1)."""
+    return (identity.kind == "connected" and identity.connected is not None
+            and identity.connected.protocol in DIRECT_PROTOCOLS)
+
+
 def instructions(identity: Identity) -> str:
     s = ("DAASH tools for your current DAASH job: remember/recall (your persistent memory), "
          "team_roster, send_message/read_messages (talk to your team), current_task, "
          "create_subtask, propose_team, list_proposals and vote_on_proposal.")
-    if identity.kind == "connected":
+    if has_file_tools(identity):
         s += (" list_files, read_file, write_file, append_file and delete_file edit the shared "
-              "swarm workspace. Pass job=<id> when you have more than one DAASH job.")
+              "swarm workspace.")
+    if identity.kind == "connected":
+        s += " Pass job=<id> when you have more than one DAASH job."
     return s
 
 
@@ -179,8 +191,8 @@ class DaashBackend:
         return None
 
     def list_tools(self, identity: Identity) -> list[dict]:
-        connected = identity.kind == "connected"
-        return mcp_tools(workspace=connected, job_arg=connected)
+        return mcp_tools(workspace=has_file_tools(identity),
+                         job_arg=identity.kind == "connected")
 
     async def _job(self, identity: Identity, requested: Optional[str]
                    ) -> tuple[Optional[RemoteJob], Optional[str]]:
@@ -216,16 +228,18 @@ class DaashBackend:
         agent = await r.agents.get(job.agent_id)
         if team is None or agent is None:
             return None, JOB_ENDED
-        connected = identity.kind == "connected"
+        files = has_file_tools(identity)
 
         async def on_file(path: str, written: bool) -> None:
             await r.remote_jobs.record_mcp_file(job.id, path, written)
 
         workspace = (self.workspace_root(swarm.id)
-                     if connected and self.workspace_root is not None else None)
+                     if files and self.workspace_root is not None else None)
+        aliases, labels = await agent_tools.connected_names(r, swarm.id, team.id)
         return AgentContext(repos=r, swarm=swarm, team=team, agent=agent, task=task,
                             embedder=self.embedder, signal=self.signal, workspace=workspace,
-                            job_id=job.id, on_file=on_file if connected else None), None
+                            job_id=job.id, on_file=on_file if files else None,
+                            name_aliases=aliases, agent_labels=labels), None
 
     async def call_tool(self, identity: Identity, name: str, arguments: dict) -> tuple[str, bool]:
         """(text, is_error) for one tools/call."""
@@ -239,7 +253,7 @@ class DaashBackend:
         ctx, problem = await self._context(identity, job)
         if problem:
             return problem, True
-        registry = ToolRegistry(build_agent_tools(ctx, workspace=identity.kind == "connected"))
+        registry = ToolRegistry(build_agent_tools(ctx, workspace=has_file_tools(identity)))
         outcome = await registry.call(name, args)
         await self._record(identity, ctx, name, args, outcome.error)
         return outcome.output, outcome.error

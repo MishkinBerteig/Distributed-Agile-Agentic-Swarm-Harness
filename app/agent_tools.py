@@ -107,6 +107,8 @@ class AgentContext:
     #: extra names that address a delivery agent in send_message (lowercase alias -> agent id),
     #: e.g. a connected agent's own name ("jane")
     name_aliases: dict[str, str] = field(default_factory=dict)
+    #: agent id -> who that row really is, for team_roster (e.g. "Jane, connected over A2A")
+    agent_labels: dict[str, str] = field(default_factory=dict)
 
     def embed(self, text: str) -> Optional[list[float]]:
         if self.embedder is None or not text:
@@ -223,8 +225,9 @@ _ROLE_ORDER = {AgentRole.MISSION_JUDGEMENT.value: 0, AgentRole.QUALITY_JUDGEMENT
 
 
 def roster_text(team: Team, agents: Iterable[Agent], me: Agent,
-                task_names: dict[str, str]) -> str:
-    """team_roster's reply: the team's agents with role, agent type, capabilities and state."""
+                task_names: dict[str, str], labels: Optional[dict[str, str]] = None) -> str:
+    """team_roster's reply: the team's agents with role, agent type, capabilities and state.
+    `labels` names connected agents' rows (agent id -> "Jane, connected over A2A")."""
     lines = [f"Team '{team.name}'. Mission: {clip(team.mission_statement, 300)}"]
     for a in sorted(agents, key=lambda a: (_ROLE_ORDER.get(a.role, 9), a.name)):
         you = " (you)" if a.id == me.id else ""
@@ -233,8 +236,8 @@ def roster_text(team: Team, agents: Iterable[Agent], me: Agent,
             state = f"busy on '{task_names.get(a.current_task_id, a.current_task_id)}'"
         else:
             state = a.state
-        lines.append(f"- {a.name}{you}: {_role_title(a.role)}, agent type "
-                     f"{_harness_label(a.harness)}, can {caps}; {state}")
+        kind = (labels or {}).get(a.id) or f"agent type {_harness_label(a.harness)}"
+        lines.append(f"- {a.name}{you}: {_role_title(a.role)}, {kind}, can {caps}; {state}")
     lines.append(f'Message a delivery agent by name with send_message, or "{TEAM_RECIPIENT}" '
                  f'(every other delivery agent) or "{COORDINATOR_RECIPIENT}" (the Swarm '
                  "Coordinator). The judges review your work; they do not read messages.")
@@ -252,6 +255,45 @@ def current_task_text(task: Task, job_id: Optional[str] = None) -> str:
     if job_id:
         s += f"\nDAASH job: {job_id}"
     return s
+
+
+_PROTOCOL_WORDS = {"a2a": "over A2A", "hermes-api": "through the Hermes API",
+                   "runner": "on an agent host"}
+
+
+async def connected_names(repos: Repos, swarm_id: str, team_id: Optional[str] = None
+                          ) -> tuple[dict[str, str], dict[str, str]]:
+    """(lowercase alias -> agent id, agent id -> roster label) for the swarm's delivery rows that
+    are connected agents (docs/DESIGN-0.4.md section 5), so teammates can message "Jane" and
+    team_roster says who Delivery-2 really is. Aliases are for `team_id`'s rows (messages stay
+    inside a team); a name that fills several rows of that team is a label but not an alias
+    (it would be ambiguous)."""
+    if repos.connected is None:
+        return {}, {}
+    rows = [a for a in await repos.agents.list(swarm_id)
+            if a.harness == models.CONNECTED_HARNESS and a.provider]
+    if not rows:
+        return {}, {}
+    aliases: dict[str, str] = {}
+    labels: dict[str, str] = {}
+    seen: dict[tuple[Optional[str], str], int] = {}
+    cache: dict[str, Any] = {}
+    for a in rows:
+        if a.provider not in cache:
+            cache[a.provider] = await repos.connected.get(a.provider)
+        ca = cache[a.provider]
+        if ca is None:
+            continue
+        labels[a.id] = (f"{ca.name}, a connected agent "
+                        f"{_PROTOCOL_WORDS.get(ca.protocol, ca.protocol)}")
+        key = (a.team_id, ca.name.lower())
+        seen[key] = seen.get(key, 0) + 1
+    for a in rows:
+        ca = cache.get(a.provider)
+        if (ca is not None and (team_id is None or a.team_id == team_id)
+                and seen.get((a.team_id, ca.name.lower())) == 1):
+            aliases.setdefault(ca.name.lower(), a.id)
+    return aliases, labels
 
 
 # ---------------------------------------------------------------------------
@@ -386,7 +428,7 @@ def build_agent_tools(ctx: Optional[AgentContext], *, workspace: bool) -> list[T
         x = c()
         agents = await x.repos.agents.list(x.swarm.id, x.team.id)
         names = {t.id: t.name for t in await x.repos.tasks.list(team_id=x.team.id)}
-        return roster_text(x.team, agents, x.agent, names)
+        return roster_text(x.team, agents, x.agent, names, x.agent_labels)
 
     async def send_message(args: dict) -> str:
         x = c()

@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Optional
 
 from app.models import (
+    CONNECTED_HARNESS,
     SWARM_ACTIONS,
     Agent,
     AgentRole,
@@ -222,6 +223,31 @@ def idle_agents_for(task: Task, team_agents: list[Agent], team_tasks: list[Task]
     """Idle delivery agents (rotation order) that may take `task`."""
     return [a for a in idle_delivery_agents(team_agents, team_tasks)
             if can_take(a, task, team_agents)]
+
+
+def connected_load(agents: list[Agent], tasks: list[Task]) -> dict[str, int]:
+    """connected agent id -> In-Progress tasks assigned to its rows (one connected agent may fill
+    several delivery rows; its max_jobs caps them together, docs/DESIGN-0.4.md section 5.2)."""
+    rows = {a.id: a.provider for a in agents if a.harness == CONNECTED_HARNESS and a.provider}
+    load: dict[str, int] = {}
+    for t in tasks:
+        cid = rows.get(t.assigned_agent_id or "")
+        if cid and t.status == TaskStatus.IN_PROGRESS.value:
+            load[cid] = load.get(cid, 0) + 1
+    return load
+
+
+def handover_target(current: Agent, task: Task, team_agents: list[Agent],
+                    team_tasks: list[Task]) -> Optional[Agent]:
+    """Escalation by handover (docs/DESIGN-0.4.md section 5.6): the least recently active idle
+    delivery agent of the team, other than `current` (and not another row of the same connected
+    agent), that has every capability the task needs; None = the same agent tries again."""
+    same = (lambda a: a.harness == CONNECTED_HARNESS and current.harness == CONNECTED_HARNESS
+            and bool(a.provider) and a.provider == current.provider)
+    for a in idle_delivery_agents(team_agents, team_tasks):
+        if a.id != current.id and not same(a) and not lacks(a, task):
+            return a
+    return None
 
 
 def pool_for_agent(agent: Agent, team_tasks: list[Task], team_agents: list[Agent]) -> list[Task]:
