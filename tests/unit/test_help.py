@@ -25,7 +25,15 @@ def test_examples_are_rendered_from_the_live_prompt_code():
     page = html.unescape(H.prompts_html())
     # the exact current wording, not a copy that could drift
     assert P.SCOPE_RULE.strip() in page
-    assert P.work_prompt(H.TASK, H.TASK.criteria, None, "", (), capabilities=H.NATIVE) in page
+    assert P.work_prompt(H.TASK, H.TASK.criteria, None, "", (), capabilities=H.NATIVE,
+                         messages=H.MESSAGES) in page
+    assert P.remote_work_prompt(H.TASK, H.TASK.criteria, None, "", capabilities=H.CLI,
+                                messages=H.MESSAGES) in page
+    # 0.4: team messages, DAASH tools over MCP, coordinator messages in the vision review
+    assert "Messages from your team (now marked read):" in page
+    assert P.DAASH_TOOLS_REMOTE.strip() in page
+    assert "Messages the teams sent to you, the Swarm Coordinator" in page
+    assert "cannot read or write memory yet" not in page and "tools yet" not in page
     assert P.bootstrap_prompt(models.Limits().max_teams, True) in page
     assert H._system("mission_delivery") in page
     assert "[command check: python3 -m unittest]" in page
@@ -51,8 +59,11 @@ def test_tools_table_lists_every_tool():
     page = H.prompts_html()
     for name in ("list_files", "read_file", "write_file", "append_file", "delete_file",
                  "create_subtask", "remember", "recall", "propose_team", "vote_on_proposal",
-                 "submit"):
+                 "submit", "list_proposals", "team_roster", "send_message", "read_messages",
+                 "current_task"):
         assert f"<code>{name}</code>" in page
+    for anchor in ("mcp", "messages"):
+        assert f'id="{anchor}"' in page
 
 
 def test_fragment_is_safe_to_embed_in_daashboard():

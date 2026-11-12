@@ -19,8 +19,11 @@ from app import models
 from app import prompts as P
 from app.engine import DEFER_SECONDS, ESCALATE_AFTER
 from app.config import Settings
+from app.agent_tools import (MESSAGE_MAX_CHARS, MESSAGES_PER_ATTEMPT, VOTING_TOOL_NAMES,
+                             tool_specs)
 from app.llm import NUDGE, TRANSCRIPT_CHARS, LLMClient
-from app.tools import READ_LIMIT_CHARS, ToolRegistry, workspace_tools
+from app.repo import MESSAGES_PER_READ
+from app.tools import READ_LIMIT_CHARS
 
 TITLE = "How DAASH prompts its agents"
 _TEMPERATURE = inspect.signature(LLMClient.chat).parameters["temperature"].default
@@ -121,6 +124,18 @@ README_TASK = _task(
 DONE = [t.model_copy(update={"status": "Done"}) for t in (TASK, TESTS_TASK, README_TASK)]
 NATIVE = models.harness_capabilities("daash")
 CLI = models.harness_capabilities("claude-code")
+#: Unread team messages of the sample delivery agent (docs/DESIGN-0.4.md section 3).
+MESSAGES = [
+    SimpleNamespace(from_name="Delivery-2", audience="direct",
+                    text="I am writing test_primes.py. Please keep the TypeError for bools in "
+                         "is_prime: my tests expect it."),
+    SimpleNamespace(from_name="Delivery-3", audience="team",
+                    text="README.md is mine. I will reuse the examples from your docstrings.")]
+#: A message the teams sent to the Swarm Coordinator.
+COORD_MESSAGES = [
+    SimpleNamespace(from_name="Delivery-1", from_team="Primes",
+                    text="The Docs site page documents primes_between(), which primes.py does "
+                         "not have.")]
 
 
 def _system(role: str, with_team: bool = True) -> str:
@@ -149,7 +164,7 @@ def _vision() -> str:
     teams = [dict(TEAM, status="accomplished"), dict(OTHER_TEAM, status="accomplished")]
     return P.vision_review_prompt(
         VISION, VISION_DOD, teams, {"Primes": DONE, "Docs site": []}, LISTING + "\nindex.html "
-        "(2048 bytes)", {"primes.py": PRIMES_PY[:4000]})
+        "(2048 bytes)", {"primes.py": PRIMES_PY[:4000]}, messages=COORD_MESSAGES)
 
 
 def _retro() -> str:
@@ -173,13 +188,14 @@ def _no_wait_sentence() -> str:
 
 
 def _tools() -> list[dict]:
-    reg = ToolRegistry()
-    for t in workspace_tools(Path("."), reg):
-        reg.add(t)
-    # The engine tools' handlers are closures over a live job; only their specs are read here.
-    for t in J.Jobs._engine_tools(None, None, None, None, None, {}):  # type: ignore[arg-type]
-        reg.add(t)
-    return reg.specs()
+    """The built-in agent's tools: its file tools, DAASH's shared agent tools and submit (the
+    specs only; the handlers are closures over a live job)."""
+    return tool_specs(workspace=True, native=True)
+
+
+def _mcp_tools() -> list[str]:
+    """Tool names the DAASH MCP server offers a runner-launched CLI (no file tools, no submit)."""
+    return [s["function"]["name"] for s in tool_specs(workspace=False)]
 
 
 # --------------------------------------------------------------------------- job catalogue
@@ -217,7 +233,9 @@ def _jobs() -> list[dict]:
         dict(role="coordinator", id="bootstrap", name="Bootstrap the swarm",
              when="A new swarm starts.",
              adds=["The largest number of teams allowed, and whether teams must be defined "
-                   "(they are not when you created teams yourself)."],
+                   "(they are not when you created teams yourself).",
+                   "Any messages agents sent to the coordinator (rare this early), which are "
+                   "then marked read."],
              reply="A vision-level Definition of Done of 3 to 6 measurable statements and, when "
                    "needed, the teams, each with a name and a Mission that refers to the Vision.",
              checked="Every Mission must be a real sentence; duplicate team names are dropped; "
@@ -230,7 +248,9 @@ def _jobs() -> list[dict]:
                    "(up to 3,000).",
                    "Each team's Mission (up to 500 characters) and Done tasks (up to 20).",
                    "The workspace file listing and up to 12 deliverable files, up to 4,000 "
-                   "characters each."],
+                   "characters each.",
+                   "Messages the teams' agents sent to the coordinator with send_message, "
+                   "which are then marked read."],
              reply="A verdict (met or gaps), a confidence, a summary, and for each gap the exact "
                    "team that must act and what it must change or add.",
              checked=f"Team names must match exactly. Anything short of \"met\" at "
@@ -346,23 +366,28 @@ def _jobs() -> list[dict]:
                    "What the agent can do, and what the task needs that it lacks.",
                    "The task, its artifact and its criteria.",
                    "On a rework attempt, everything the judges said (see Rework feedback).",
-                   "The workspace file listing and any team proposal awaiting its vote."],
+                   "The workspace file listing and any team proposal awaiting its vote.",
+                   f"Messages from your team: the agent's unread team messages (up to "
+                   f"{MESSAGES_PER_READ}), which are then marked read, and one line naming the "
+                   "messaging tools."],
              reply=f"Tool calls, ending with submit, within {lim.max_tool_steps} steps.",
              checked="If the agent answers in text without submitting, it is reminded once. "
                      "Not submitting counts as a failed attempt.",
              example=lambda: P.work_prompt(TASK, TASK.criteria, None, "", (),
-                                           capabilities=NATIVE)),
+                                           capabilities=NATIVE, messages=MESSAGES)),
         dict(role="delivery", id="work-cli", name="Do the work (external agent)",
              when="A task assigned to an OpenClaude, Claude Code or Codex agent is In Progress. "
                   "A runner picks up the job.",
-             adds=["The same as the built-in agent, without DAASH's tools or proposals, plus "
-                   "\"do not ask questions\". The agent works on a copy of the workspace with "
-                   "its own tools."],
+             adds=["The same as the built-in agent, without proposals, plus \"do not ask "
+                   "questions\". The agent works on a copy of the workspace with its own tools.",
+                   "A paragraph naming DAASH's tools, which it reaches through DAASH's MCP "
+                   "server (see DAASH tools for external agents).",
+                   "Messages from your team, as for the built-in agent."],
              reply="The CLI's final message is the summary. The runner then runs the task's "
                    "command checks and sends the files and results back.",
              checked="The changed files are validated and applied to the shared workspace.",
              example=lambda: P.remote_work_prompt(TASK, TASK.criteria, None, "",
-                                                  capabilities=CLI)),
+                                                  capabilities=CLI, messages=MESSAGES)),
         dict(role="delivery", id="vote", name="Vote on a new team",
              when="A delivery agent proposes a new team. Every delivery agent of the team that "
                   "has not voted is asked; the majority decides.",
@@ -444,7 +469,8 @@ def _retrieval_section() -> str:
              "that is Done after rework, or that fails, records the judges' feedback.",
              "Retrospective learnings: every future swarm, on purpose. Task learnings: the "
              "same swarm."],
-            ["Memories", "A built-in agent calls its <code>remember</code> tool.",
+            ["Memories", "A delivery agent calls <code>remember</code>: a built-in tool, or "
+             "DAASH's MCP server for external agents.",
              "Only that agent, through its system message and its <code>recall</code> tool."],
         ])
         + f"<p>For each job DAASH takes the {P._MAX_CONTEXT_ITEMS} learnings and "
@@ -454,7 +480,7 @@ def _retrieval_section() -> str:
         + '<p class="note">With the default setting the vectors are word hashes, so '
           "&ldquo;nearest&rdquo; means &ldquo;shares the most words&rdquo;. Set "
           "<code>DAASH_EMBEDDING_USE_MODEL=true</code> to match by meaning with "
-          "gte-base-en-v1.5. External agents cannot read or write memory yet.</p>"
+          "gte-base-en-v1.5.</p>"
         + "</section>")
 
 
@@ -496,13 +522,29 @@ def _tools_section() -> str:
         params = ", ".join(f["parameters"].get("properties", {}).keys()) or "none"
         rows.append([f"<code>{_e(f['name'])}</code>", _e(f["description"]),
                      f"<code>{_e(params)}</code>"])
+    voting = " and ".join(f"<code>{n}</code>" for n in VOTING_TOOL_NAMES)
+    mcp = ", ".join(f"<code>{_e(n)}</code>" for n in _mcp_tools())
     return (
         '<section id="tools"><h2>The built-in agent&rsquo;s tools</h2>'
         "<p>Built-in delivery agents work through these tools, offered as OpenAI function "
         "definitions. File tools cannot leave the swarm workspace. "
-        "<code>vote_on_proposal</code> is offered only while a vote is waiting. "
+        f"{voting} are offered only while a vote is waiting. "
         "<code>submit</code> ends the attempt.</p>"
         + _table(["Tool", "What it does", "Arguments"], rows)
+        + '<h3 id="mcp">DAASH tools for external agents</h3>'
+        "<p>Agents that a runner launches get the same DAASH tools through DAASH's MCP server "
+        "(<code>daash</code>, at <code>/mcp</code>) with a token that works only while their "
+        f"job runs: {mcp}. Their files are their own CLI's business, so they get no file tools "
+        "and no <code>submit</code>: the CLI's final message is the summary. Every call is "
+        "checked against the job and the swarm, and shows up in the activity feed.</p>"
+        '<h3 id="messages">Team messages</h3>'
+        "<p><code>send_message</code> reaches another delivery agent of the same team by name, "
+        "<code>team</code> (every other delivery agent of the team) or <code>coordinator</code> "
+        f"(the Swarm Coordinator). A message holds up to {MESSAGE_MAX_CHARS:,} characters and "
+        f"an agent may send {MESSAGES_PER_ATTEMPT} per task attempt. Unread messages appear "
+        "in the recipient's next work prompt and are then marked read; "
+        "<code>read_messages</code> fetches new ones during the work. The Swarm Coordinator "
+        "reads its messages when it plans the swarm and in the vision review.</p>"
         + "</section>")
 
 
@@ -518,8 +560,9 @@ def _cli_section() -> str:
             ["Codex", "<code>-c developer_instructions=&hellip;</code>", "stdin, with "
              "<code>exec -</code>", "<code>-m</code>"],
         ])
-        + "<p>External agents use their own tools for files and code. They do not get "
-          "DAASH's memory, subtask or team-proposal tools yet.</p>"
+        + "<p>External agents use their own tools for files and code, and DAASH's tools "
+          "(memory, team messages, the team roster, subtasks and proposals) through DAASH's MCP "
+          "server; the runner configures it for each job.</p>"
         + "</section>")
 
 
@@ -587,7 +630,8 @@ def _code_section() -> str:
         ["System message and retrieval", "app/services.py (agent_system_prompt), app/repo.py"],
         ["Context: listings, files, rework feedback", "app/jobs.py"],
         ["Follow-up message, tool loop", "app/llm.py"],
-        ["Built-in agent tools", "app/tools.py, app/jobs.py (_engine_tools)"],
+        ["Built-in agent tools", "app/tools.py, app/agent_tools.py"],
+        ["DAASH tools for external agents (MCP)", "app/mcp_server.py, app/agent_tools.py"],
         ["External agents", "daash_runner/adapters.py"],
         ["Model choice", "app/routing.py"],
         ["This page", "app/help.py"],

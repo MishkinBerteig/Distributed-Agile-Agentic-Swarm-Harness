@@ -251,9 +251,10 @@ class BootstrapResult:
     teams: list[tuple[str, str]] = field(default_factory=list)  # (name, mission)
 
 
-def bootstrap_prompt(max_teams: int, need_teams: bool) -> str:
+def bootstrap_prompt(max_teams: int, need_teams: bool, messages: Iterable[Any] = ()) -> str:
     s = ("Job: bootstrap the swarm. Write the vision-level Definition of Done: 3 to 6 "
          "measurable, verifiable statements that together mean the Vision is accomplished.\n")
+    s += coordinator_messages_block(messages)
     if need_teams:
         s += (f"Also define 1 to {max_teams} teams. Each team has a short unique name and a "
               "Mission: one or two sentences that explicitly refer to the Vision and describe a "
@@ -826,10 +827,59 @@ SCOPE_RULE = ("Do only this task: change only the files it needs (its artifact a
               "run at the same time, so never create or rewrite their files. Delete any scratch "
               "files you made for your own checks.\n")
 
+#: What every agent DAASH launches through a runner is told about the DAASH MCP server
+#: (docs/DESIGN-0.4.md section 4.2).
+DAASH_TOOLS_REMOTE = ("You have DAASH tools (MCP server `daash`): remember/recall for your "
+                      "persistent memory, team_roster, send_message/read_messages to coordinate "
+                      "with your team, create_subtask, propose_team, vote_on_proposal. Use them.\n")
+
+#: The one line naming the messaging tools under "Messages from your team" (section 3).
+MESSAGING_LINE = ('Message your team with send_message (to a teammate\'s name, "team" for every '
+                  'other delivery agent, or "coordinator" for the Swarm Coordinator) and check '
+                  "for new messages with read_messages; team_roster shows who is on your team.")
+MESSAGE_PROMPT_CLIP = 1500   # characters of one message shown in a prompt
+
+
+def _message_line(m: Any, to_label: str) -> str:
+    who = _get(m, "from_name") or "a teammate"
+    return f"- {who} {to_label}: {_clip(' '.join(str(_get(m, 'text', '')).split()), MESSAGE_PROMPT_CLIP)}"
+
+
+def team_messages_block(messages: Optional[Iterable[Any]]) -> str:
+    """The "Messages from your team" section of every delivery work prompt (docs/DESIGN-0.4.md
+    section 3): the agent's unread messages (marked read once shown) and the messaging tools.
+    '' when `messages` is None (callers that predate messages)."""
+    if messages is None:
+        return ""
+    lines = []
+    for m in messages:
+        audience = _get(m, "audience", "direct")
+        lines.append(_message_line(m, "to the team" if audience == "team" else "to you"))
+    head = ("\nMessages from your team (now marked read):\n" + "\n".join(lines) if lines
+            else "\nMessages from your team: none.")
+    return f"{head}\n{MESSAGING_LINE}\n"
+
+
+def coordinator_messages_block(messages: Iterable[Any]) -> str:
+    """Messages the teams' agents sent to `coordinator`, for the Swarm Coordinator's planning
+    and vision-review prompts ('' when there are none)."""
+    lines = []
+    for m in messages:
+        who = _get(m, "from_name") or "an agent"
+        team = _get(m, "from_team")
+        who += f" (team '{team}')" if team else ""
+        lines.append(f"- {who}: "
+                     f"{_clip(' '.join(str(_get(m, 'text', '')).split()), MESSAGE_PROMPT_CLIP)}")
+    if not lines:
+        return ""
+    return ("Messages the teams sent to you, the Swarm Coordinator (take them into account):\n"
+            + "\n".join(lines) + "\n\n")
+
 
 def work_prompt(task: Any, criteria: Iterable[Any], feedback: Optional[str],
                 workspace_listing: str, pending_proposals: Iterable[Any] = (),
-                capabilities: Optional[Iterable[str]] = None) -> str:
+                capabilities: Optional[Iterable[str]] = None,
+                messages: Optional[Iterable[Any]] = None) -> str:
     s = ("Job: do this task. Produce the artifact in the shared workspace using your tools "
          "(write_file, append_file, read_file, list_files, delete_file). Work for real: write the actual "
          "content, never placeholders.\n" + SCOPE_RULE)
@@ -849,6 +899,7 @@ def work_prompt(task: Any, criteria: Iterable[Any], feedback: Optional[str],
         for p in props:
             s += (f"- {_get(p, 'id', '')}: {_get(p, 'name', '')} - "
                   f"{_clip(_get(p, 'mission_statement', ''), 200)}\n")
+    s += team_messages_block(messages)
     s += ("\nBefore finishing, re-read your files and self-check EVERY acceptance criterion one "
           "by one; fix what is red. Then call the submit tool with a short summary of what you "
           "did and how each criterion is met. Do not stop without calling submit.")
@@ -857,14 +908,15 @@ def work_prompt(task: Any, criteria: Iterable[Any], feedback: Optional[str],
 
 def remote_work_prompt(task: Any, criteria: Iterable[Any], feedback: Optional[str],
                        workspace_listing: str,
-                       capabilities: Optional[Iterable[str]] = None) -> str:
+                       capabilities: Optional[Iterable[str]] = None,
+                       messages: Optional[Iterable[Any]] = None) -> str:
     """Prompt for an external agent CLI (docs/DESIGN-0.3.md 6.2). The CLI has its own tools and
     works on a private copy of the swarm workspace, so there is no submit tool: its final message
-    is the summary."""
+    is the summary. Since 0.4 it also has DAASH's tools over MCP (docs/DESIGN-0.4.md 4.2)."""
     s = ("Job: do this task. Your current directory is a copy of the shared swarm workspace. "
          "Work only inside it: create or edit files with your own tools, and write the actual "
          "content, never placeholders. You may run code and look things up if your tools allow. "
-         "Do not ask questions; decide and proceed.\n" + SCOPE_RULE)
+         "Do not ask questions; decide and proceed.\n" + SCOPE_RULE + DAASH_TOOLS_REMOTE)
     s += _needs_line(task, capabilities) + "\n"
     s += f"Task {_get(task, 'id', '')}: {_get(task, 'name', '')}\n"
     if _get(task, "description"):
@@ -875,6 +927,7 @@ def remote_work_prompt(task: Any, criteria: Iterable[Any], feedback: Optional[st
     if feedback and feedback.strip():
         s += f"\nThe previous attempt was rejected. Fix every point:\n{feedback.strip()}\n"
     s += f"\nExisting workspace files:\n{workspace_listing.strip() or '(empty)'}\n"
+    s += team_messages_block(messages)
     s += ("\nBefore finishing, re-read your files and check EVERY acceptance criterion one by "
           "one; fix what is not met. When finished, reply with a short summary of what you did "
           "and how each criterion is met.")
@@ -1160,8 +1213,9 @@ class VisionReview:
 
 def vision_review_prompt(vision: str, vision_dod: str, teams: Iterable[Any],
                          done_by_team: dict[str, list[Any]], listing: str,
-                         files: dict[str, str]) -> str:
-    """`teams` need name, mission_statement, status; `done_by_team` maps team name -> Done tasks."""
+                         files: dict[str, str], messages: Iterable[Any] = ()) -> str:
+    """`teams` need name, mission_statement, status; `done_by_team` maps team name -> Done tasks.
+    `messages`: what the teams' agents sent to `coordinator` (docs/DESIGN-0.4.md section 3)."""
     blocks = []
     for t in teams:
         name = _get(t, "name", "")
@@ -1178,6 +1232,7 @@ def vision_review_prompt(vision: str, vision_dod: str, teams: Iterable[Any],
             "Teams:\n" + "\n".join(blocks) + "\n\n"
             f"Workspace files:\n{listing or '(none)'}\n\n"
             f"Deliverable files:\n{_files_block(files)}\n"
+            + coordinator_messages_block(messages) +
             "confidence is your certainty (0 to 1) that the vision-level Definition of Done is "
             "met by the work as it stands. If you cannot name a concrete gap (specific missing or "
             "wrong content, or an inconsistency between teams), it is met: answer verdict "

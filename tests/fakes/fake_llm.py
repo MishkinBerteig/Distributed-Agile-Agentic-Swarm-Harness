@@ -67,6 +67,7 @@ class Scenario:
     work_submit: bool = True             # False: work agents answer in text and never submit
     work_propose_team: str = ""          # one-shot: the next work reply also calls propose_team
     work_remember: bool = False          # the work reply also calls remember
+    work_message: str = ""               # the work reply also sends this text to "team" (0.4)
     reject_names_containing: str = ""    # prioritize rejects candidates whose name has this
     vision_gaps_first: int = 0           # first N vision reviews answer "gaps" for the first team
     plan_needs: str = ""                 # capability ("run_code") put in "needs" of planned tasks
@@ -498,6 +499,8 @@ class FakeLLM:
             if not written:  # first reply only: optional extra tools
                 if s.work_remember:
                     calls.append(("remember", {"content": "The fake agent remembers this task."}))
+                if s.work_message:
+                    calls.append(("send_message", {"to": "team", "text": s.work_message}))
                 if s.work_propose_team and not self._proposed_once:
                     self._proposed_once = True
                     calls.append(("propose_team", {

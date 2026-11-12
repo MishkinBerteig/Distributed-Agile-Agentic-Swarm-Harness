@@ -20,20 +20,20 @@ import asyncpg
 
 import types
 
-from app import models, policy, prompts, remote, services
+from app import agent_tools, models, policy, prompts, remote, services
 from app.bus import DecisionBus
-from app.checks import (COMMAND_TIMEOUT_SECONDS, is_deterministic, run_check,
-                        validate_check_spec)
+from app.checks import COMMAND_TIMEOUT_SECONDS, is_deterministic, run_check
 from app.config import Settings
 from app.llm import LLMError, Usage
 from app.models import (Action, ActionKind, Agent, AgentRole, AgentState, CheckKind,
-                        CreatorKind, CriterionCreate, CriterionStatus, NATIVE_HARNESS, Swarm,
+                        CreatorKind, CriterionStatus, NATIVE_HARNESS, Swarm,
                         SwarmStatus, Task, TaskCreate,
                         TaskStatus, Team, TeamStatus)
-from app.repo import (AgentRepo, CallRepo, EventRepo, LearningRepo, MemoryRepo, ProposalRepo,
-                      RemoteJobRepo, RunnerRepo, SwarmRepo, TaskRepo, TeamRepo, VerdictRepo)
+from app.repo import (AgentRepo, CallRepo, ConnectedAgentRepo, EventRepo, LearningRepo,
+                      MemoryRepo, MessageRepo, ProposalRepo, RemoteJobRepo, RunnerRepo, SwarmRepo,
+                      TaskRepo, TeamRepo, VerdictRepo)
 from app.routing import choose_model, ladder, routing_stats
-from app.tools import Tool, ToolError, ToolRegistry, safe_path, workspace_tools
+from app.tools import ToolError, ToolRegistry, safe_path, workspace_tools
 
 log = logging.getLogger("daash.jobs")
 
@@ -331,6 +331,13 @@ class Jobs:
         self.learnings = LearningRepo(pool)
         self.verdicts = VerdictRepo(pool)
         self.proposals = ProposalRepo(pool)
+        self.messages = MessageRepo(pool)
+        # the repositories DAASH's agent tools use (shared with the MCP server)
+        self.repos = agent_tools.Repos(
+            swarms=self.swarms, teams=self.teams, agents=self.agents, tasks=self.tasks,
+            events=self.events, proposals=self.proposals, memories=MemoryRepo(pool),
+            messages=self.messages, remote_jobs=RemoteJobRepo(pool),
+            connected=ConnectedAgentRepo(pool))
         self._locks: dict[str, asyncio.Lock] = {}
         self._refs = RefCounts()
         # judge replies already paid for in a review that later failed (infra error)
@@ -511,13 +518,15 @@ class Jobs:
         names = [t.name for t in teams]
         threshold = swarm.config.dod_thresholds.mission_confidence
         model = escalate_model(choose_model(COORD, swarm.config), swarm.config, escalation)
+        notes = await self.messages.unread(coord.id)   # messages sent to "coordinator"
         res = await self._json_job(
             swarm, coord, None, "review_vision", model,
             prompts.vision_review_prompt(
                 swarm.vision_statement, fresh.definition_of_done or "", teams, done_by_team,
-                workspace_listing(ws), files),
+                workspace_listing(ws), files, messages=notes),
             lambda o: prompts.parse_vision_review(o, names, threshold),
             query=swarm.vision_statement)
+        await self.messages.mark_read(m.id for m in notes)
         # _json_job re-checked ACTIVE; re-read the counter in case of races.
         cur = await self.swarms.get(swarm.id)
         used = (cur.vision_reviews if cur is not None else fresh.vision_reviews) + 1
@@ -679,11 +688,13 @@ class Jobs:
         need_teams = not existing
         max_teams = swarm.config.limits.max_teams
         model = escalate_model(choose_model(COORD, swarm.config), swarm.config, escalation)
+        notes = await self.messages.unread(coord.id)   # messages sent to "coordinator"
         res = await self._json_job(
             swarm, coord, None, "bootstrap", model,
-            prompts.bootstrap_prompt(max_teams, need_teams),
+            prompts.bootstrap_prompt(max_teams, need_teams, messages=notes),
             lambda o: prompts.parse_bootstrap(o, max_teams, need_teams),
             query=swarm.vision_statement)
+        await self.messages.mark_read(m.id for m in notes)
         fresh = await self.swarms.get(swarm.id)
         if fresh is not None and fresh.definition_of_done is None:
             await self.swarms.update(swarm.id, definition_of_done=res.vision_dod)
@@ -926,18 +937,23 @@ class Jobs:
             registry.add(tool)
         submitted: dict[str, str] = {}
         pending = await self._pending_proposals(swarm, team, agent)
-        for tool in self._engine_tools(swarm, team, agent, task, submitted):
-            if tool.name == "vote_on_proposal" and not pending:
+        ctx = self._tool_context(swarm, team, agent, task)
+        for tool in agent_tools.build_agent_tools(ctx, workspace=False):
+            if tool.name in agent_tools.VOTING_TOOL_NAMES and not pending:
                 continue
             registry.add(tool)
+        registry.add(agent_tools.submit_tool(submitted))
 
         system = await services.agent_system_prompt(
             self.pool, swarm, agent, team, query=f"{task.name}. {task.description}",
             embedder=self.embedder)
         caps = (agent.capabilities if agent.harness == NATIVE_HARNESS
                 else models.harness_capabilities(NATIVE_HARNESS))
+        # unread team messages go into the prompt and are marked read (docs/DESIGN-0.4.md s3)
+        messages = await self.messages.take_unread(agent.id)
         user = prompts.work_prompt(task, task.criteria, task.feedback,
-                                   workspace_listing(ws), pending, capabilities=caps)
+                                   workspace_listing(ws), pending, capabilities=caps,
+                                   messages=messages)
         t0 = time.monotonic()
         try:
             loop = await self.llm.run_tool_loop(model, system, user, registry,
@@ -996,8 +1012,10 @@ class Jobs:
         system = await services.agent_system_prompt(
             self.pool, swarm, agent, team, query=f"{task.name}. {task.description}",
             embedder=self.embedder)
+        messages = await self.messages.unread(agent.id)
         prompt = prompts.remote_work_prompt(task, task.criteria, task.feedback,
-                                            workspace_listing(ws), capabilities=agent.capabilities)
+                                            workspace_listing(ws), capabilities=agent.capabilities,
+                                            messages=messages)
         payload = {
             "system_prompt": system, "prompt": prompt,
             "required_capabilities": list(task.required_capabilities),
@@ -1011,6 +1029,10 @@ class Jobs:
             "task": {"name": task.name, "artifact": task.artifact}}
         job = await repo.ensure_active(swarm.id, team.id, task.id, agent.id, task.attempts,
                                        agent.harness, model, payload)
+        if messages and job.payload.get("prompt") == prompt:
+            # the job that will run carries these messages (an engine restart re-attaches to an
+            # existing job instead, whose prompt does not): only now are they read
+            await self.messages.mark_read(m.id for m in messages)
         job_id = job.id
         try:
             while True:
@@ -1179,133 +1201,14 @@ class Jobs:
         props = await self.proposals.list(swarm.id, status="pending")
         return [p for p in props if p.team_id == team.id and agent.id not in p.votes]
 
-    def _engine_tools(self, swarm: Swarm, team: Team, agent: Agent, task: Task,
-                      submitted: dict[str, str]) -> list[Tool]:
-        def sarg(args: dict, key: str, required: bool = True) -> str:
-            v = args.get(key)
-            if not isinstance(v, str) or (required and not v.strip()):
-                raise ToolError(f"missing or non-string argument {key!r}")
-            return v.strip()
-
-        async def create_subtask(args: dict) -> str:
-            name = sarg(args, "name")
-            tasks = await self.tasks.list(team_id=team.id)
-            if policy.task_budget_left(tasks, swarm.config.limits.max_tasks_per_team) <= 0:
-                raise ToolError("the team has used its whole task budget; no more tasks")
-            artifact = sarg(args, "artifact", required=False)
-            crits = [CriterionCreate(text=c.strip()) for c in (args.get("acceptance_criteria") or [])
-                     if isinstance(c, str) and c.strip()]
-            if artifact:
-                if validate_check_spec(CheckKind.FILE_EXISTS.value, artifact, None):
-                    raise ToolError(f"invalid artifact path {artifact!r}")
-                crits.append(CriterionCreate(text=f"{artifact} exists",
-                                             check_kind=CheckKind.FILE_EXISTS, check_path=artifact))
-            if not crits:
-                raise ToolError("give at least one acceptance criterion (or an artifact path)")
-            sub = await self.tasks.create(
-                swarm.id, TaskCreate(team_id=team.id, name=name,
-                                     description=sarg(args, "description", required=False),
-                                     artifact=artifact, parent_id=task.id,
-                                     required_capabilities=models.required_capabilities(
-                                         args.get("required_capabilities")),
-                                     acceptance_criteria=crits),
-                created_by=agent.id, embedding=self._embed(name))
-            await self.events.add(
-                swarm.id, "created", team_id=team.id, task_id=sub.id, actor=agent.id,
-                detail=f"{agent.name} created subtask '{name}' under '{task.name}'.")
-            return f"created subtask {sub.id} (Pending; Mission Judgement will prioritise it)"
-
-        async def remember(args: dict) -> str:
-            content = sarg(args, "content")
-            await MemoryRepo(self.pool).add(agent.id, swarm.id, content, team_id=team.id,
-                                            task_id=task.id, embedding=self._embed(content))
-            return "remembered"
-
-        async def recall(args: dict) -> str:
-            query = sarg(args, "query", required=False)
-            mems = await MemoryRepo(self.pool).search(agent.id, self._embed(query), k=5)
-            return "\n".join(f"- {m.content}" for m in mems) or "(no memories yet)"
-
-        async def propose_team(args: dict) -> str:
-            name = sarg(args, "name")
-            mission = sarg(args, "mission_statement")
-            reason = sarg(args, "reason", required=False)
-            teams = await self.teams.list(swarm.id)
-            if len(teams) >= swarm.config.limits.max_teams:
-                raise ToolError(f"the swarm already has the maximum of "
-                                f"{swarm.config.limits.max_teams} teams")
-            wanted = name.lower()
-            if any(t.name.lower() == wanted for t in teams) or any(
-                    p.name.lower() == wanted and p.status in ("pending", "approved")
-                    for p in await self.proposals.list(swarm.id)):
-                raise ToolError(f"a team or proposal named {name!r} already exists")
-            voters = await self._delivery_agents(swarm, team)
-            prop = await self.proposals.create(
-                swarm.id, team.id, agent.id, name, mission, reason,
-                policy.majority_quorum(len(voters)))
-            prop = await self.proposals.record_vote(prop.id, agent.id, True) or prop
-            outcome = await self._settle(swarm, team, prop, len(voters))
-            await self.events.add(
-                swarm.id, "proposal", team_id=team.id, actor=agent.id,
-                detail=f"{agent.name} proposed a new team '{name}' ({reason or 'no reason given'}); "
-                       f"vote status: {outcome}.")
-            await self.signal("proposal.created", team.id, task.id, proposal_id=prop.id)
-            return f"proposal {prop.id} created; status {outcome}"
-
-        async def vote_on_proposal(args: dict) -> str:
-            pid = sarg(args, "proposal_id")
-            approve = args.get("approve")
-            if not isinstance(approve, bool):
-                raise ToolError("'approve' must be true or false")
-            prop = await self.proposals.get(pid)
-            if prop is None or prop.swarm_id != swarm.id or prop.status != "pending":
-                raise ToolError("no such pending proposal")
-            if prop.team_id != team.id:
-                raise ToolError("your team cannot vote on that proposal")
-            prop = await self.proposals.record_vote(pid, agent.id, approve) or prop
-            voters = await self._delivery_agents(swarm, team)
-            outcome = await self._settle(swarm, team, prop, len(voters))
-            await self.events.add(
-                swarm.id, "proposal", team_id=team.id, actor=agent.id,
-                detail=f"{agent.name} voted {'for' if approve else 'against'} the proposal for "
-                       f"team '{prop.name}'; vote status: {outcome}.")
-            return f"vote recorded; status {outcome}"
-
-        async def submit(args: dict) -> str:
-            submitted["summary"] = sarg(args, "summary", required=False)
-            return "submitted for review"
-
-        obj = lambda props, req=(): {"type": "object", "properties": props, "required": list(req)}  # noqa: E731
-        s = {"type": "string"}
-        return [
-            Tool("create_subtask", "Split off a smaller task under the current one. It starts "
-                 "Pending until Mission Judgement approves it.",
-                 obj({"name": s, "description": s, "artifact": {**s, "description":
-                      "workspace path the subtask produces"},
-                      "acceptance_criteria": {"type": "array", "items": s},
-                      "required_capabilities": {"type": "array", "items": {
-                          "type": "string", "enum": ["run_code", "web_research"]}}}, ["name"]),
-                 create_subtask),
-            Tool("remember", "Save a short note to your persistent memory.",
-                 obj({"content": s}, ["content"]), remember),
-            Tool("recall", "Search your persistent memory.", obj({"query": s}), recall),
-            Tool("propose_team", "Propose spinning out a new team for work outside this team's "
-                 "mission. Your team's delivery agents vote (majority wins).",
-                 obj({"name": s, "mission_statement": s, "reason": s},
-                     ["name", "mission_statement"]), propose_team),
-            Tool("vote_on_proposal", "Vote on a pending team proposal from your team.",
-                 obj({"proposal_id": s, "approve": {"type": "boolean"}},
-                     ["proposal_id", "approve"]), vote_on_proposal),
-            Tool("submit", "Finish: submit your work for review with a short summary of what you "
-                 "did and how each acceptance criterion is met.",
-                 obj({"summary": s}, ["summary"]), submit, terminal=True),
-        ]
+    def _tool_context(self, swarm: Swarm, team: Team, agent: Agent,
+                      task: Task) -> agent_tools.AgentContext:
+        """The context DAASH's agent tools (app/agent_tools.py) run in for a native attempt."""
+        return agent_tools.AgentContext(repos=self.repos, swarm=swarm, team=team, agent=agent,
+                                        task=task, embedder=self.embedder, signal=self.signal)
 
     async def _settle(self, swarm: Swarm, team: Team, prop, n_voters: int) -> str:
-        outcome = policy.tally(prop.votes, n_voters)
-        if outcome != "pending":
-            await self.proposals.set_status(prop.id, outcome)
-        return outcome
+        return await agent_tools.settle(self.proposals, prop, n_voters)
 
     async def vote(self, swarm: Swarm, action: Action, escalation: int = 0) -> None:
         """Each delivery agent that has not voted yet votes, one at a time, until decided."""
