@@ -337,6 +337,10 @@ Both relays were verified end to end on 2026-11-12 in a Linux test agent host:
 3. One relay job per kind wrote its file into the DAASH workspace, called `remember` over MCP, and
    passed a command check.
 4. `disconnect` removed everything it had added.
+5. After the merge with the connected-agents engine work, a live swarm whose only delivery agent
+   was the hosted OpenClaw agent ran with the real engine and the local gateway. The agent took
+   both planned tasks through the agent host, used `team_roster`, `current_task`, `remember` and
+   `read_messages`, and its work was judged Done.
 
 The captured CLI outputs are in `tests/fixtures/agent_hosts/`.
 
