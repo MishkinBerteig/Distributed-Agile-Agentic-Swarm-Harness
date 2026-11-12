@@ -1029,10 +1029,12 @@ class Jobs:
             "task": {"name": task.name, "artifact": task.artifact}}
         job = await repo.ensure_active(swarm.id, team.id, task.id, agent.id, task.attempts,
                                        agent.harness, model, payload)
+        delivered: list[str] = []
         if messages and job.payload.get("prompt") == prompt:
             # the job that will run carries these messages (an engine restart re-attaches to an
             # existing job instead, whose prompt does not): only now are they read
-            await self.messages.mark_read(m.id for m in messages)
+            delivered = [m.id for m in messages]
+            await self.messages.mark_read(delivered)
         job_id = job.id
         try:
             while True:
@@ -1054,6 +1056,8 @@ class Jobs:
                     wait = cfg.remote_fallback_minutes
                     if wait is not None and now - job.created_at > timedelta(minutes=wait):
                         await repo.abandon(job.id)
+                        # no agent saw that job's prompt: its messages go to the built-in run
+                        await self.messages.mark_unread(delivered)
                         await self.events.add(
                             swarm.id, "info", team_id=team.id, task_id=task.id, actor=agent.id,
                             detail=f"No runner offering '{agent.harness}' picked up "

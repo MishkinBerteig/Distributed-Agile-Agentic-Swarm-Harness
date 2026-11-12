@@ -839,6 +839,15 @@ class MessageRepo(_Repo):
             "AND read_at IS NULL", ids)
         return int(res.split()[-1])
 
+    async def mark_unread(self, ids: Iterable[str]) -> int:
+        """Undo mark_read (a prompt that carried the messages never reached an agent)."""
+        ids = list(ids)
+        if not ids:
+            return 0
+        res = await self._pool.execute(
+            "UPDATE agent_messages SET read_at = NULL WHERE id = ANY($1::text[])", ids)
+        return int(res.split()[-1])
+
     async def take_unread(self, agent_id: str,
                           limit: int = MESSAGES_PER_READ) -> list[AgentMessage]:
         """Unread messages to the agent, oldest first, marked read in the same statement (two

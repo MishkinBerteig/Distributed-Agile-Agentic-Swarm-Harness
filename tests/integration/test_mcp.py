@@ -3,6 +3,7 @@ server over HTTP with job and connected-agent tokens, the lease's MCP token, tea
 prompts, and the agent-facing app."""
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -301,12 +302,48 @@ async def test_remote_job_prompt_has_messages_marked_read_when_the_job_is_create
     while job is None:
         assert datetime.now(timezone.utc) < deadline, "no remote job was queued"
         await h.engine.tick()
+        await asyncio.sleep(0.02)
         job = await RemoteJobRepo(pool).latest_for_task(task.id)
     prompt = job.payload["prompt"]
     assert prompt.startswith("Job: do this task.")
     assert "You have DAASH tools (MCP server `daash`)" in prompt
     assert "- Delivery-2 to you: Headings in sentence case, please." in prompt
     assert await msgs.unread(agents["Delivery-1"].id) == []
+    await h.close()
+
+
+async def test_messages_of_a_job_nobody_leased_reach_the_builtin_fallback(h, fake, pool):
+    fake.configure({"record_prompts": True})
+    cfg = swarm_config(2)
+    cfg.allowed_harnesses = ["daash", "fake"]
+    cfg.delivery_harnesses = [HarnessSpec(harness="fake", model="")]
+    cfg.remote_fallback_minutes = 1
+    await h.create_swarm(VISION, config=cfg, dod="- The guide exists")
+    team = await h.seed_team("Team A")
+    agents = {a.name: a for a in await h.agent_list(team)}
+    task = await h.add_task(team, "Guide", artifact="guide.md", status="In-Progress",
+                            assigned_agent_id=agents["Delivery-1"].id, complexity="moderate")
+    msgs = MessageRepo(pool)
+    await msgs.send(task.swarm_id, team.id, agents["Delivery-2"].id, [agents["Delivery-1"].id],
+                    "The glossary is in terms.md.")
+    await h.transition("start")
+    deadline = datetime.now(timezone.utc) + timedelta(seconds=15)
+    while await RemoteJobRepo(pool).latest_for_task(task.id) is None:
+        assert datetime.now(timezone.utc) < deadline, "no remote job was queued"
+        await h.engine.tick()
+        await asyncio.sleep(0.02)
+    assert await msgs.unread(agents["Delivery-1"].id) == []      # carried by the queued job
+    await pool.execute("UPDATE remote_jobs SET created_at = now() - interval '5 minutes'")
+
+    async def native_ran() -> bool:
+        await h.engine.tick()
+        await asyncio.sleep(0.02)
+        return bool(fake.calls_for("work"))
+
+    while not await native_ran():
+        assert datetime.now(timezone.utc) < deadline + timedelta(seconds=15), "no fallback"
+    assert "- Delivery-2 to you: The glossary is in terms.md." in fake.calls_for("work")[0]["user"]
+    assert (await RemoteJobRepo(pool).latest_for_task(task.id)).status == "abandoned"
     await h.close()
 
 
