@@ -1,13 +1,15 @@
 import React, { useEffect, useState } from 'react'
 import { api } from '../api.js'
-import { useLoad } from '../hooks/usePolling.js'
+import { useLoad, usePolling } from '../hooks/usePolling.js'
 import { Collapsible, ErrorNote, Spinner, useAction } from './Common.jsx'
-import SwarmConfigFields from './SwarmConfigFields.jsx'
+import SwarmConfigFields, { connectedProblem } from './SwarmConfigFields.jsx'
+import { CONNECTED } from '../util.js'
 
 export default function CreateSwarm({ onCreated }) {
   const cfg = useLoad(api.getConfig, [])
   const models = useLoad(api.getModels, [])
-  const avail = useLoad(api.getAvailability, [])
+  // polled: this form stays mounted while other pages are open, and agents get connected there
+  const avail = usePolling(() => api.getAvailability(), [], { interval: 15000 })
   const [name, setName] = useState('')
   const [vision, setVision] = useState('')
   const [dod, setDod] = useState('')
@@ -20,6 +22,12 @@ export default function CreateSwarm({ onCreated }) {
   }, [cfg.data, swarmCfg])
 
   const gatewayModels = (models.data && models.data.models) || []
+  // Problems with connected agents in the delivery rows, shown by the button too (Advanced may be closed).
+  const connectedList = avail.data && avail.data.connected_agents
+  const byId = Object.fromEntries((connectedList || []).map((a) => [a.id, a]))
+  const rowProblems = ((swarmCfg && swarmCfg.delivery_harnesses) || [])
+    .map((r, i) => [i, r.harness === CONNECTED ? connectedProblem(r, byId, connectedList !== undefined) : null])
+    .filter(([, p]) => p)
   const setTeam = (i, patch) => setTeams(teams.map((t, j) => (j === i ? { ...t, ...patch } : t)))
 
   const submit = (e) => {
@@ -69,6 +77,12 @@ export default function CreateSwarm({ onCreated }) {
         )}
       </Collapsible>
 
+      {rowProblems.length > 0 && (
+        <div className="warn-note">
+          <strong>Delivery agents</strong> (under Advanced configuration):
+          <ul className="plain-list">{rowProblems.map(([i, p]) => <li key={i}>Row {i + 1}: {p}</li>)}</ul>
+        </div>
+      )}
       <ErrorNote error={error} />
       <div><button className="btn primary" disabled={busy || !name.trim() || !vision.trim()}>
         {busy ? <Spinner label="Creating" /> : 'Create swarm'}</button></div>

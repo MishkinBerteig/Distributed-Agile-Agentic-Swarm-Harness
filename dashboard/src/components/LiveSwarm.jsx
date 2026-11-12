@@ -72,7 +72,7 @@ export default function LiveSwarm({ swarm, onSwarmChanged }) {
         </div>
       )}
 
-      <RemoteJobs swarmId={id} tasksById={tasksById} />
+      <RemoteJobs swarmId={id} tasksById={tasksById} connectedById={connectedById} />
 
       <section className="card panel">
         <div className="tabs" role="tablist">

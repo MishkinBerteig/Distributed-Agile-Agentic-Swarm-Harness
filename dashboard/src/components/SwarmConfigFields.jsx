@@ -78,7 +78,7 @@ function ModelLadder({ cfg, setCfg, gatewayModels }) {
 }
 
 // A delivery row filled by a connected agent: what is wrong with it right now, if anything.
-function connectedProblem(r, byId, loaded) {
+export function connectedProblem(r, byId, loaded) {
   if (!r.connected_agent) return 'Pick a connected agent for this row.'
   const a = byId[r.connected_agent]
   if (!a) return loaded ? 'This connected agent was removed from DAASH. Pick another agent for this row, or remove the row.' : null
@@ -133,7 +133,7 @@ function HarnessMix({ cfg, setCfg, modelList, harnesses, connected }) {
         <div className="row">
           {shownTypes.map((h) => (
             <label key={h} className="inline">
-              <input type="checkbox" checked={allowed.includes(h)} onChange={(e) => toggle(h, e.target.checked)} /> {label(h)}{note(h)}
+              <input type="checkbox" checked={allowed.includes(h)} onChange={(e) => toggle(h, e.target.checked)} /> <span>{label(h)}{note(h)}</span>
             </label>
           ))}
         </div>

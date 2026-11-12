@@ -36,11 +36,16 @@ function NewCode({ code, onDone }) {
   const revoke = () => cancel.run(async () => { await api.deleteEnrollment(code.id); onDone() })
   const runner = state && state.runner
   const agents = (state && state.agents) || []
+  const kindName = (k) => (k === 'hermes' ? 'Hermes Agent' : k === 'openclaw' ? 'OpenClaw' : k)
   return (
     <div className="host-code">
+      {status !== 'used' && <>
       <CopyBlock title="Run this in a terminal on the agents' machine, as their owner" text={code.command} copyLabel="Copy command" />
-      <p className="muted">Works once, until {fmtDateTime(code.expires_at)} ({relTime(code.expires_at)}). Needs Python 3. No admin rights;
-        nothing starts listening on that machine. To undo it later: <code>python3 ~/daash-runner.pyz disconnect</code>.</p>
+      <p className="muted">Works once, until {fmtDateTime(code.expires_at)} ({relTime(code.expires_at)}). Needs <code>python3</code> 3.9 or
+        newer and <code>curl</code> on that machine (macOS or Linux); no admin rights, and nothing starts listening there. Later,{' '}
+        <code>python3 ~/daash-runner.pyz status</code> shows what is connected and <code>python3 ~/daash-runner.pyz disconnect</code>{' '}
+        undoes it all.</p>
+      </>}
       {status === 'pending' && (
         <div className="wait-banner" role="status">
           <div><Spinner /> <strong>Waiting for the machine to run this command&hellip;</strong></div>
@@ -53,12 +58,14 @@ function NewCode({ code, onDone }) {
       )}
       {status === 'used' && (
         <div className="ok-banner" role="status">
-          <strong>Connected &#10003;</strong>{runner ? <> The DAASH runner <strong>{runner.name}</strong>
-            {runner.host ? <> on <code>{runner.host}</code></> : null} is {runner.online ? 'online' : 'offline'}.</> : ' A machine used this code.'}
+          <strong>Connected &#10003;</strong> {runner ? (runner.host || runner.name) : 'A machine used this code'}
+          {agents.length ? <> &mdash; found {agents.map((a) => `${a.name} (${kindName(a.kind)})`).join(', ')}.</> : '.'}
+          {runner && <p>Its DAASH runner <strong>{runner.name}</strong> is {runner.online ? 'online' : 'offline'}. The agents are already
+            approved: pick them in a swarm&rsquo;s delivery rows like any connected agent.</p>}
           {agents.length ? (
             <ul className="host-agents">
               {agents.map((a) => (
-                <li key={a.id}><strong>{a.name}</strong> <span className="muted">{a.kind === 'hermes' ? 'Hermes Agent' : a.kind === 'openclaw' ? 'OpenClaw' : a.kind}
+                <li key={a.id}><strong>{a.name}</strong> <span className="muted">{kindName(a.kind)}
                   {a.detail ? ` · ${a.detail}` : ''}</span> <span className={`chip ca-status t-${a.status === 'connected' ? 'on' : 'off'}`}>{a.status}</span></li>
               ))}
             </ul>

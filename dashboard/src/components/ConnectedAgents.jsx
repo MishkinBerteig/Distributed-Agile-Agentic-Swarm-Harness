@@ -114,7 +114,8 @@ function AgentCard({ a, usage, scope, onChanged, onShowStep }) {
         {a.kind_label} &middot; {a.direct ? <>direct, {a.protocol_label}</> : 'through an agent host'} &middot; {connectedWhere(a)}
         {a.runner && <span className="muted"> ({a.runner.online ? 'online' : 'offline'})</span>}
       </div>
-      <p className="ca-explain muted">{st.explain}
+      <p className="ca-explain muted">{a.pending_expired
+        ? 'Connected in DAASH, but its owner has not applied the approval step, and DAASH has stopped checking.' : st.explain}
         {a.status === 'pending' && !a.pending_expired && a.pending_until && <> DAASH waits until {fmtDateTime(a.pending_until)} ({relTime(a.pending_until)}).
           Lost the step? Reset tokens makes a new one.</>}</p>
       {a.pending_expired && (
@@ -133,7 +134,10 @@ function AgentCard({ a, usage, scope, onChanged, onShowStep }) {
         <dt>{scope ? 'This swarm' : 'New swarms'}</dt>
         <dd><Usage usage={usage} scope={scope} /></dd>
         {a.last_ok_at && <><dt>Last check passed</dt><dd>{ago(a.last_ok_at)}</dd></>}
-        {a.last_error && <><dt>Last error</dt><dd className="bad ca-error">{a.last_error}</dd></>}
+        {a.last_error && (a.status === 'pending'
+          ? <><dt>Last check</dt><dd className="muted ca-error">{a.last_error}{a.error_kind === 'token_rejected'
+            ? ' (expected until its owner does the step)' : ''}</dd></>
+          : <><dt>Last error</dt><dd className="bad ca-error">{a.last_error}</dd></>)}
       </dl>
       {test && (
         <div className={test.ok ? 'ok-note' : 'error-note'} role="status">

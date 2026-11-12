@@ -48,8 +48,9 @@ export default function AgentCalls({ agent, connected, activity = [], names = {}
           {connected ? <><strong>{connected.name}</strong> fills this delivery row: a connected agent ({connected.kind_label},{' '}
             {connected.direct ? `reached directly over ${connected.protocol_label}` : `through the agent host ${connected.runner ? connected.runner.name : ''}`}),{' '}
             now {connectedStatus(connected).text.toLowerCase()}.</> : <>A connected agent that is no longer in Agents &amp; models fills this row.</>}{' '}
-          It uses its own model, so DAASH sees no model calls or tokens for it; it sees its DAASH tool calls and team messages,
-          below. <a href="#/agents/connected">Agents &amp; models</a>
+          It works with its own model, which DAASH does not see. What DAASH does see: its DAASH tool calls and team messages, and
+          the calls DAASH makes for this row itself (planning, and each task it sends {connected ? connected.name : 'the agent'}).{' '}
+          <a href="#/agents/connected">Agents &amp; models</a>
         </div>
       ) : (
         <p className="muted">{agent.role} · {agent.model} · {fmtNum(agent.tokens_used)} tokens · {agent.calls} calls · {agent.errors} errors</p>
@@ -57,7 +58,8 @@ export default function AgentCalls({ agent, connected, activity = [], names = {}
       {(isConnected || (agent.harness && agent.harness !== 'daash') || activity.length > 0) && (
         <Activity activity={activity} names={names} teamNames={teamNames} onOpenTask={onOpenTask} />
       )}
-      {isConnected && !calls.length ? null : <h3 className="calls-h">Model calls</h3>}
+      {isConnected && !calls.length ? null
+        : <h3 className="calls-h">{isConnected ? 'Calls DAASH made for this row' : 'Model calls'}</h3>}
       {loading ? <Spinner label="Loading calls" /> : null}
       <ErrorNote error={error} />
       {!loading && !calls.length && !error && !isConnected && <Empty>No calls yet.</Empty>}

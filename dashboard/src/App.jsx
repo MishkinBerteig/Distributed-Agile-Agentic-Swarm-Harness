@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { api, getToken, onAuthRequired, setToken } from './api.js'
-import { useLoad, usePolling } from './hooks/usePolling.js'
+import { usePolling } from './hooks/usePolling.js'
 import { useRoute } from './router.js'
 import { ErrorNote, Spinner } from './components/Common.jsx'
 import AgentsPage, { Status } from './components/AgentsPage.jsx'
@@ -19,7 +19,7 @@ const ConnectedState = ({ agent }) => {
 
 // Beside Create a swarm: what a new swarm could use right now, linking to the details.
 function AvailableNow() {
-  const av = useLoad(api.getAvailability, [])
+  const av = usePolling(() => api.getAvailability(), [], { interval: 15000 })
   const d = av.data
   const missing = d ? unavailableAllowed(d.harnesses) : []
   return (

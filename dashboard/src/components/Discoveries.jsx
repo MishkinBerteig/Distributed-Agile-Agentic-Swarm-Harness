@@ -76,7 +76,10 @@ function AddByAddress({ onConnect, onProbed }) {
       const fresh = found.filter((d) => !d.connected)
       if (fresh.length === 1) { onConnect({ discovery: fresh[0] }); setAddress(''); return }
       if (fresh.length > 1) { setNote({ ok: true, text: `Found ${fresh.length} agents at ${addr}: they are in the list below; pick one to connect.` }); return }
-      if (found.length) { setNote({ ok: true, text: `${found.map((d) => d.connected_agent_name || d.name).join(', ')} at ${addr} is already connected.` }); return }
+      if (found.length) {
+        setNote({ ok: true, text: `${found.map((d) => `${d.address} is already connected${d.connected_agent_name ? `, as ${d.connected_agent_name}` : ''}`).join('; ')}. See Connected agents above.` })
+        return
+      }
       if ((r.found || []).some((d) => d.status === 'silent')) {
         setNote({ ok: false, text: `Something is listening at ${addr} but doesn’t answer: probably a firewall. Connect it through an agent host instead.` })
         return

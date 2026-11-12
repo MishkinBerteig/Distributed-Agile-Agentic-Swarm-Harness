@@ -304,8 +304,9 @@ label.inline input { width: auto; }
 /* 0.4: connected agents (AgentsPage, ConnectedAgents, Discoveries, AgentHosts, ConnectDialog) */
 fieldset.caps-pick { flex-direction: row; justify-content: flex-start; }
 .form label.check, label.check { flex-direction: row; align-items: center; gap: 5px; font-weight: 600; display: inline-flex; }
-label.check input { width: auto; }
+label.check input, label.inline input { width: auto; flex: none; }
 p .link { text-decoration: underline; }
+[id^="agents-"] { scroll-margin-top: 64px; }
 .page-nav { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; margin: -6px 0 14px; font-size: 13px; }
 .page-nav a { white-space: nowrap; }
 .help-link { font-size: 13px; white-space: nowrap; }
@@ -364,7 +365,8 @@ p .link { text-decoration: underline; }
 .delivery-row:last-of-type { border-bottom: none; }
 .delivery-row .warn-note { margin: 2px 0 4px; }
 .avail-sub { font-size: 13px; margin: 10px 0 2px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
-.help-topics { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 6px; }
+.plain-list { margin: 4px 0 0; padding-left: 18px; }
+.help-topics { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; max-width: 1180px; margin: 0 auto 6px; }
 .help-topics a { padding: 5px 12px; border: 1px solid var(--border); border-radius: 999px; text-decoration: none; font-weight: 600; background: var(--surface); }
 .help-topics a[aria-current="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
 
