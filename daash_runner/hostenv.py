@@ -10,6 +10,7 @@ install folders.
 from __future__ import annotations
 
 import glob
+import json
 import os
 import shutil
 import subprocess
@@ -60,22 +61,38 @@ def _split(path: str) -> list:
     return [p for p in (path or "").split(os.pathsep) if p]
 
 
-def login_shell_path(environ: Optional[Mapping[str, str]] = None, timeout: float = 10.0) -> str:
-    """The PATH of the owner's login shell ('' if it cannot be read). Runs `$SHELL -l -c`
-    (zsh reads ~/.zprofile, where Homebrew puts its PATH; bash reads ~/.profile)."""
+_ENV_MARKER = "__DAASH_LOGIN_ENV__"
+_DUMP_ENV = ("import json, os, sys; sys.stdout.write(%r + json.dumps(dict(os.environ)))"
+             % _ENV_MARKER)
+
+
+def login_shell_env(environ: Optional[Mapping[str, str]] = None, timeout: float = 10.0) -> dict:
+    """The environment of the owner's login shell ({} if it cannot be read): `$SHELL -l -c`
+    runs this Python, which prints its environment. zsh reads ~/.zprofile (where Homebrew puts
+    its PATH), bash ~/.profile. A service started by launchd or systemd has almost none of it."""
     env = dict(os.environ if environ is None else environ)
     shell = env.get("SHELL") or ("/bin/zsh" if sys.platform == "darwin" else "/bin/bash")
-    if not os.path.isfile(shell):
-        return ""
-    marker = "__DAASH_PATH__="
+    if not os.path.isfile(shell) or not sys.executable:
+        return {}
     try:
-        res = subprocess.run([shell, "-l", "-c", f'printf "%s%s" "{marker}" "$PATH"'],  # noqa: S603
-                             env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                             timeout=timeout, check=False)
+        res = subprocess.run([shell, "-l", "-c", 'exec "$0" -c "$1"', sys.executable,  # noqa: S603
+                              _DUMP_ENV], env=env, stdin=subprocess.DEVNULL, capture_output=True,
+                             text=True, timeout=timeout, check=False)
     except (OSError, subprocess.SubprocessError):
-        return ""
+        return {}
     out = res.stdout or ""
-    return out.rsplit(marker, 1)[1].strip() if marker in out else ""
+    if _ENV_MARKER not in out:
+        return {}
+    try:
+        data = json.loads(out.rsplit(_ENV_MARKER, 1)[1])
+    except ValueError:
+        return {}
+    return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+
+
+def login_shell_path(environ: Optional[Mapping[str, str]] = None, timeout: float = 10.0) -> str:
+    """The PATH of the owner's login shell ('' if it cannot be read)."""
+    return login_shell_env(environ, timeout).get("PATH", "")
 
 
 def common_dirs(environ: Optional[Mapping[str, str]] = None) -> list:

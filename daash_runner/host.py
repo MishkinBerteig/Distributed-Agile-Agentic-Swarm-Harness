@@ -90,10 +90,15 @@ class AgentHost:
                  login_path: Optional[str] = None) -> None:
         self.cfg = cfg
         self.cfg_path = cfg_path
-        self.environ = dict(os.environ if environ is None else environ)
+        own = dict(os.environ if environ is None else environ)
+        # The owner's CLIs run in their login shell's environment (a service has almost none),
+        # overlaid with this process's own. `login_path` given (tests, disconnect) = skip the shell.
+        login = hostenv.login_shell_env(own) if login_path is None else {}
+        self.environ = {**login, **own}
         self.run = run
         self.health = health
-        self.path = hostenv.search_path(self.environ, cfg.get("path", ""), login_path)
+        self.path = hostenv.search_path(own, cfg.get("path", ""),
+                                        login.get("PATH", "") if login_path is None else login_path)
         self.agents: dict = {}
         self.notes: list = []
         self._lock = threading.RLock()
@@ -153,13 +158,12 @@ class AgentHost:
         return out
 
     def handle_hello(self, info: Mapping[str, Any]) -> list:
-        """Keep the new MCP tokens DAASH sent and give those agents DAASH tools. Returns lines
-        describing what changed."""
+        """Keep the new MCP tokens DAASH sent and give those agents DAASH tools (and retry the
+        tokens still pending from an earlier hello). Returns lines describing what changed."""
         tokens = info.get("agent_tokens") or {}
         listed = info.get("agents") or []
-        lines = []
         if not tokens:
-            return lines
+            return self.install_pending()
         can = self.tools_agent_keys()
         by_ref = {}
         for a in listed:
@@ -180,8 +184,7 @@ class AgentHost:
                 self.cfg["pending_tokens"][key] = token
                 self.cfg["tools_skipped"].pop(key, None)
             self.save()
-        lines.extend(self.install_pending())
-        return lines
+        return self.install_pending()
 
     def install_pending(self) -> list:
         """Give DAASH tools to the agents with a pending token. A token stays pending (in the

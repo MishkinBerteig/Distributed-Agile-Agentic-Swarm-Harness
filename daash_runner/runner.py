@@ -221,7 +221,9 @@ class Runner:
         with self._lock:
             self._active[job["id"]] = t
         t.start()
-        log.info("leased job %s (%s/%s, task %s)", job["id"], job.get("harness"), job.get("model"), job.get("task_id"))
+        what = (f"{job.get('relay')} '{job.get('local_ref')}'" if job.get("harness") == CONNECTED_HARNESS
+                else f"{job.get('harness')}/{job.get('model')}")
+        log.info("leased job %s (%s, task %s)", job["id"], what, job.get("task_id"))
 
     def _job_thread(self, job: dict) -> None:
         jid = job["id"]

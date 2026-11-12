@@ -411,12 +411,20 @@ def test_search_path_and_cli_env(tmp_path):
     cenv = hostenv.cli_env(path, env)
     assert cenv["PATH"] == path and cenv["KEEP"] == "1" and "DAASH_RUNNER_TOKEN" not in cenv
     assert hostenv.expand("~/x", env) == str(tmp_path / "x")
+    # a login shell whose profile sets PATH and a variable (as ~/.zprofile would)
     shell = tmp_path / "fakeshell"
-    shell.write_text('#!/bin/sh\nPATH=/from/login/shell\neval "$3"\n')
+    shell.write_text('#!/bin/sh\necho "Welcome!"\nexport PATH=/from/login/shell:/usr/bin:/bin\n'
+                     'export FROM_PROFILE=yes\n[ "$1" = "-l" ] && shift\nexec /bin/sh "$@"\n')
     shell.chmod(0o755)
-    assert hostenv.login_shell_path({"SHELL": str(shell), "PATH": "/usr/bin:/bin"}) == \
-        "/from/login/shell"
+    login = hostenv.login_shell_env({"SHELL": str(shell), "PATH": "/usr/bin:/bin"})
+    assert login["PATH"] == "/from/login/shell:/usr/bin:/bin" and login["FROM_PROFILE"] == "yes"
+    assert hostenv.login_shell_path({"SHELL": str(shell)}).startswith("/from/login/shell")
     assert hostenv.login_shell_path({"SHELL": str(tmp_path / "missing")}) == ""
+    # the agent host runs the owner's CLIs in that environment (its own values win)
+    ah = host.AgentHost({"coordinator": URL}, str(tmp_path / "c.json"),
+                        {"SHELL": str(shell), "PATH": "/svc", "HOME": str(tmp_path), "OWN": "1"})
+    assert ah.env()["FROM_PROFILE"] == "yes" and ah.env()["OWN"] == "1"
+    assert ah.path.split(":")[:2] == ["/svc", "/from/login/shell"]
 
 
 # -- connect / status / disconnect against a fake HOME --------------------------------------------------
@@ -562,8 +570,10 @@ def test_agent_host_tokens_and_reports(tmp_path):
     assert {r["ref"]: r.get("new_token", False) for r in ah.report()} == \
         {"main": False, "default": False, "helper": True}
     run.answers = [a for a in run.answers if not a[0](["x", "mcp", "add"])]
-    ah.install_pending()
+    lines = ah.handle_hello({"agents": [], "agent_tokens": {}})     # the next hello: no new tokens
+    assert lines == ["Fitz: added MCP server 'daash' (http://daash.example:8001/mcp) to OpenClaw's config"]
     assert "openclaw:main" in cfg["installed"] and cfg["pending_tokens"] == {}
+    assert ah.handle_hello({}) == []
     assert ah.resolve("openclaw-agent", "main").name == "Fitz"
     assert ah.resolve("hermes-agent", "hermes:helper").home.endswith("profiles/helper")
     assert ah.resolve("hermes-agent", "main") is None and ah.resolve("nope", "main") is None
