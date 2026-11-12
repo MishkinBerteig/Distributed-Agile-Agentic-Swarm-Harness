@@ -80,7 +80,8 @@ def _agent(protocol: str) -> ConnectedAgent:
 def test_hosted_agents_get_tools_but_not_file_tools():
     hosted = Identity("connected", connected=_agent("runner"))
     direct = Identity("connected", connected=_agent("a2a"))
-    assert not hosted.file_tools and direct.file_tools and not Identity("job", job_id="j").file_tools
+    has = mcp_server.has_file_tools
+    assert not has(hosted) and has(direct) and not has(Identity("job", job_id="j"))
     backend = mcp_server.DaashBackend(repos=None)
     hosted_tools = {t["name"] for t in backend.list_tools(hosted)}
     assert "remember" in hosted_tools and "send_message" in hosted_tools

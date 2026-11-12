@@ -144,16 +144,25 @@ Design: docs/DESIGN-0.3.md. Runner guide: docs/RUNNER.md.
 Design: docs/DESIGN-0.4.md. Started 2026-11-11 at the user's direction: "make sure that OpenClaw and Hermes Agent
 can be used in this next version ... it's important to allow DAASH to connect to already-existing agents", with
 their OpenClaw agents Jane (`janes-mac-mini`) and Fitz (`m3u512gb`) as the test.
-- [ ] DAASH MCP server (`/mcp`, streamable HTTP): memory, subtasks, proposals and votes, team roster, messages,
-  current task. Per-job tokens for runner-launched CLIs, a per-agent token for connected agents. One shared tool
-  module with the built-in agent
-- [ ] Team messages (`send_message` / `read_messages`) for every agent; unread messages in the next prompt
-- [ ] Runner: `openclaw` (`openclaw agent exec`) and `hermes` (`hermes chat --query-file -`) adapters in the runner
-  container on the local gateway; every runner-launched CLI gets the DAASH MCP server for its job
-- [ ] Connected agents: existing agents reached over A2A 1.0 (OpenClaw's `a2a` channel, and any A2A agent) or
-  Hermes's API server; DAASH tools or reply file blocks for the workspace; escalation hands the task to another
-  team member
-- [ ] Agent-facing port (`agent-api`, 8001: `/mcp`, `/runner/*` only) so other machines never reach the admin API
+- [x] DAASH MCP server (`/mcp`, streamable HTTP; `app/mcp_server.py`, hand-rolled JSON-RPC, checked with the
+  official Python and TypeScript MCP clients). Its tools: memory, subtasks, proposals and votes, team roster,
+  messages, and the current task. Runner-launched CLIs get per-job tokens (`djt_`) that die with the job; connected
+  agents get a per-agent token (`dca_`). The tool module (`app/agent_tools.py`) is shared with the built-in agent
+- [x] Team messages (`send_message` / `read_messages`) for every agent. Unread messages go into the next prompt.
+  Messages to `coordinator` reach the Swarm Coordinator's bootstrap and vision review
+- [x] Runner: `openclaw` (`openclaw agent exec`, OpenClaw 2026.11.3) and `hermes` (`hermes chat --query-file -`,
+  Hermes Agent v0.23.1, a private `HERMES_HOME` per job) run in the runner container on the local gateway. Every
+  runner-launched CLI gets the DAASH MCP server for its job. All five CLIs called `remember` over MCP for real
+- [ ] Connected agents (in progress), with automatic discovery and one approval step by the agent's owner
+  (the user's direction, 2026-11-11):
+  - **direct**: A2A 1.0, OpenClaw's `a2a` channel and any A2A agent, or Hermes's API server. The approval step
+    is one `openclaw config patch` command, or a message the owner sends to their own agent. DAASH notices the
+    connection by itself
+  - **agent hosts**: for agents behind a firewall, like Fitz. One command installs a DAASH runner that dials
+    out, finds the local OpenClaw and Hermes agents, and relays work to them
+  - Escalation hands the task to another team member
+- [x] Agent-facing port (`agent-api`, 8001: `/health`, `/mcp` and `/runner/*` only), so other machines never reach
+  the admin API
 - [ ] DAASHboard: Connected agents panel and Connect form with generated config snippets, OpenClaw and Hermes in
   the agent types, connected agents in delivery rows, messages in the feed, Help topic "Connecting agents"
 - [ ] Tests in all three tiers (fake A2A agent container in e2e); live runs: OpenClaw and Hermes in the runner,

@@ -17,6 +17,12 @@ x-daash-env: &daash-env
   # short lease so a killed runner's job is re-queued within seconds (heartbeats follow: lease/3).
   DAASH_RUNNER_BOOTSTRAP_TOKEN: daash_rt_e2e-fixed-test-token
   DAASH_RUNNER_LEASE_SECONDS: "5"
+  # 0.4 connected agents: the fake A2A agent reaches DAASH's MCP server on the coordinator, and
+  # discovery looks at it; approvals and polls are fast in this project.
+  DAASH_AGENT_PUBLIC_URL: http://coordinator:8000
+  DAASH_DISCOVERY_HOSTS: fake-a2a
+  DAASH_CONNECTED_POLL_SECONDS: "1"
+  DAASH_CONNECTED_PENDING_CHECK_SECONDS: "1"
 
 x-runner: &runner
   # `fake-only` stage: python only, only the `fake` harness (runner/runner.e2e.json); no real CLIs.
@@ -59,6 +65,20 @@ services:
     command: ["python", "-m", "tests.fakes.fake_llm_server", "--port", "9100"]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9100/health', timeout=3)"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks: [e2e]
+
+  # A scripted fake of an existing A2A agent (an OpenClaw gateway's a2a channel; no LLM) for the
+  # connected-agent scenario: tests/fakes/fake_a2a_agent.py.
+  fake-a2a:
+    build:
+      context: .
+      target: test
+    command: ["python", "-m", "tests.fakes.fake_a2a_agent", "--port", "18789", "--name", "Jane"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18789/health', timeout=3)"]
       interval: 2s
       timeout: 3s
       retries: 30
@@ -130,6 +150,7 @@ services:
       E2E_FAKE_LLM_URL: http://fake-llm:9100
       E2E_RUNNER_TOKEN: daash_rt_e2e-fixed-test-token
       E2E_COMPOSE_PROJECT: ${DAASH_E2E_PROJECT:-daash-e2e}
+      E2E_FAKE_A2A_URL: http://fake-a2a:18789
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
@@ -141,6 +162,8 @@ services:
         condition: service_healthy
       runner:
         condition: service_started
+      fake-a2a:
+        condition: service_healthy
     networks: [e2e]
 
 networks:

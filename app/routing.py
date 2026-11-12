@@ -1,9 +1,10 @@
 """Model routing (learning mechanism 3, docs/DESIGN-0.1.md section 6.6). Pure."""
 from __future__ import annotations
 
-from typing import Iterable, Optional
+from typing import Any, Iterable, Mapping, Optional
 
-from app.models import KNOWN_HARNESSES, AgentRole, Complexity, SwarmConfig
+from app.models import (CONFIG_HARNESSES, CONNECTED_HARNESS, AgentRole, Complexity,
+                        SwarmConfig)
 
 CLASSIFIER_ROLE = "classifier"
 MIN_STATS_SAMPLES = 5
@@ -111,8 +112,13 @@ def routing_stats(outcomes: Iterable[tuple[str, Optional[str], bool]]
     return {k: (v[0], v[1]) for k, v in acc.items()}
 
 
-def validate_config(config: SwarmConfig) -> list[str]:
-    """Human-readable problems with a SwarmConfig (empty list = valid)."""
+def validate_config(config: SwarmConfig,
+                    connected: Optional[Mapping[str, Any]] = None) -> list[str]:
+    """Human-readable problems with a SwarmConfig (empty list = valid).
+
+    `connected` (connected agent id -> agent with `name` and `enabled`), when given, is what
+    a delivery row with harness "connected" must name: an existing, enabled connected agent
+    (docs/DESIGN-0.4.md section 5.2). Without it only the presence of the id is checked."""
     errors: list[str] = []
     allowed = set(config.allowed_models)
     if not config.allowed_models:
@@ -140,16 +146,25 @@ def validate_config(config: SwarmConfig) -> list[str]:
         errors.append(f"coordinator.harness '{config.coordinator.harness}' is not in "
                       f"allowed_harnesses ({', '.join(config.allowed_harnesses)}).")
     for h in config.allowed_harnesses:
-        if h not in KNOWN_HARNESSES:
+        if h not in CONFIG_HARNESSES:
             errors.append(f"allowed_harnesses contains unknown harness '{h}' "
-                          f"(known: {', '.join(KNOWN_HARNESSES)}).")
+                          f"(known: {', '.join(CONFIG_HARNESSES)}).")
+    if config.coordinator.harness == CONNECTED_HARNESS:
+        errors.append("coordinator.harness cannot be 'connected': the Swarm Coordinator, the "
+                      "judges and planning always run on DAASH's own agent.")
     for i, spec in enumerate(config.delivery_harnesses, 1):
-        if spec.harness not in KNOWN_HARNESSES:
+        if spec.harness not in CONFIG_HARNESSES:
             errors.append(f"delivery_harnesses[{i}] harness '{spec.harness}' is unknown "
-                          f"(known: {', '.join(KNOWN_HARNESSES)}).")
-        elif config.allowed_harnesses and spec.harness not in config.allowed_harnesses:
+                          f"(known: {', '.join(CONFIG_HARNESSES)}).")
+            continue
+        if config.allowed_harnesses and spec.harness not in config.allowed_harnesses:
             errors.append(f"delivery_harnesses[{i}] harness '{spec.harness}' is not in "
                           f"allowed_harnesses ({', '.join(config.allowed_harnesses)}).")
+        if spec.harness == CONNECTED_HARNESS:
+            errors.extend(_connected_row_errors(i, spec.connected_agent, connected))
+        elif spec.connected_agent:
+            errors.append(f"delivery_harnesses[{i}] names a connected agent but its harness is "
+                          f"'{spec.harness}'; use harness 'connected'.")
     if config.remote_fallback_minutes is not None and config.remote_fallback_minutes < 1:
         errors.append("remote_fallback_minutes must be at least 1 (or null to wait for a runner).")
     if config.allowed_providers and config.coordinator.provider not in config.allowed_providers:
@@ -165,3 +180,21 @@ def validate_config(config: SwarmConfig) -> list[str]:
         if not 0.0 <= v <= 1.0:
             errors.append(f"dod_thresholds.{label} is {v}; it must be between 0 and 1.")
     return errors
+
+
+def _connected_row_errors(i: int, agent_id: Optional[str],
+                          connected: Optional[Mapping[str, Any]]) -> list[str]:
+    if not agent_id:
+        return [f"delivery_harnesses[{i}] has harness 'connected' but names no connected agent "
+                "(connected_agent)."]
+    if connected is None:
+        return []
+    agent = connected.get(agent_id)
+    if agent is None:
+        return [f"delivery_harnesses[{i}] names connected agent '{agent_id}', which does not "
+                "exist (it may have been removed)."]
+    if not getattr(agent, "enabled", True):
+        name = getattr(agent, "name", agent_id)
+        return [f"delivery_harnesses[{i}] names connected agent '{name}', which is disabled; "
+                "enable it on the Agents page first."]
+    return []

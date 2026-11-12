@@ -765,6 +765,29 @@ class RemoteJobRepo(_Repo):
             "UPDATE remote_jobs SET payload = jsonb_set(payload, '{mcp_calls}', "
             "to_jsonb(COALESCE((payload->>'mcp_calls')::int, 0) + 1)) WHERE id = $1", job_id)
 
+    async def merge_payload(self, job_id: str, fields: dict) -> Optional[RemoteJob]:
+        """payload || fields (a connected job's external id, context id, error times)."""
+        row = await self._pool.fetchrow(
+            f"UPDATE remote_jobs SET payload = payload || $2::jsonb WHERE id = $1 "
+            f"RETURNING {REMOTE_JOB_COLS}", job_id, fields)
+        return _to(RemoteJob, row)
+
+    async def finish_connected(self, job_id: str, result: dict) -> Optional[RemoteJob]:
+        """Complete a directly connected job (no runner) with its result; None if it was no
+        longer active (cancelled meanwhile). From now on its MCP calls are refused."""
+        row = await self._pool.fetchrow(
+            f"UPDATE remote_jobs SET status = 'completed', result = $2, finished_at = now() "
+            f"WHERE id = $1 AND harness = $3 AND status IN ('queued', 'leased') "
+            f"RETURNING {REMOTE_JOB_COLS}", job_id, result, CONNECTED_HARNESS)
+        return _to(RemoteJob, row)
+
+    async def active_connected_counts(self) -> dict[str, int]:
+        """connected agent id -> its queued/leased jobs (max_jobs, section 5.2)."""
+        rows = await self._pool.fetch(
+            "SELECT payload->>'connected_agent_id' AS cid, count(*) AS n FROM remote_jobs "
+            "WHERE harness = $1 AND status IN ('queued', 'leased') GROUP BY 1", CONNECTED_HARNESS)
+        return {r["cid"]: r["n"] for r in rows if r["cid"]}
+
     async def record_mcp_file(self, job_id: str, path: str, written: bool = True) -> None:
         """Add (or, for a deletion, remove) a workspace path in payload.mcp_files: the files a
         connected agent wrote through MCP during this job (part of its deliverable)."""
@@ -880,33 +903,44 @@ class MessageRepo(_Repo):
 
 
 CONNECTED_COLS = ("id, name, protocol, url, endpoint, skill, token, mcp_token_hash, capabilities, "
-                  "max_jobs, enabled, card, last_ok_at, last_error, mcp_seen_at, created_at")
+                  "max_jobs, enabled, card, last_ok_at, last_error, mcp_seen_at, created_at, "
+                  "status, kind, pending_until, runner_id, local_ref")
 CONNECTED_UPDATABLE = ("name", "protocol", "url", "endpoint", "skill", "token", "mcp_token_hash",
-                       "capabilities", "max_jobs", "enabled", "card", "last_ok_at", "last_error")
+                       "capabilities", "max_jobs", "enabled", "card", "last_ok_at", "last_error",
+                       "status", "kind", "pending_until", "runner_id", "local_ref")
 
 
 class ConnectedAgentRepo(_Repo):
-    """Connected agents (docs/DESIGN-0.4.md section 5.1). Minimal for 0.4's MCP server; the
-    connected-agents work extends it."""
+    """Connected agents (docs/DESIGN-0.4.md section 5.1)."""
 
-    async def create(self, name: str, protocol: str, url: str, *,
+    async def create(self, name: str, protocol: str, url: Optional[str], *,
                      endpoint: Optional[str] = None, skill: Optional[str] = None,
                      token: Optional[str] = None, mcp_token_hash: Optional[str] = None,
                      capabilities: Optional[list[str]] = None, max_jobs: int = 1,
-                     enabled: bool = True, card: Optional[dict] = None) -> ConnectedAgent:
+                     enabled: bool = True, card: Optional[dict] = None,
+                     status: str = "connected", kind: str = "other",
+                     pending_until: Optional[datetime] = None, runner_id: Optional[str] = None,
+                     local_ref: Optional[str] = None) -> ConnectedAgent:
         """Raises asyncpg.UniqueViolationError if the name or MCP token hash exists."""
         caps = normalize_capabilities(capabilities) if capabilities is not None else ["edit_files"]
         row = await self._pool.fetchrow(
             f"INSERT INTO connected_agents (id, name, protocol, url, endpoint, skill, token, "
-            f"mcp_token_hash, capabilities, max_jobs, enabled, card) "
-            f"VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING {CONNECTED_COLS}",
+            f"mcp_token_hash, capabilities, max_jobs, enabled, card, status, kind, pending_until, "
+            f"runner_id, local_ref) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, "
+            f"$13, $14, $15, $16, $17) RETURNING {CONNECTED_COLS}",
             _uid(), name, protocol, url, endpoint, skill, token, mcp_token_hash, caps, max_jobs,
-            enabled, card)
+            enabled, card, status, kind, pending_until, runner_id, local_ref)
         return _to(ConnectedAgent, row)
 
     async def get(self, agent_id: str) -> Optional[ConnectedAgent]:
         return _to(ConnectedAgent, await self._pool.fetchrow(
             f"SELECT {CONNECTED_COLS} FROM connected_agents WHERE id = $1", agent_id))
+
+    async def get_by_name(self, name: str) -> Optional[ConnectedAgent]:
+        """Case-insensitive."""
+        return _to(ConnectedAgent, await self._pool.fetchrow(
+            f"SELECT {CONNECTED_COLS} FROM connected_agents WHERE lower(name) = lower($1) "
+            f"ORDER BY created_at LIMIT 1", name))
 
     async def by_mcp_token_hash(self, token_hash: str) -> Optional[ConnectedAgent]:
         if not token_hash:
@@ -920,11 +954,42 @@ class ConnectedAgentRepo(_Repo):
             f"SELECT {CONNECTED_COLS} FROM connected_agents ORDER BY created_at, name")
         return [_to(ConnectedAgent, r) for r in rows]
 
+    async def list_pending(self, now: datetime) -> list[ConnectedAgent]:
+        """Pending direct agents still inside their approval window (section 5.8)."""
+        rows = await self._pool.fetch(
+            f"SELECT {CONNECTED_COLS} FROM connected_agents WHERE status = 'pending' "
+            f"AND enabled AND pending_until IS NOT NULL AND pending_until > $1 "
+            f"ORDER BY created_at", now)
+        return [_to(ConnectedAgent, r) for r in rows]
+
     async def update(self, agent_id: str, **fields: Any) -> Optional[ConnectedAgent]:
+        if "capabilities" in fields and fields["capabilities"] is not None:
+            fields["capabilities"] = normalize_capabilities(fields["capabilities"])
         sets, params = build_update(CONNECTED_UPDATABLE, fields)
         row = await self._pool.fetchrow(
             f"UPDATE connected_agents SET {sets} WHERE id = $1 RETURNING {CONNECTED_COLS}",
             agent_id, *params)
+        return _to(ConnectedAgent, row)
+
+    async def mark_connected(self, agent_id: str) -> Optional[ConnectedAgent]:
+        """pending -> connected (the owner's approval was detected); None if it was not pending."""
+        row = await self._pool.fetchrow(
+            f"UPDATE connected_agents SET status = 'connected', pending_until = NULL, "
+            f"last_ok_at = now(), last_error = NULL WHERE id = $1 AND status = 'pending' "
+            f"RETURNING {CONNECTED_COLS}", agent_id)
+        return _to(ConnectedAgent, row)
+
+    async def record_check(self, agent_id: str, ok: bool,
+                           error: Optional[str] = None) -> Optional[ConnectedAgent]:
+        """The outcome of a check or a job's contact: ok sets last_ok_at and clears last_error."""
+        if ok:
+            row = await self._pool.fetchrow(
+                f"UPDATE connected_agents SET last_ok_at = now(), last_error = NULL "
+                f"WHERE id = $1 RETURNING {CONNECTED_COLS}", agent_id)
+        else:
+            row = await self._pool.fetchrow(
+                f"UPDATE connected_agents SET last_error = $2 WHERE id = $1 "
+                f"RETURNING {CONNECTED_COLS}", agent_id, (error or "unknown error")[:1000])
         return _to(ConnectedAgent, row)
 
     async def touch_mcp(self, agent_id: str) -> None:
@@ -935,6 +1000,47 @@ class ConnectedAgentRepo(_Repo):
     async def delete(self, agent_id: str) -> bool:
         res = await self._pool.execute("DELETE FROM connected_agents WHERE id = $1", agent_id)
         return res.endswith(" 1")
+
+
+DISCOVERY_COLS = ("id, host, port, kind, status, name, url, card, detail, connected_agent_id, "
+                  "first_seen_at, last_seen_at")
+
+
+class DiscoveryRepo(_Repo):
+    """What discovery found on the network (docs/DESIGN-0.4.md section 5.8): one row per
+    (host, port), refreshed on every look."""
+
+    async def upsert(self, host: str, port: int, kind: str, status: str, *,
+                     name: Optional[str] = None, url: Optional[str] = None,
+                     card: Optional[dict] = None, detail: Optional[str] = None,
+                     connected_agent_id: Optional[str] = None) -> dict:
+        row = await self._pool.fetchrow(
+            f"INSERT INTO agent_discoveries (id, host, port, kind, status, name, url, card, "
+            f"detail, connected_agent_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) "
+            f"ON CONFLICT (host, port) DO UPDATE SET kind = EXCLUDED.kind, "
+            f"status = EXCLUDED.status, name = EXCLUDED.name, url = EXCLUDED.url, "
+            f"card = EXCLUDED.card, detail = EXCLUDED.detail, "
+            f"connected_agent_id = COALESCE(EXCLUDED.connected_agent_id, "
+            f"agent_discoveries.connected_agent_id), last_seen_at = now() "
+            f"RETURNING {DISCOVERY_COLS}",
+            _uid(), host, int(port), kind, status, name, url, card, detail, connected_agent_id)
+        return dict(row)
+
+    async def list(self) -> list[dict]:
+        rows = await self._pool.fetch(
+            f"SELECT {DISCOVERY_COLS} FROM agent_discoveries "
+            f"ORDER BY status, last_seen_at DESC, host, port")
+        return [dict(r) for r in rows]
+
+    async def get(self, discovery_id: str) -> Optional[dict]:
+        row = await self._pool.fetchrow(
+            f"SELECT {DISCOVERY_COLS} FROM agent_discoveries WHERE id = $1", discovery_id)
+        return dict(row) if row is not None else None
+
+    async def link(self, discovery_id: str, connected_agent_id: Optional[str]) -> None:
+        await self._pool.execute(
+            "UPDATE agent_discoveries SET connected_agent_id = $2 WHERE id = $1",
+            discovery_id, connected_agent_id)
 
 
 # ---------------------------------------------------------------------------

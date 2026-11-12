@@ -39,7 +39,7 @@ from pydantic import BaseModel, Field
 
 from app import remote as R
 from app.api_state import require_pool
-from app.mcp_server import RUNNER_PROTOCOL, new_connected_token
+from app.mcp_server import new_connected_token
 from app.models import CONNECTED_HARNESS, RemoteJob
 from app.repo import REMOTE_JOB_COLS, RUNNER_COLS, _to
 
@@ -54,6 +54,8 @@ DEFAULT_ZIPAPP_PATH = "/opt/daash/" + ZIPAPP_NAME
 #: Agent kind -> relay adapter of the runner (daash_runner/relay.py).
 RELAYS = {"openclaw": "openclaw-agent", "hermes": "hermes-agent"}
 HOST_KINDS = tuple(RELAYS)
+#: Protocol of connected agents on an agent host (app.models.CONNECTED_PROTOCOLS).
+RUNNER_PROTOCOL = "runner"
 #: What an agent on an agent host can do by default: OpenClaw (coding tools) and Hermes
 #: (terminal tool) both edit files and run commands in the job folder.
 DEFAULT_CAPABILITIES = ["edit_files", "run_code"]

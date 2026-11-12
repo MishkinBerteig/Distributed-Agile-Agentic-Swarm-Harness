@@ -937,6 +937,153 @@ def remote_work_prompt(task: Any, criteria: Iterable[Any], feedback: Optional[st
     return s
 
 
+#: The most a connected agent's work message may be (docs/DESIGN-0.4.md section 5.3): OpenClaw caps
+#: inbound A2A text at 64 KiB.
+CONNECTED_PROMPT_MAX_BYTES = 60_000
+
+#: What a directly connected agent (A2A, Hermes API) is told about DAASH's tools. It has no copy
+#: of the files, so it edits the shared workspace through DAASH's MCP file tools, or hands files
+#: over in its reply (section 5.5).
+DAASH_TOOLS_CONNECTED = (
+    "You have DAASH tools (MCP server `daash`): remember/recall for your persistent memory, "
+    "team_roster, send_message/read_messages to coordinate with your team, current_task, "
+    "create_subtask, propose_team, list_proposals and vote_on_proposal. Use them.\n")
+
+
+def connected_rules(job_id: str, file_tools: bool = True) -> str:
+    """The rules at the end of a connected agent's work message (section 5.5, step 2)."""
+    if file_tools:
+        s = ("Use the DAASH tools (MCP server `daash`) to read and write the shared workspace: "
+             f"list_files, read_file, write_file, append_file, delete_file (pass job={job_id}). "
+             "Your own file tools do not reach the shared workspace; only DAASH's do (your "
+             "agent may list them as daash__write_file or mcp__daash__write_file, or find them "
+             "with its tool search). "
+             "If you do not have DAASH tools, put every file you create or change in your reply "
+             "as a block that starts with a line `<<<FILE path>>>` and ends with a line "
+             "`<<<END FILE>>>` (the full new content in between), and a line `<<<DELETE path>>>` "
+             "for each file to delete; paths are relative to the workspace root.\n")
+    else:
+        s = ""
+    return s + ("Work only on this task. Do not ask questions; decide and proceed. Before "
+                "finishing, re-read your files and check EVERY acceptance criterion one by one; "
+                "fix what is not met. Finish with a short summary of what you did and how each "
+                "criterion is met.")
+
+
+def _utf8_len(s: str) -> int:
+    return len(s.encode("utf-8"))
+
+
+def _clip_bytes(s: str, limit: int, note: str) -> str:
+    """`s` cut to at most `limit` UTF-8 bytes, ending with `note` when cut ('' if no room)."""
+    if _utf8_len(s) <= limit:
+        return s
+    room = limit - _utf8_len(note)
+    if room <= 0:
+        return ""
+    cut = s.encode("utf-8")[:room].decode("utf-8", errors="ignore")
+    if "\n" in cut:
+        cut = cut[: cut.rfind("\n")]
+    return cut + note
+
+
+def connected_work_prompt(system_prompt: str, task: Any, criteria: Iterable[Any],
+                          feedback: Optional[str], workspace_listing: str,
+                          excerpts: Optional[dict[str, str]] = None,
+                          messages: Optional[Iterable[Any]] = None, *, job_id: str,
+                          capabilities: Optional[Iterable[str]] = None,
+                          file_tools: bool = True,
+                          max_bytes: int = CONNECTED_PROMPT_MAX_BYTES) -> tuple[str, list[Any]]:
+    """The one message a directly connected agent gets (docs/DESIGN-0.4.md sections 5.3, 5.5).
+    A2A has no system channel, so it starts with the agent's composed system prompt; then the
+    job, task, criteria, feedback, workspace listing and excerpts, team messages, the job id and
+    the rules.
+
+    It must fit in `max_bytes` UTF-8 bytes. What gives way, in this order: the file excerpts, the
+    workspace listing, the feedback, the team messages (the newest wait for read_messages), and
+    last the learnings and memories at the end of the system prompt. The task, its criteria and
+    the rules are never cut. Returns (text, the messages it carries)."""
+    msgs = list(messages) if messages is not None else None
+    excerpts = dict(excerpts or {})
+    head = ("Job: do this task for DAASH, the agent swarm you are a member of. Work for real: "
+            "write the actual content, never placeholders.\n" + SCOPE_RULE
+            + DAASH_TOOLS_CONNECTED + _needs_line(task, capabilities))
+    task_part = f"\nTask {_get(task, 'id', '')}: {_get(task, 'name', '')}\n"
+    if _get(task, "description"):
+        task_part += f"Description: {_get(task, 'description')}\n"
+    if _get(task, "artifact"):
+        task_part += f"Artifact to create or change: {_get(task, 'artifact')}\n"
+    task_part += f"\nAcceptance criteria (each must be green):\n{_crit_lines(criteria)}\n"
+    tail = f"\nYour DAASH job id: {job_id}\n\n" + connected_rules(job_id, file_tools)
+
+    def fb_part(text: Optional[str]) -> str:
+        if not text:
+            return ""
+        return f"\nThe previous attempt was rejected. Fix every point:\n{text}\n"
+
+    def listing_part(text: Optional[str]) -> str:
+        if text is None:
+            return ""
+        return f"\nExisting workspace files:\n{text.strip() or '(empty)'}\n"
+
+    def excerpt_part(ex: dict[str, str]) -> str:
+        if not ex:
+            return ""
+        return ("\nCurrent content of this task's files:\n"
+                + "\n".join(f"--- {p} ---\n{c}\n" for p, c in ex.items()))
+
+    def build(system: str, fb: Optional[str], listing: Optional[str], ex: dict[str, str],
+              ms: Optional[list[Any]]) -> str:
+        sys_part = f"{system.strip()}\n\n---\n\n" if system and system.strip() else ""
+        return (sys_part + head + task_part + fb_part(fb) + listing_part(listing)
+                + excerpt_part(ex) + team_messages_block(ms) + tail)
+
+    system = system_prompt or ""
+    fb = (feedback or "").strip() or None
+    listing: Optional[str] = workspace_listing or ""
+    ms = msgs
+
+    def size() -> int:
+        return _utf8_len(build(system, fb, listing, excerpts, ms))
+
+    over = size() - max_bytes
+    # 1. file excerpts: shorten each, then drop them
+    if over > 0 and excerpts:
+        for path in list(excerpts)[::-1]:
+            if over <= 0:
+                break
+            body = excerpts[path]
+            keep = max(0, _utf8_len(body) - over)
+            excerpts[path] = _clip_bytes(body, keep, "\n[... cut to fit; read the file with "
+                                         "read_file]") if keep > 200 else ""
+            if not excerpts[path]:
+                del excerpts[path]
+            over = size() - max_bytes
+    # 2. the workspace listing
+    if over > 0 and listing:
+        keep = max(0, _utf8_len(listing) - over)
+        listing = (_clip_bytes(listing, keep, "\n... (list the rest with list_files)")
+                   or "(too long to show; use list_files)")
+        over = size() - max_bytes
+    # 3. the feedback
+    if over > 0 and fb:
+        keep = max(0, _utf8_len(fb) - over)
+        fb = (_clip_bytes(fb, keep, "\n[... cut to fit; current_task shows all of it]")
+              or "(too long to show; call current_task for the judges' feedback)")
+        over = size() - max_bytes
+    # 4. team messages: keep the oldest that fit; the rest stay unread
+    if over > 0 and ms:
+        while ms and size() > max_bytes:
+            ms = ms[:-1]
+        over = size() - max_bytes
+    # 5. the system prompt, from its end (memories and learnings come last)
+    if over > 0 and system:
+        keep = max(0, _utf8_len(system) - over)
+        system = _clip_bytes(system, keep, "\n[... cut to fit]")
+    text = build(system, fb, listing, excerpts, ms)
+    return text, (ms if ms is not None else [])
+
+
 # ---------------------------------------------------------------------------
 # Quality review (Quality Judgement)
 # ---------------------------------------------------------------------------

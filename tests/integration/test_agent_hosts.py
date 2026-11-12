@@ -359,6 +359,57 @@ async def test_direct_connected_agents_keep_their_file_tools(pool):
     from app.agent_tools import Repos
     backend = mcp_server.DaashBackend(Repos.from_pool(pool))
     ident = await backend.identify(token)
-    assert ident.file_tools is True
+    assert mcp_server.has_file_tools(ident) is True
     assert "write_file" in {t["name"] for t in backend.list_tools(ident)}
+
+
+# -- the whole chain with the engine (docs/DESIGN-0.4.md 5.5 and 5.9) ------------------------------------
+
+async def test_engine_work_reaches_review_through_the_agent_host(api, agent_client, h, pool,
+                                                                 settings):
+    """Enroll, hello with Fitz, a swarm whose delivery row is Fitz: the engine queues the pinned
+    job, Fitz's runner leases it over the agent port, uploads Fitz's file, and the engine applies
+    it and moves the task to Review."""
+    import asyncio
+
+    from app.models import HarnessSpec
+    from tests.integration.test_connected import (_has_job, _work_action, connected_config,
+                                                  swarm_with_task)
+
+    h.engine.jobs.remote_poll_seconds = 0.02
+    runner_id, token = await enroll_runner(api, agent_client, settings, host="m3u512gb")
+    dca = (await hello(agent_client, token, [FITZ]))["agent_tokens"]["main"]
+    fitz = (await rows(pool))["Fitz"]
+    cfg = connected_config(HarnessSpec(harness="connected", connected_agent=fitz["id"]))
+    team, agent, task = await swarm_with_task(h, cfg)
+    repo = RemoteJobRepo(pool)
+    work = asyncio.create_task(h.engine.jobs.work_task(await h.live(), _work_action(task)))
+    await h.wait_for(lambda: _has_job(repo, h), label="the pinned job")
+
+    r = await agent_client.post("/runner/lease", headers=bearer(token),
+                                json={"wait_seconds": 1, "free_slots": 1})
+    assert r.status_code == 200, r.text
+    job = r.json()["job"]
+    assert (job["relay"], job["local_ref"], job["runner_id"]) == ("openclaw-agent", "main",
+                                                                  runner_id)
+    assert job["system_prompt"] and task.name in job["prompt"] and "mcp" not in job
+    # Fitz uses a DAASH tool with its own token, then the runner uploads its file
+    call = await agent_client.post("/mcp", headers=bearer(dca), json={
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "remember", "arguments": {"content": "Intro written for DAASH"}}})
+    assert call.json()["result"]["isError"] is False
+    res = await agent_client.post(f"/runner/jobs/{job['id']}/result", headers=bearer(token),
+                                  json={"outcome": "submitted", "summary": "Fitz wrote the intro",
+                                        "files": [{"path": task.artifact,
+                                                   "content_b64": b64(BODY)}],
+                                        "deleted": [], "exit_code": 0,
+                                        "usage": {"prompt_tokens": 50, "completion_tokens": 9}})
+    assert res.status_code == 200, res.text
+    await asyncio.wait_for(work, 10)
+    t = await h.tasks.get(task.id)
+    assert t.status == "Review" and t.deliverable["connected_agent"] == "Fitz"
+    assert h.workspace_file(task.artifact) == BODY
+    assert any("Fitz, on agent host 'm3u512gb'" in e.detail for e in await h.event_list())
+    assert [m.content for m in await MemoryRepo(pool).list(agent.id)] == \
+        ["Intro written for DAASH"]
 

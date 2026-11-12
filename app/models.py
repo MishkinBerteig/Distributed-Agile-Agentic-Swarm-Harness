@@ -230,6 +230,9 @@ class HarnessSpec(BaseModel):
     provider: str = "default"   # the endpoint configured by DAASH_LLM_ENDPOINT
     model: str = "amazing"      # "" = use routing (the ladder) for delivery_harnesses entries
     capabilities: Optional[list[str]] = None   # None = the harness default (HARNESS_CAPABILITIES)
+    #: harness "connected" (docs/DESIGN-0.4.md section 5.2): the connected agent's id. Its model is
+    #: its own (`model` is ignored) and its capabilities default to the connected agent's.
+    connected_agent: Optional[str] = None
 
 
 class RoleModels(BaseModel):
@@ -379,8 +382,18 @@ class RemoteJob(BaseModel):
 
 
 #: Remote-job harness of a connected agent (docs/DESIGN-0.4.md section 5.5): the engine talks to an
-#: existing agent directly; runners never lease these jobs.
+#: existing agent directly; runners never lease these jobs (except an agent host's own, 5.9).
+#: Also the harness of a delivery row filled by a connected agent (section 5.2); such an agent
+#: row keeps the connected agent's id in `Agent.provider`.
 CONNECTED_HARNESS = "connected"
+#: Every harness a swarm config may name: the built-in one, the runner CLIs and connected agents.
+CONFIG_HARNESSES: tuple[str, ...] = KNOWN_HARNESSES + (CONNECTED_HARNESS,)
+#: How DAASH reaches a connected agent: directly (A2A 1.0, Hermes API server) or through a DAASH
+#: runner installed next to it (an agent host, section 5.9).
+CONNECTED_PROTOCOLS: tuple[str, ...] = ("a2a", "hermes-api", "runner")
+DIRECT_PROTOCOLS: tuple[str, ...] = ("a2a", "hermes-api")
+CONNECTED_STATUSES: tuple[str, ...] = ("pending", "connected", "offline")
+CONNECTED_KINDS: tuple[str, ...] = ("openclaw", "hermes", "a2a", "other")
 
 
 class AgentMessage(BaseModel):
@@ -409,8 +422,8 @@ class ConnectedAgent(BaseModel):
     bearer DAASH sends (`token`) and the MCP token hash are never part of the API form."""
     id: str
     name: str
-    protocol: str                   # a2a | hermes-api | runner
-    url: Optional[str] = None       # None for agents on an agent host (protocol runner)
+    protocol: str                   # a2a | hermes-api | runner (see CONNECTED_PROTOCOLS)
+    url: Optional[str] = None       # what the user entered; None for agents on an agent host
     endpoint: Optional[str] = None
     skill: Optional[str] = None
     token: Optional[str] = Field(default=None, exclude=True)
@@ -423,6 +436,11 @@ class ConnectedAgent(BaseModel):
     last_error: Optional[str] = None
     mcp_seen_at: Optional[datetime] = None
     created_at: datetime
+    status: str = "connected"       # pending (waiting for the owner's approval) | connected | offline
+    kind: str = "other"             # openclaw | hermes | a2a | other (labels and snippets)
+    pending_until: Optional[datetime] = None
+    runner_id: Optional[str] = None  # protocol runner: the agent host's runner
+    local_ref: Optional[str] = None  # protocol runner: the agent's id or profile on that host
 
 
 class AcceptanceCriterion(BaseModel):
