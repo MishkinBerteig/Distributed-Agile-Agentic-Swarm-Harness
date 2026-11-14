@@ -53,6 +53,25 @@ def _path_problem(path: Optional[str]) -> Optional[str]:
 
 
 MAX_PATTERN_CHARS = 300
+
+
+def single_escaped(pattern: Optional[str]) -> Optional[str]:
+    r"""`pattern` with each doubled backslash read as one, or None when it has none or the result is not a regex.
+
+    Planners sometimes escape a pattern twice, so it is stored as `def f\\(x\\)`. That demands a literal backslash
+    and never matches the `def f(x)` it was written for (live run, 2026-11-13). A file_contains check tries this
+    reading only after the pattern as written finds nothing, so a pattern that really means a literal backslash
+    still works."""
+    if not pattern or "\\\\" not in pattern:
+        return None
+    single = pattern.replace("\\\\", "\\")
+    try:
+        re.compile(single)
+    except re.error:
+        return None
+    return single
+
+
 MAX_COMMAND_CHARS = 300
 COMMAND_TIMEOUT_SECONDS = 120
 
@@ -190,6 +209,10 @@ def run_check(criterion: AcceptanceCriterion, workspace: Path,
             m = re.compile(arg, re.IGNORECASE | re.MULTILINE).search(text)
         except re.error as exc:  # already validated; defensive
             return CheckResult(False, f"Invalid regular expression: {exc}.")
+        if not m:
+            single = single_escaped(arg)
+            if single:
+                m = re.compile(single, re.IGNORECASE | re.MULTILINE).search(text)
         if not m:
             return CheckResult(False, f"No match for /{_truncate(arg, 80)}/ in '{path}'{note}.")
         start = text.rfind("\n", 0, m.start()) + 1

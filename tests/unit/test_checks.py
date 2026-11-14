@@ -92,6 +92,29 @@ def test_file_contains_bad_regex_and_missing_arg(tmp_path):
     assert not checks.run_check(crit("file_contains", "a.txt", None), tmp_path).passed
 
 
+def test_file_contains_reads_doubled_backslashes_as_single(tmp_path):
+    # Live run 2026-11-13: the planner stored `def count_words\\(text\\)` for code that says `def count_words(text):`.
+    (tmp_path / "w.py").write_text("import re\n\ndef count_words(text):\n    return len(text.split())\n")
+    r = checks.run_check(crit("file_contains", "w.py", r"def count_words\\(text\\)"), tmp_path)
+    assert r.passed and r.evidence == "def count_words(text):"
+    assert not checks.run_check(crit("file_contains", "w.py", r"def top_words\\(text\\)"), tmp_path).passed
+
+
+def test_file_contains_literal_backslash_patterns_still_work(tmp_path):
+    (tmp_path / "doc.tex").write_text("\\section{Intro}\n")
+    r = checks.run_check(crit("file_contains", "doc.tex", r"\\section\{"), tmp_path)   # a literal backslash
+    assert r.passed and r.evidence == "\\section{Intro}"
+    assert checks.single_escaped(r"plain text") is None
+    assert checks.single_escaped(r"f\\(x\\)") == r"f\(x\)"
+    assert checks.single_escaped("\\\\") is None                                    # a lone backslash: not a regex
+
+
+def test_plan_prompt_asks_for_plain_file_contains_patterns():
+    from app import prompts
+    p = prompts.plan_prompt("T", [], [], 3, None, "")
+    assert 'keep it plain, e.g. "def count_words", with no backslashes' in p
+
+
 def test_file_contains_missing_file(tmp_path):
     r = checks.run_check(crit("file_contains", "nope.txt", "x"), tmp_path)
     assert not r.passed and "does not exist" in r.evidence
