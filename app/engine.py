@@ -36,6 +36,9 @@ COOLDOWN_CAP_SECONDS = 300.0
 # sooner when another task in the swarm reaches Done.
 DEFER_SECONDS = 300.0
 ESCALATE_AFTER = 3          # consecutive parse/protocol failures before trying a stronger model
+# A model that reasons until max_tokens without answering (LLMError code "length") does it again on the same
+# prompt: each of those steps up a rung at once (live run 2026-11-13: three 16k-token plan_tasks failures
+# on `fast` cost seven minutes before `great` planned in two).
 
 #: Actions the engine performs itself, without an LLM.
 INLINE_ACTIONS = frozenset({
@@ -467,7 +470,14 @@ class Engine:
                     detail=f"{label} failed because {reason} ({detail}). It will be retried "
                            f"automatically in {delay:.0f} seconds, with longer waits if it "
                            f"keeps failing.")
-            if (isinstance(exc, LLMError) and exc.code in ("parse", "protocol")
+            if isinstance(exc, LLMError) and exc.code == "length":
+                self.escalation[key] = self.escalation.get(key, 0) + 1
+                await events.add(
+                    swarm.id, "error", team_id=action.team_id, task_id=action.task_id,
+                    actor="engine",
+                    detail=f"{label}: the model used all its output tokens thinking and gave no "
+                           f"answer; the next try uses a more capable model.")
+            elif (isinstance(exc, LLMError) and exc.code in ("parse", "protocol")
                     and n % ESCALATE_AFTER == 0):
                 self.escalation[key] = n // ESCALATE_AFTER
                 await events.add(

@@ -25,7 +25,7 @@ NUDGE = ("You have not finished. Call the `{tool}` tool now to finish "
 
 
 class LLMError(Exception):
-    """LLM call failed. code: connection|timeout|http|parse|protocol.
+    """LLM call failed. code: connection|timeout|http|parse|protocol|length (reasoned until max_tokens, no answer).
 
     `usage` and `transcript` carry what was spent before failing so callers can
     still account for tokens."""
@@ -380,7 +380,7 @@ class LLMClient:
                 raise LLMError(
                     "The model ran out of output tokens (finish_reason=length) while reasoning "
                     "and produced no answer; raise DAASH_LLM_MAX_TOKENS or use a simpler prompt.",
-                    "protocol", usage=res.usage, transcript=res.transcript)
+                    "length", usage=res.usage, transcript=res.transcript)
             try:
                 return parse(extract_json(r.content)), res
             except ValueError as exc:

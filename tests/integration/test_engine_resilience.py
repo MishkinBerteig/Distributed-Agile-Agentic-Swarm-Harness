@@ -281,6 +281,22 @@ async def test_outage_during_review_keeps_the_judge_reply_already_paid_for(h, fa
 
 # -- parse failures ---------------------------------------------------------------------------------
 
+async def test_running_out_of_tokens_while_thinking_escalates_at_once(h, fake, clock):
+    """Live run 2026-11-13: `fast` reasoned to max_tokens three times on one plan before escalating."""
+    await h.create_swarm(VISION, teams=[("Docs", "To advance the Vision, write docs.")],
+                         dod="- ok", config=swarm_config(), start=True)
+    fake.configure({"length_next": 1})
+    actions = await h.step()
+    assert [a.kind for a in actions] == [ActionKind.GENERATE_STANDARDS]
+    assert (await h.team_list())[0].definition_of_done is None
+    errors = await h.event_list("error")
+    assert any("output tokens thinking" in e.detail and "more capable model" in e.detail for e in errors)
+    clock.advance(31)
+    await h.step()
+    assert [c["model"] for c in fake.calls] == ["great", "amazing"]   # one rung up on the very next try
+    assert (await h.team_list())[0].definition_of_done
+
+
 async def test_three_consecutive_parse_failures_escalate_the_model(h, fake, clock):
     await h.create_swarm(VISION, teams=[("Docs", "To advance the Vision, write docs.")],
                          dod="- ok", config=swarm_config(), start=True)

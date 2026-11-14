@@ -432,8 +432,11 @@ def build_agent_tools(ctx: Optional[AgentContext], *, workspace: bool) -> list[T
 
     async def send_message(args: dict) -> str:
         x = c()
-        to = sarg(args, "to")
-        text = sarg(args, "text")
+        # Live run 2026-11-13: OpenClaw first sent `message=` and then left out `to`. Both are clear enough to
+        # accept: `message` is another name for `text`, and no `to` means the whole team.
+        to = sarg(args, "to", required=False) or TEAM_RECIPIENT
+        text = sarg(args, "text" if args.get("text") is not None or args.get("message") is None
+                    else "message")
         if len(text) > MESSAGE_MAX_CHARS:
             raise ToolError(f"the message is {len(text)} characters long; the limit is "
                             f"{MESSAGE_MAX_CHARS}")
@@ -491,8 +494,9 @@ def build_agent_tools(ctx: Optional[AgentContext], *, workspace: bool) -> list[T
         Tool("send_message", "Send a short message (at most 4000 characters) to a delivery "
              "agent of your team by name (for example Delivery-2), to \"team\" (every other "
              "delivery agent of your team) or to \"coordinator\" (the Swarm Coordinator).",
-             _obj({"to": {**_S, "description": 'a teammate\'s name, "team" or "coordinator"'},
-                   "text": _S}, ["to", "text"]), send_message),
+             _obj({"to": {**_S, "description": 'a teammate\'s name, "team" (the default) or '
+                                               '"coordinator"'},
+                   "text": _S}, ["text"]), send_message),
         Tool("read_messages", "Read your unread team messages, oldest first; they are then "
              "marked read.", _obj({}), read_messages),
         Tool("current_task", "Show your current task: its artifact, acceptance criteria and "

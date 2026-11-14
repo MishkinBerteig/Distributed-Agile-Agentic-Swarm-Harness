@@ -36,7 +36,7 @@ def test_specs_for_the_builtin_agent_end_with_submit():
     names = [s["function"]["name"] for s in specs]
     assert names[-1] == "submit" and names[:5] == list(A.WORKSPACE_TOOL_NAMES)
     by = {s["function"]["name"]: s["function"] for s in specs}
-    assert by["send_message"]["parameters"]["required"] == ["to", "text"]
+    assert by["send_message"]["parameters"]["required"] == ["text"]
     assert by["vote_on_proposal"]["parameters"]["required"] == ["proposal_id", "approve"]
     # the 0.3 descriptions are unchanged (the native agent's behaviour must not drift)
     assert by["remember"]["description"] == "Save a short note to your persistent memory."
@@ -169,6 +169,18 @@ async def test_send_message_fans_out_and_records_an_event():
     assert (await call(reg, "send_message", to="coordinator", text="We need a docs team.")).output \
         == "message sent to the Swarm Coordinator"
     assert w.repos.events.of("message")[-1].detail.startswith("Delivery-1 → coordinator: ")
+
+
+async def test_send_message_accepts_message_for_text_and_defaults_to_the_team():
+    # Live run 2026-11-13: OpenClaw's first two calls used `message=` and then left out `to`.
+    w = World()
+    reg = registry(w.ctx())
+    out = await call(reg, "send_message", to="team", message="tests are done")
+    assert not out.error and out.output == "message sent to 2 team member(s): Delivery-2, Delivery-3"
+    out = await call(reg, "send_message", text="README is done")
+    assert not out.error and out.output.startswith("message sent to 2 team member(s)")
+    assert [r.text for r in w.repos.messages.rows][::2] == ["tests are done", "README is done"]
+    assert (await call(reg, "send_message", to="team")).error            # still needs some text
 
 
 async def test_send_message_event_is_clipped_and_long_messages_refused():

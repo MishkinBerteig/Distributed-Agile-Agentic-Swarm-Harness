@@ -271,7 +271,7 @@ async def test_complete_json_length_with_empty_content():
     s = Script(resp(None, reasoning="long thoughts", finish="length"))
     with pytest.raises(LLMError) as ei:
         await client(s).complete_json("fast", "S", "U", parse_int_a)
-    assert ei.value.code == "protocol" and "max_tokens" in str(ei.value).lower() or "MAX_TOKENS" in str(ei.value)
+    assert ei.value.code == "length" and "MAX_TOKENS" in str(ei.value)
     assert ei.value.usage.total_tokens == 15 and len(s.requests) == 1
 
 

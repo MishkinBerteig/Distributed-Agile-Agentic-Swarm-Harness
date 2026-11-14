@@ -61,6 +61,8 @@ class Scenario:
     outage_seconds: float = 0.0          # set to N: every call gets HTTP outage_status for N s
     outage_status: int = 503
     malformed_next: int = 0              # next N calls reply with text that contains no JSON
+    length_next: int = 0                 # next N calls reason until max_tokens and give no answer
+                                         # (finish_reason "length", empty content)
     fail_after_calls: int = -1           # N >= 0: allow N more calls, then outage until set to -1
     delay_ms: int = 0                    # added latency per call
     vote_approve: bool = True            # answer to team-proposal votes
@@ -360,6 +362,10 @@ class FakeLLM:
         if s.malformed_next > 0:
             s.malformed_next -= 1
             return self._text(request, "I am sorry, but I would rather not answer in JSON.")
+        if s.length_next > 0:
+            s.length_next -= 1
+            return self._reply(request, {"role": "assistant", "content": None,
+                                         "reasoning_content": "thinking (fake) " * 50}, "length")
         user_msgs = [m for m in messages if m.get("role") == "user"]
         user = _msg_text(user_msgs[0]) if user_msgs else ""
         fresh = not rec["reask"]
