@@ -235,36 +235,45 @@ Decisions from the prompt review (2026-11-09):
 - **State consistency**: PostgreSQL is the only source of record; Redis holds only expiring signals; the engine is
   restart-safe (BUSY agents reset, open tasks resumed).
 
-## 7. Current System State (0.3, tagged `v0.3`)
+## 7. Current System State (0.4 on `main`, not yet tagged; last release `v0.3`)
 
 ### Run it
 ```bash
 cp .env.example .env            # set DAASH_LLM_API_KEY (and DAASH_LLM_ENDPOINT if not the m3u512gb gateway)
-docker compose up --build -d    # db, redis, coordinator :8000, engine, dashboard :7173
+docker compose up --build -d    # db, redis, coordinator :8000, agent-api :8001, engine, dashboard :7173
 # optional: external agent CLIs (set DAASH_RUNNER_BOOTSTRAP_TOKEN in .env first; see docs/RUNNER.md)
 docker compose --profile runner up --build -d runner
+# optional: let agents on other machines in (DAASH_AGENT_BIND_ADDR, DAASH_AGENT_PUBLIC_URL, DAASH_DISCOVERY_HOSTS)
 ```
 DAASHboard: http://127.0.0.1:7173 — the top-bar menu has Swarm, Past swarms, Agents & models (what agents and
-models are available, and runners), Settings (Values & Principles, defaults for new swarms) and Help. On Swarm,
+models are available, runners, connected agents, agents found on the network, agent hosts), Settings (Values &
+Principles, defaults for new swarms) and Help (prompts guide, connecting agents). On Swarm,
 create a swarm (vision; optional teams, else the Swarm Coordinator forms them; advanced config for models, agents
 and limits), press Start, follow its state in the lifecycle diagram, watch teams, Kanban, task drawers (criteria,
 verdicts, timeline, artifacts), metrics, activity feed. API docs: http://127.0.0.1:8000/docs.
 
 ### Services
 - **coordinator** — FastAPI (`app/main.py`), runs `alembic upgrade head` at start; healthcheck on `/health`.
+- **agent-api** — the agent-facing port 8001 (`app/agent_api.py`): `/health`, `/mcp` (DAASH's tools for every
+  agent) and `/runner/*` only. Published on `DAASH_AGENT_BIND_ADDR` (default 127.0.0.1).
 - **engine** — `python -m app.engine`; restart-safe; `DAASH_ENGINE_ENABLED=false` idles it.
 - **db** (PostgreSQL 17 + pgvector, volume `pg-data`), **redis** (Decision Bus), **dashboard** (Vite dev server).
 - Volume `daash-workspaces` holds each swarm's artifacts at `/workspaces/<swarm_id>/`.
-- **runner** (profile `runner`) — `daash_runner` with OpenClaude, Claude Code and Codex installed; pulls remote
-  delivery jobs from the coordinator. Runners on other devices: `python3 -m daash_runner` (docs/RUNNER.md).
+- **runner** (profile `runner`) — `daash_runner` with OpenClaude, Claude Code, Codex, OpenClaw and Hermes Agent
+  installed; pulls remote delivery jobs. Runners on other devices: `python3 -m daash_runner` (docs/RUNNER.md).
+  Agent hosts (machines whose own OpenClaw/Hermes agents join swarms): `daash-runner.pyz connect`
+  (docs/AGENT-HOSTS.md).
 
 ### Code map (`app/`)
 `models.py` contract · `policy.py` / `routing.py` / `metrics.py` pure rules · `checks.py` deterministic criteria ·
 `llm.py` + `tools.py` native harness · `prompts.py` prompt hierarchy + parsers · `repo.py` data access ·
 `services.py` shared team/agent/prompt/accounting helpers · `engine.py` (`decide()` + loop) and `jobs.py` ·
 `main.py` + `api_helpers.py` API (incl. `/runner/*`) · `remote.py` runner protocol helpers · `bus.py` Decision Bus ·
-`embeddings.py` · `help.py` DAASHboard online help (live-rendered prompt guide) · `daash_runner/` (stdlib pull
-runner + CLI adapters, outside `app/`).
+`embeddings.py` · `help.py` / `help_connect.py` DAASHboard online help (live-rendered prompt guide, connecting
+agents) · `mcp_server.py` + `agent_tools.py` DAASH MCP server and the tools it shares with the built-in agent ·
+`agent_api.py` / `runner_api.py` agent-facing port · `connectors.py`, `approval.py`, `connected_*.py`,
+`agent_hosts.py` connected agents, discovery and agent hosts · `daash_runner/` (stdlib pull runner, CLI adapters,
+agent-host relay, outside `app/`).
 
 ### Defaults worth knowing
 - Role models: coordinator `amazing`, judges `great`, delivery `fast` (escalates up `instant→fast→great→amazing`
@@ -284,12 +293,14 @@ runner + CLI adapters, outside `app/`).
 - New fake-LLM scenario: add a field to `Scenario` in `tests/fakes/fake_llm.py`, read it in the job's `_answer_*`
   method, then `fake.configure({...})` in a test.
 
-### Known limitations (0.3)
+### Known limitations (0.4)
 - Native-harness agents can only edit workspace files; running code comes from the external harnesses (runner) and
   command checks. Automation scripts are recorded, not run.
 - Judges are LLMs: verdicts are good but not infallible; "tests pass" is only proven by a command check.
-- External agents have no DAASH memory, subtask, proposal or vote tools; learnings and memories are matched by word
-  hashes unless `DAASH_EMBEDDING_USE_MODEL=true`.
+- Learnings and memories are matched by word hashes unless `DAASH_EMBEDDING_USE_MODEL=true`.
+- Connected agents use their own tools: an agent on an agent host is told to stay in its job folder but is not
+  confined to it, and command checks for its jobs run on that machine as its owner.
+- Connected agents are not yet verified live with the user's own agents (Jane, Fitz); see Milestone 0.4.
 - Admin auth is off unless `DAASH_API_TOKEN` is set (the coordinator is published on 127.0.0.1 only by default).
 - Dashboard polls (no SSE). No harness offers `web_research` by default (the local gateway cannot serve hosted
   web tools), so research tasks run degraded.
