@@ -193,9 +193,21 @@ their OpenClaw agents Jane (`janes-mac-mini`) and Fitz (`m3u512gb`) as the test.
   - A second Help topic, "Connecting agents" (`#/help/connect`).
   - Every page fits a 390px phone screen.
 - [x] Tests:
-  - unit 738;
-  - integration 219;
+  - unit 742;
+  - integration 220;
   - e2e 13, including a fake A2A agent that DAASH discovers, connects, approves and uses.
+- [x] Live on the dev stack with DAASH's own OpenClaw and Hermes agents (DESIGN-0.4 §9 step 1, 2026-11-13).
+  - The "Wordstats" swarm reached VERIFICATION 44 minutes after Start. All 3 tasks are Done, and its command
+    check ran the agents' 22 tests on the runner.
+  - Hermes called `remember` twice and messaged the team twice with API notes for the other tasks. OpenClaw
+    built its tests from those notes and replied.
+  - Fixes from the run:
+    - A doubly escaped `file_contains` regex (`def f\\(x\\)`) now matches as meant, and planners are asked for
+      plain patterns.
+    - A model that thinks until max_tokens without answering now steps up a model at once; `fast` did this
+      three times on one plan.
+    - `send_message` accepts `message=` for `text=`, and a missing `to` means the team.
+  - Evidence is in `agents-workspace/v0.4-live-runner/`.
 - [ ] Live with the user's own agents:
   - Jane, connected directly by her owner's one step;
   - Fitz, through an agent host on m3u512gb (docs/AGENT-HOSTS.md);
