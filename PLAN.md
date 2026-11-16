@@ -140,7 +140,7 @@ Design: docs/DESIGN-0.3.md. Runner guide: docs/RUNNER.md.
     attempt, every task proven by a runner-executed command (`Ran 15 tests ... OK`), each agent touched only its
     own file, vision review passed, ~16 min, p90 5.3 min.
 
-### Milestone 0.4 — DAASH tools for every agent, OpenClaw and Hermes Agent, connected agents (in progress)
+### Milestone 0.4 — DAASH tools for every agent, OpenClaw and Hermes Agent, connected agents (done; not yet tagged)
 Design: docs/DESIGN-0.4.md. Started 2026-11-11 at the user's direction: "make sure that OpenClaw and Hermes Agent
 can be used in this next version ... it's important to allow DAASH to connect to already-existing agents", with
 their OpenClaw agents Jane (`janes-mac-mini`) and Fitz (`m3u512gb`) as the test.
@@ -208,17 +208,25 @@ their OpenClaw agents Jane (`janes-mac-mini`) and Fitz (`m3u512gb`) as the test.
       three times on one plan.
     - `send_message` accepts `message=` for `text=`, and a missing `to` means the team.
   - Evidence is in `agents-workspace/v0.4-live-runner/`.
-- [ ] Live with the user's own agents:
-  - Jane, connected directly by her owner's one step;
-  - Fitz, through an agent host on m3u512gb (docs/AGENT-HOSTS.md);
-  - then a live swarm that mixes them.
-
-  On 2026-11-11 discovery on the dev stack found Jane, and listed m3u512gb:18789 as "listening but not
-  answering". m3u512gb reaches DAASH's agent port (`http://m5m128gb.tail391a32.ts.net:8001`).
+- [x] Live with the user's own agents (2026-11-16):
+  - **Jane** (OpenClaw 2026.10.5) was connected directly. The user pasted DAASH's one `openclaw config patch`
+    command on janes-mac-mini; there was no restart, and DAASH noticed the approval by itself.
+  - **Fitz** (OpenClaw 2026.10.9, model `instant`) was connected through an agent host on m3u512gb. The user
+    pasted the one install command there. He reported his own name, and DAASH's tools were added.
+  - **The "Tipcalc" swarm** reached VERIFICATION 21 minutes after Start, with no errors and no rework. All 5
+    tasks were Done on the first attempt.
+    - Its team: the built-in agent, Hermes in the runner, Jane and Fitz.
+    - Hermes wrote the module, the README and the final check. Fitz wrote the unit tests, and their command
+      check ran on m3u512gb. Jane wrote the plain-language guide on DAASH's files through DAASH's MCP file tools.
+    - Hermes messaged the team and the Swarm Coordinator, and saved 3 memories.
+    - The built-in agent was on the team but got no task: the work suited the others.
+  - Fixes from preparing the steps: the Connect dialog suggested "main" as Jane's name, and an agent host
+    would have named an agent with no identity name "main".
+  - Evidence is in `agents-workspace/v0.4-live-mixed/`.
 - Found during discovery (2026-11-11): Jane and Fitz already talk to each other over A2A. Jane's card is public at
-  `http://janes-mac-mini:18789/.well-known/agent-card.json`. Fitz's gateway (OpenClaw 2026.10.9, model `instant`
-  on the local gateway) answers only on 127.0.0.1, because the macOS firewall on m3u512gb is on. Hermes Agent is
-  not running anywhere yet.
+  `http://janes-mac-mini:18789/.well-known/agent-card.json`. On 2026-11-11 Fitz's gateway answered only on
+  127.0.0.1. By 2026-11-16 it answered DAASH over Tailscale, with no change by us; the user still chose the
+  agent host for Fitz. Hermes Agent runs only in DAASH's runner so far.
 
 ### After 0.4 (in priority order)
 1. Self-organizing teams: routing becomes dynamic, with team members aware of each other (0.4 adds messaging and
@@ -312,7 +320,6 @@ agent-host relay, outside `app/`).
 - Learnings and memories are matched by word hashes unless `DAASH_EMBEDDING_USE_MODEL=true`.
 - Connected agents use their own tools: an agent on an agent host is told to stay in its job folder but is not
   confined to it, and command checks for its jobs run on that machine as its owner.
-- Connected agents are not yet verified live with the user's own agents (Jane, Fitz); see Milestone 0.4.
 - Admin auth is off unless `DAASH_API_TOKEN` is set (the coordinator is published on 127.0.0.1 only by default).
 - Dashboard polls (no SSE). No harness offers `web_research` by default (the local gateway cannot serve hosted
   web tools), so research tasks run degraded.
@@ -345,3 +352,6 @@ agent-host relay, outside `app/`).
   model escalation order.
 - **2026-11-11 — 0.3 released**: tagged `v0.3` (prompt review, online help and DAASHboard navigation included) and
   published as the first GitHub release.
+- **2026-11-16 — 0.4 done**: DAASH's MCP tools for every agent, team messages, OpenClaw and Hermes Agent in the
+  runner, and connected agents (direct, and through agent hosts). Verified live with the user's own agents, Jane
+  and Fitz, in a mixed swarm. Not yet tagged.
