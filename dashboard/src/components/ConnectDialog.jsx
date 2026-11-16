@@ -12,7 +12,15 @@ import Modal from './Modal.jsx'
 export const KIND_NAMES = { openclaw: 'OpenClaw', hermes: 'Hermes Agent', a2a: 'A2A agent', other: 'agent', unknown: 'agent' }
 const POLL_MS = 2000
 
-const suggestedName = (d) => (d && d.skills && d.skills.length === 1 ? d.skills[0] : '')
+// The same rule as default_name in app/connected_service.py: the card's one agent, else the card's own name,
+// skipping generic ones. Jane's card lists one agent, "main", and is named "Jane": the name is Jane, not main.
+// '' when only generic names are left; DAASH then picks "OpenClaw (host)".
+const GENERIC_NAMES = ['openclaw', 'main', 'default', 'agent', 'a2a agent', 'assistant', '']
+const suggestedName = (d) => {
+  if (!d) return ''
+  const names = (d.skills && d.skills.length === 1 ? [d.skills[0]] : []).concat([d.name])
+  return names.map((n) => String(n || '').trim()).find((n) => !GENERIC_NAMES.includes(n.toLowerCase())) || ''
+}
 
 function CapsPicker({ caps, setCaps }) {
   return (
@@ -66,7 +74,7 @@ function ConnectForm({ target, onConnected }) {
         owner does that step.</p>
       <label><span>Name in DAASH <span className="muted">(what teams and the board call it)</span></span>
         <input value={name} onChange={(e) => setName(e.target.value)} maxLength={80}
-          placeholder={d && d.name ? `e.g. ${suggestedName(d) || d.name}` : 'DAASH picks one from the agent'} /></label>
+          placeholder={suggestedName(d) ? `e.g. ${suggestedName(d)}` : 'DAASH picks one from the agent'} /></label>
       {hermes && (
         <label><span>API key for its API server <span className="muted">(optional)</span></span>
           <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} autoComplete="off" spellCheck={false}
