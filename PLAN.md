@@ -355,3 +355,8 @@ agent-host relay, outside `app/`).
 - **2026-11-16 — 0.4 done**: DAASH's MCP tools for every agent, team messages, OpenClaw and Hermes Agent in the
   runner, and connected agents (direct, and through agent hosts). Verified live with the user's own agents, Jane
   and Fitz, in a mixed swarm. Tagged `v0.4` and published as a GitHub release.
+- **2026-11-16 — README brought up to date**: README.md had not changed since Slice 1.5, because CLAUDE.md said
+  never to change it. The user called that rule a mistake: the README must always match what is committed.
+  README.md now has 0.4's status, how to run and test DAASH, the documentation map and the known limitations.
+  CLAUDE.md and AGENTS.md now say to update README.md in the same commit as any change it describes. `v0.4` was
+  re-tagged on this commit and its GitHub release updated (no point release).
