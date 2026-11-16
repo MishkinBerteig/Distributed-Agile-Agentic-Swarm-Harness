@@ -52,6 +52,11 @@ def test_names_and_local_refs():
     assert A.unique_name("Fitz", "m3u512gb", ["Fitz", "Fitz (m3u512gb)"]) == "Fitz (m3u512gb) 2"
     assert A.unique_runner_name("m3u512gb", ["m3u512gb", "m3u512gb-2"]) == "m3u512gb-3"
     assert A.unique_runner_name("", []) == "agent-host"
+    # OpenClaw reports its agent id when no identity name is set: not "main" in DAASH
+    assert A.hosted_name("main", "openclaw", "m3u512gb.tail391a32.ts.net") == "OpenClaw (m3u512gb)"
+    assert A.hosted_name("Fitz", "openclaw", "m3u512gb") == "Fitz"
+    assert A.hosted_name("Hermes", "hermes", "m3u512gb") == "Hermes"
+    assert A.hosted_name("", "openclaw", "") == "OpenClaw"
     assert A.split_local_ref("main") == (None, "main")
     assert A.split_local_ref("hermes:main") == ("hermes", "main")
     assert A.split_local_ref("weird:main") == (None, "weird:main")

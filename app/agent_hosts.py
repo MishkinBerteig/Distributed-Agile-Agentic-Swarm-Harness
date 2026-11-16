@@ -153,6 +153,20 @@ def split_local_ref(local_ref: str) -> tuple[Optional[str], str]:
     return None, local_ref or ""
 
 
+def hosted_name(reported: str, kind: str, host: str) -> str:
+    """The name for a newly found agent on an agent host: what the runner reported, unless that is
+    generic ("main" is OpenClaw's default agent id when no identity name is set); then
+    "OpenClaw (host)", so it is not called "main" in DAASH. The same rule as direct connections
+    (connected_service.default_name)."""
+    from app.connected_service import GENERIC_NAMES, KIND_LABELS
+    name = " ".join((reported or "").split())
+    if name.casefold() not in GENERIC_NAMES:
+        return name
+    short = host.split(".")[0] if host and not host[0].isdigit() else host
+    label = KIND_LABELS.get(kind, "Agent")
+    return f"{label} ({short})" if short else label
+
+
 def unique_name(base: str, host: str, taken: Iterable[str]) -> str:
     """`base` if free, else "base (host)", else "base (host) 2", 3, ... (case-insensitive)."""
     used = {t.casefold() for t in taken}
@@ -379,7 +393,8 @@ class AgentHostRepo:
                         f"runner_id, local_ref, mcp_token_hash, capabilities, card, last_ok_at, "
                         f"last_error) VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, $9, $10, $11, "
                         f"$12) RETURNING {RUNNER_AGENT_COLS}",
-                        _uid(), unique_name(a["name"], host, taken), RUNNER_PROTOCOL, a["kind"],
+                        _uid(), unique_name(hosted_name(a["name"], a["kind"], host), host, taken),
+                        RUNNER_PROTOCOL, a["kind"],
                         status, runner_id, local_ref, R.hash_token(token),
                         list(DEFAULT_CAPABILITIES), card, now if a["available"] else None,
                         last_error)
