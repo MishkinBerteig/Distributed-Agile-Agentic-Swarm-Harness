@@ -140,7 +140,7 @@ Design: docs/DESIGN-0.3.md. Runner guide: docs/RUNNER.md.
     attempt, every task proven by a runner-executed command (`Ran 15 tests ... OK`), each agent touched only its
     own file, vision review passed, ~16 min, p90 5.3 min.
 
-### Milestone 0.4 — DAASH tools for every agent, OpenClaw and Hermes Agent, connected agents (done; not yet tagged)
+### Milestone 0.4 — DAASH tools for every agent, OpenClaw and Hermes Agent, connected agents (done; tagged `v0.4` with a GitHub release, 2026-11-16)
 Design: docs/DESIGN-0.4.md. Started 2026-11-11 at the user's direction: "make sure that OpenClaw and Hermes Agent
 can be used in this next version ... it's important to allow DAASH to connect to already-existing agents", with
 their OpenClaw agents Jane (`janes-mac-mini`) and Fitz (`m3u512gb`) as the test.
@@ -255,7 +255,7 @@ Decisions from the prompt review (2026-11-09):
 - **State consistency**: PostgreSQL is the only source of record; Redis holds only expiring signals; the engine is
   restart-safe (BUSY agents reset, open tasks resumed).
 
-## 7. Current System State (0.4 on `main`, not yet tagged; last release `v0.3`)
+## 7. Current System State (0.4, tagged `v0.4`)
 
 ### Run it
 ```bash
@@ -354,4 +354,4 @@ agent-host relay, outside `app/`).
   published as the first GitHub release.
 - **2026-11-16 — 0.4 done**: DAASH's MCP tools for every agent, team messages, OpenClaw and Hermes Agent in the
   runner, and connected agents (direct, and through agent hosts). Verified live with the user's own agents, Jane
-  and Fitz, in a mixed swarm. Not yet tagged.
+  and Fitz, in a mixed swarm. Tagged `v0.4` and published as a GitHub release.
