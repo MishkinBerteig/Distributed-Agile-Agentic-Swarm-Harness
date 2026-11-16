@@ -9,6 +9,7 @@
 #   8000 - coordinator API (docs at /docs)
 #   7173 - DAASHboard (Vite dev server)
 #   8001 - agent-facing API: only /health, /mcp and /runner/* (docs/DESIGN-0.4.md section 6).
+# Not published: 8002, the embedder service (docs/DESIGN-0.4.1.md section 2).
 #          Bound by DAASH_AGENT_BIND_ADDR (default 127.0.0.1), so it can be published to other
 #          machines (connected agents, remote runners) without publishing the admin API. Set
 #          DAASH_AGENT_PUBLIC_URL to the address those machines use (shown in config snippets).
@@ -29,6 +30,7 @@ services:
       - DAASH_LLM_MAX_CONCURRENCY=${DAASH_LLM_MAX_CONCURRENCY:-4}
       - DAASH_LLM_MODEL_CONCURRENCY=${DAASH_LLM_MODEL_CONCURRENCY:-{}}
       - DAASH_WORKSPACE_ROOT=/workspaces
+      - DAASH_EMBEDDER_URL=http://embedder:8002
       - DAASH_API_TOKEN=${DAASH_API_TOKEN:-}
       - DAASH_RUNNER_BOOTSTRAP_TOKEN=${DAASH_RUNNER_BOOTSTRAP_TOKEN:-}
       - DAASH_AGENT_PUBLIC_URL=${DAASH_AGENT_PUBLIC_URL:-}
@@ -73,6 +75,7 @@ services:
       - DAASH_REDIS_URL=redis://redis:6379/0
       - DAASH_DATABASE_HOST=db
       - DAASH_WORKSPACE_ROOT=/workspaces
+      - DAASH_EMBEDDER_URL=http://embedder:8002
       - DAASH_API_TOKEN=${DAASH_API_TOKEN:-}
       - DAASH_RUNNER_BOOTSTRAP_TOKEN=${DAASH_RUNNER_BOOTSTRAP_TOKEN:-}
       - DAASH_AGENT_PUBLIC_URL=${DAASH_AGENT_PUBLIC_URL:-}
@@ -112,6 +115,7 @@ services:
       - DAASH_LLM_MAX_CONCURRENCY=${DAASH_LLM_MAX_CONCURRENCY:-4}
       - DAASH_LLM_MODEL_CONCURRENCY=${DAASH_LLM_MODEL_CONCURRENCY:-{}}
       - DAASH_WORKSPACE_ROOT=/workspaces
+      - DAASH_EMBEDDER_URL=http://embedder:8002
       - DAASH_ENGINE_ENABLED=${DAASH_ENGINE_ENABLED:-true}
       - DAASH_CONNECTED_POLL_SECONDS=${DAASH_CONNECTED_POLL_SECONDS:-10}
     extra_hosts:
@@ -121,6 +125,37 @@ services:
         condition: service_healthy
     volumes:
       - daash-workspaces:/workspaces
+    networks:
+      - backend
+      - frontend
+
+  # Embedder service (docs/DESIGN-0.4.1.md section 2): holds the embedding model chosen in
+  # DAASHboard Settings, answers POST /embed for the coordinator, agent-api and engine, and keeps
+  # every task, learning and memory embedded with that model (plus its HNSW indexes). The
+  # built-in model (gte-base-en-v1.5) is in the image and needs no network; other models are
+  # downloaded from Hugging Face into the daash-models volume, so it is on the frontend network
+  # for egress. HF_TOKEN (optional) is for gated models. Starts once the coordinator has run the
+  # migrations. No published port.
+  embedder:
+    build:
+      context: .
+      target: embedder
+    restart: unless-stopped
+    environment:
+      - DAASH_DATABASE_URL=postgresql://daash:daash@db:5432/daash
+      - DAASH_DATABASE_HOST=db
+      - HF_TOKEN=${HF_TOKEN:-}
+    depends_on:
+      coordinator:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    volumes:
+      - daash-models:/var/lib/daash/models
     networks:
       - backend
       - frontend
@@ -224,5 +259,6 @@ networks:
 volumes:
   pg-data:
   daash-workspaces:
+  daash-models:
   dashboard-node-modules:
   runner-work:

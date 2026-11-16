@@ -478,10 +478,14 @@ def _retrieval_section() -> str:
           f"{P._MAX_CONTEXT_ITEMS} memories nearest to the job's subject, using pgvector "
           "cosine distance (newest first on ties). The subject depends on the job:</p>"
         + _table(["Job", "Matched against"], queries)
-        + '<p class="note">With the default setting the vectors are word hashes, so '
-          "&ldquo;nearest&rdquo; means &ldquo;shares the most words&rdquo;. Set "
-          "<code>DAASH_EMBEDDING_USE_MODEL=true</code> to match by meaning with "
-          "gte-base-en-v1.5.</p>"
+        + '<p class="note">&ldquo;Nearest&rdquo; means closest in meaning. An embedding '
+          "model turns every task, learning and memory into a vector, and DAASH stores each "
+          "vector with the name of its model; a query is compared only with vectors of its "
+          "own model, through that model's HNSW index in PostgreSQL. The model runs in the "
+          "embedder service. The built-in one is gte-base-en-v1.5; DAASHboard Settings "
+          "&rsaquo; Search embeddings chooses another. After a change the embedder embeds "
+          "everything again, and until it has, the items it has not reached yet come after "
+          "the matches, newest first.</p>"
         + "</section>")
 
 
@@ -638,6 +642,8 @@ def _code_section() -> str:
     rows = [
         ["Job messages and reply checks", "app/prompts.py"],
         ["System message and retrieval", "app/services.py (agent_system_prompt), app/repo.py"],
+        ["Embeddings: the model, the indexer, the clients",
+         "app/embedder_api.py, app/embed_models.py, app/embeddings.py"],
         ["Context: listings, files, rework feedback", "app/jobs.py"],
         ["Follow-up message, tool loop", "app/llm.py"],
         ["Built-in agent tools", "app/tools.py, app/agent_tools.py"],

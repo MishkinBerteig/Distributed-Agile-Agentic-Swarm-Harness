@@ -228,6 +228,49 @@ their OpenClaw agents Jane (`janes-mac-mini`) and Fitz (`m3u512gb`) as the test.
   127.0.0.1. By 2026-11-16 it answered DAASH over Tailscale, with no change by us; the user still chose the
   agent host for Fitz. Hermes Agent runs only in DAASH's runner so far.
 
+### Milestone 0.4.1 — Real embeddings for search (done; tagged `v0.4.1` with a GitHub release, 2026-11-16)
+Design: docs/DESIGN-0.4.1.md. On 2026-11-16 the user asked for the embedding model in the image, a DAASHboard choice of
+model, the PostgreSQL vector store set up for it, and search that really uses the embeddings, as a point release.
+Until then the images had no model and `DAASH_EMBEDDING_USE_MODEL=true` fell back silently to word hashes.
+- [x] `embedder` service (`app/embedder_api.py`, image target `embedder`, internal port 8002). It is the only process
+  with a model. The built-in `Alibaba-NLP/gte-base-en-v1.5` is saved into the image as a plain folder with its own
+  code, so it loads offline in about 2 s.
+  - The image pins `torch==2.15.0` (CPU), `transformers==4.57.6` and `sentence-transformers==5.7.0`.
+    transformers 5.x breaks gte-base's own code: a trial got garbage rotary position ids.
+  - Other models download from Hugging Face into the `daash-models` volume; `HF_TOKEN` is passed through for gated
+    ones.
+  - Queries and documents get each model's own prompts (`encode_query` / `encode_document`).
+- [x] The other processes call it (`EmbedderClient`, `DAASH_EMBEDDER_URL`) and never fail on it: with no vector, a row
+  keeps its text and the embedder's indexer embeds it later, and a search goes by recency.
+- [x] Schema (`f0a3c0d0e007`):
+  - `embedding` becomes an untyped `vector`, plus `embedding_model` and `embedding_text` on tasks, learnings and
+    memories;
+  - the old word-hash vectors are cleared, with their text kept;
+  - `embedding_status`.
+  The indexer keeps one partial HNSW index per table for the model in use and drops the others.
+- [x] Search (`app/repo.py` `_nearest`) compares a query only with rows of its own model, through that model's HNSW
+  index with pgvector iterative scans, then tops up by recency. It serves every job's learnings and memories and
+  the `recall` tool.
+- [x] DAASHboard Settings › **Search embeddings**:
+  - the embedder's state in words, including load errors in plain words;
+  - a model catalog (GTE base built in, BGE small/base, MiniLM, mxbai large, word hashes);
+  - another Hugging Face model, with an opt-in for its own code;
+  - backed by `GET`/`PUT /embeddings`.
+  The prompts guide in Help explains it.
+- [x] Tests:
+  - unit 779;
+  - integration 229, including several models and dimensions in one table, a model swap that rebuilds the HNSW
+    indexes, an `EXPLAIN` showing the index in use, and the migration both ways;
+  - e2e 15: the real embedder with its built-in model, on a network with no way out.
+- [x] Live on the dev stack (2026-11-16):
+  - the migration, then all 112 existing items embedded in a few seconds;
+  - searches ranked by meaning, e.g. "How should money be rounded?" found the Decimal-rounding memory;
+  - a live switch to `BAAI/bge-small-en-v1.5` (384 dimensions, downloaded in about 3 s) re-embedded everything and
+    swapped the indexes;
+  - a non-existent model showed its error while the model in use stayed;
+  - a switch back to the built-in model.
+  - Evidence is in `agents-workspace/v0.4.1-embeddings/`.
+
 ### After 0.4 (in priority order)
 1. Self-organizing teams: routing becomes dynamic, with team members aware of each other (0.4 adds messaging and
    the roster tool, and hands a connected agent's failed task to another member instead of escalating a model).
@@ -238,7 +281,7 @@ their OpenClaw agents Jane (`janes-mac-mini`) and Fitz (`m3u512gb`) as the test.
 3. Run agent-written automation scripts (learning mechanism 2) on runners, building on command checks; a
    command-check scenario in e2e; let the native harness request runner execution.
 4. Research tools for the native harness (web fetch/search with required citations) so fact-checking is grounded.
-5. Long soak run at README scale (10M+ tokens); real embedding model by default; richer RAG over transcripts;
+5. Long soak run at README scale (10M+ tokens); richer RAG over transcripts (and a use for the task vectors);
    multiple providers per swarm; push updates (SSE) instead of polling.
 6. Later: manage learnings shared across swarms (sharing across projects is intended); cap the swarm feedback
    injected into prompts.
@@ -255,12 +298,12 @@ Decisions from the prompt review (2026-11-09):
 - **State consistency**: PostgreSQL is the only source of record; Redis holds only expiring signals; the engine is
   restart-safe (BUSY agents reset, open tasks resumed).
 
-## 7. Current System State (0.4, tagged `v0.4`)
+## 7. Current System State (0.4.1, tagged `v0.4.1`)
 
 ### Run it
 ```bash
 cp .env.example .env            # set DAASH_LLM_API_KEY (and DAASH_LLM_ENDPOINT if not the m3u512gb gateway)
-docker compose up --build -d    # db, redis, coordinator :8000, agent-api :8001, engine, dashboard :7173
+docker compose up --build -d    # db, redis, coordinator :8000, agent-api :8001, engine, embedder, dashboard :7173
 # optional: external agent CLIs (set DAASH_RUNNER_BOOTSTRAP_TOKEN in .env first; see docs/RUNNER.md)
 docker compose --profile runner up --build -d runner
 # optional: let agents on other machines in (DAASH_AGENT_BIND_ADDR, DAASH_AGENT_PUBLIC_URL, DAASH_DISCOVERY_HOSTS)
@@ -270,13 +313,18 @@ models are available, runners, connected agents, agents found on the network, ag
 Principles, defaults for new swarms) and Help (prompts guide, connecting agents). On Swarm,
 create a swarm (vision; optional teams, else the Swarm Coordinator forms them; advanced config for models, agents
 and limits), press Start, follow its state in the lifecycle diagram, watch teams, Kanban, task drawers (criteria,
-verdicts, timeline, artifacts), metrics, activity feed. API docs: http://127.0.0.1:8000/docs.
+verdicts, timeline, artifacts), metrics, activity feed. Settings › Search embeddings shows and chooses the
+embedding model. API docs: http://127.0.0.1:8000/docs.
 
 ### Services
 - **coordinator** — FastAPI (`app/main.py`), runs `alembic upgrade head` at start; healthcheck on `/health`.
 - **agent-api** — the agent-facing port 8001 (`app/agent_api.py`): `/health`, `/mcp` (DAASH's tools for every
   agent) and `/runner/*` only. Published on `DAASH_AGENT_BIND_ADDR` (default 127.0.0.1).
 - **engine** — `python -m app.engine`; restart-safe; `DAASH_ENGINE_ENABLED=false` idles it.
+- **embedder** — `app/embedder_api.py` on internal port 8002 (no published port; image target `embedder`, about
+  3 GB). It holds the embedding model chosen in Settings (built-in: gte-base-en-v1.5), serves `POST /embed`, keeps
+  every task, learning and memory embedded with that model and indexed (HNSW), and reports to `embedding_status`.
+  Downloads go to the volume `daash-models`.
 - **db** (PostgreSQL 17 + pgvector, volume `pg-data`), **redis** (Decision Bus), **dashboard** (Vite dev server).
 - Volume `daash-workspaces` holds each swarm's artifacts at `/workspaces/<swarm_id>/`.
 - **runner** (profile `runner`) — `daash_runner` with OpenClaude, Claude Code, Codex, OpenClaw and Hermes Agent
@@ -289,7 +337,7 @@ verdicts, timeline, artifacts), metrics, activity feed. API docs: http://127.0.0
 `llm.py` + `tools.py` native harness · `prompts.py` prompt hierarchy + parsers · `repo.py` data access ·
 `services.py` shared team/agent/prompt/accounting helpers · `engine.py` (`decide()` + loop) and `jobs.py` ·
 `main.py` + `api_helpers.py` API (incl. `/runner/*`) · `remote.py` runner protocol helpers · `bus.py` Decision Bus ·
-`embeddings.py` · `help.py` / `help_connect.py` DAASHboard online help (live-rendered prompt guide, connecting
+`embeddings.py` (clients, catalog) + `embed_models.py` + `embedder_api.py` (the embedder service) · `help.py` / `help_connect.py` DAASHboard online help (live-rendered prompt guide, connecting
 agents) · `mcp_server.py` + `agent_tools.py` DAASH MCP server and the tools it shares with the built-in agent ·
 `agent_api.py` / `runner_api.py` agent-facing port · `connectors.py`, `approval.py`, `connected_*.py`,
 `agent_hosts.py` connected agents, discovery and agent hosts · `daash_runner/` (stdlib pull runner, CLI adapters,
@@ -308,8 +356,9 @@ agent-host relay, outside `app/`).
 - **integration** — `docker compose --profile integration run --rm --build integration` — real PostgreSQL/Redis
   (`daash_test`, Redis DB 15), API and engine in-process against the scripted fake LLM (`tests/fakes/`).
 - **e2e** — `scripts/e2e.sh` — separate compose project `daash-e2e` (no published ports, safe beside the dev
-  stack): real coordinator/engine containers + fake-LLM container + runner containers (fake CLI); includes engine
-  restart and runner death mid-run.
+  stack): real coordinator/engine containers + fake-LLM container + runner containers (fake CLI) + the real
+  embedder with its built-in model (no egress, `HF_HUB_OFFLINE=1`); includes engine restart and runner death
+  mid-run. The unit and integration tiers embed with word hashes in-process (`LocalEmbedder`).
 - New fake-LLM scenario: add a field to `Scenario` in `tests/fakes/fake_llm.py`, read it in the job's `_answer_*`
   method, then `fake.configure({...})` in a test.
 
@@ -317,7 +366,8 @@ agent-host relay, outside `app/`).
 - Native-harness agents can only edit workspace files; running code comes from the external harnesses (runner) and
   command checks. Automation scripts are recorded, not run.
 - Judges are LLMs: verdicts are good but not infallible; "tests pass" is only proven by a command check.
-- Learnings and memories are matched by word hashes unless `DAASH_EMBEDDING_USE_MODEL=true`.
+- Search covers learnings and memories; tasks are embedded and indexed but nothing searches them yet. Right after
+  the embedding model changes, items not re-embedded yet are found by recency until the embedder reaches them.
 - Connected agents use their own tools: an agent on an agent host is told to stay in its job folder but is not
   confined to it, and command checks for its jobs run on that machine as its owner.
 - Admin auth is off unless `DAASH_API_TOKEN` is set (the coordinator is published on 127.0.0.1 only by default).
@@ -360,3 +410,11 @@ agent-host relay, outside `app/`).
   README.md now has 0.4's status, how to run and test DAASH, the documentation map and the known limitations.
   CLAUDE.md and AGENTS.md now say to update README.md in the same commit as any change it describes. `v0.4` was
   re-tagged on this commit and its GitHub release updated (no point release).
+- **2026-11-16 — 0.4.1 done**: real embeddings for search (docs/DESIGN-0.4.1.md).
+  - The `embedder` service has the built-in gte-base-en-v1.5, which loads offline.
+  - DAASHboard Settings chooses the model.
+  - pgvector keeps each vector with its model and per-model HNSW indexes.
+  - Learnings, memories and `recall` are found by meaning.
+  - Tests: unit 779, integration 229, e2e 15.
+  - Verified live, including a switch to bge-small and back.
+  - Tagged `v0.4.1` with a GitHub release.

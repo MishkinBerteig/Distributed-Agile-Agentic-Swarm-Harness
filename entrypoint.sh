@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-# Usage: entrypoint.sh [api|engine|agent-api]   (default: api)
+# Usage: entrypoint.sh [api|engine|agent-api|embedder]   (default: api)
 MODE="${1:-api}"
 
 # Wait for PostgreSQL to be ready
@@ -29,8 +29,14 @@ case "$MODE" in
     # The coordinator owns migrations; compose starts this once the coordinator is healthy.
     exec uvicorn app.agent_api:app --host 0.0.0.0 --port 8001
     ;;
+  embedder)
+    # The embedder service (docs/DESIGN-0.4.1.md section 2): the embedding model, POST /embed and
+    # the indexer. Internal port 8002 only. Compose starts it once the coordinator (migrations) is healthy.
+    # No access log: every stored or searched text is a POST /embed.
+    exec uvicorn app.embedder_api:app --host 0.0.0.0 --port 8002 --no-access-log
+    ;;
   *)
-    echo "Unknown mode '$MODE' (expected: api | engine | agent-api)" >&2
+    echo "Unknown mode '$MODE' (expected: api | engine | agent-api | embedder)" >&2
     exit 2
     ;;
 esac

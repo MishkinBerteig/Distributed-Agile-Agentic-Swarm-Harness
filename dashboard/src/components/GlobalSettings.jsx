@@ -3,6 +3,7 @@ import { api } from '../api.js'
 import { useLoad } from '../hooks/usePolling.js'
 import { fmtDateTime } from '../util.js'
 import { Chip, Empty, ErrorNote, Spinner, useAction } from './Common.jsx'
+import EmbeddingSettings from './EmbeddingSettings.jsx'
 import SwarmConfigFields from './SwarmConfigFields.jsx'
 
 export function ValuesEditor() {
@@ -85,6 +86,7 @@ export function SettingsPage() {
       <div className="settings">
         <ValuesEditor />
         <DefaultsEditor />
+        <EmbeddingSettings />
       </div>
     </main>
   )

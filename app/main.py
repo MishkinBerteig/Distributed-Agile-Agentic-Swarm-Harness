@@ -7,12 +7,14 @@ globals created by the lifespan; tests may replace them with fakes before issuin
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 import asyncpg
+import httpx
 from fastapi import Body, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -28,16 +30,17 @@ from app.api_state import ModuleState, agent_endpoint_info
 from app.bus import DecisionBus, ProposalError
 from app.config import Settings
 from app.db import create_pool
-from app.embeddings import build_embedder
+from app.embeddings import CATALOG, build_embedder, task_text
 from app.llm import LLMError
 from app.metrics import compute_metrics
 from app.models import (
-    FeedbackCreate, GlobalConfig, QualityGenerateRequest, Runner, Swarm, SwarmCreate, SwarmStatus,
+    EmbeddingSetting, FeedbackCreate, GlobalConfig, QualityGenerateRequest, Runner, Swarm, SwarmCreate, SwarmStatus,
     SwarmUpdate, TaskCreate, TaskUpdate, TeamCreate, TeamUpdate,
 )
 from app.policy import transition as policy_transition
 from app.repo import (
-    AgentRepo, CallRepo, ConfigRepo, ConnectedAgentRepo, EventRepo, FeedbackRepo, LearningRepo,
+    AgentRepo, CallRepo, ConfigRepo, ConnectedAgentRepo, EmbeddingRepo, EventRepo, FeedbackRepo,
+    LearningRepo,
     ProposalRepo, RemoteJobRepo, RunnerRepo, SwarmRepo, TaskRepo, TeamRepo, VerdictRepo,
 )
 from app.routing import validate_config
@@ -49,7 +52,7 @@ pool: Optional[asyncpg.Pool] = None
 bus: DecisionBus = DecisionBus(settings.REDIS_URL, ttl_seconds=settings.BUS_TTL_SECONDS,
                                signals_max=settings.BUS_SIGNALS_MAX)
 llm: Any = services.build_llm(settings)
-embedder: Any = build_embedder(settings.EMBEDDING_MODEL, settings.EMBEDDING_USE_MODEL)
+embedder: Any = build_embedder(settings)
 #: httpx transport for connected-agent checks and discovery (None = the network; tests fake it)
 connector_transport: Any = None
 BOOTSTRAP_RUNNER = "local-runner"
@@ -62,7 +65,7 @@ async def lifespan(app: FastAPI):
     bus = DecisionBus(settings.REDIS_URL, ttl_seconds=settings.BUS_TTL_SECONDS,
                       signals_max=settings.BUS_SIGNALS_MAX)
     llm = services.build_llm(settings)
-    embedder = build_embedder(settings.EMBEDDING_MODEL, settings.EMBEDDING_USE_MODEL)
+    embedder = build_embedder(settings)
     if settings.RUNNER_BOOTSTRAP_TOKEN:
         await RunnerRepo(pool).ensure_bootstrap(
             BOOTSTRAP_RUNNER, R.hash_token(settings.RUNNER_BOOTSTRAP_TOKEN))
@@ -207,6 +210,48 @@ async def put_config(cfg: GlobalConfig) -> dict:
     await _check_config(cfg.default_swarm_config)
     await ConfigRepo(_p()).put_global(cfg)
     return _j(await ConfigRepo(_p()).get_global())
+
+
+async def _embedder_health() -> Optional[dict]:
+    """The embedder service's /health, or None when it does not answer (2 s)."""
+    url = (settings.EMBEDDER_URL or "").rstrip("/")
+    if not url:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            r = await client.get(url + "/health")
+        return r.json() if r.status_code == 200 else None
+    except (httpx.HTTPError, ValueError):
+        return None
+
+
+@app.get("/embeddings")
+async def get_embeddings() -> dict:
+    """The embedding model for search (docs/DESIGN-0.4.1.md section 6): the user's choice, the
+    embedder's state, how many tasks, learnings and memories its model has embedded, and the
+    catalog DAASHboard offers."""
+    repo = EmbeddingRepo(_p())
+    setting = await repo.get_setting(settings.EMBEDDING_MODEL)
+    status = await repo.status()
+    health = await _embedder_health()
+    return {
+        "setting": setting.model_dump(mode="json"),
+        "status": status,
+        "counts": await repo.counts(status.get("active_model")),
+        "indexes": await repo.vector_indexes(),
+        "service": {"configured": bool(settings.EMBEDDER_URL), "reachable": health is not None,
+                    "health": health},
+        "default_model": settings.EMBEDDING_MODEL,
+        "catalog": [dataclasses.asdict(m) for m in CATALOG],
+    }
+
+
+@app.put("/embeddings")
+async def put_embeddings(setting: EmbeddingSetting) -> dict:
+    """Choose the embedding model. The embedder service loads it (downloading it if needed) and
+    re-embeds every task, learning and memory."""
+    await EmbeddingRepo(_p()).put_setting(setting)
+    return await get_embeddings()
 
 
 @app.get("/models")
@@ -518,11 +563,7 @@ async def create_task(req: TaskCreate) -> dict:
                    "never commits a task without one.")
     if problem:
         raise HTTPException(422, problem)
-    emb = None
-    try:
-        emb = await asyncio.to_thread(embedder.embed, f"{req.name}\n{req.description}")
-    except Exception as exc:  # noqa: BLE001 - embedding is an optimisation, not a requirement
-        log.warning("task embedding failed: %r", exc)
+    emb = await embedder.document(task_text(req.name, req.description))   # never raises
     task = await TaskRepo(_p()).create(team.swarm_id, req, created_by="user", embedding=emb)
     await EventRepo(_p()).add(team.swarm_id, "created", team_id=team.id, task_id=task.id,
                               to_status=task.status, actor="user",

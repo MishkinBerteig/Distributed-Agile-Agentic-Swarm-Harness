@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import asyncpg
 import pytest
 
-from app.embeddings import build_embedder
+from app.embeddings import LocalEmbedder
 from app.models import (CheckKind, CriterionCreate, GlobalConfig, SwarmConfig, TaskCreate,
                         TaskStatus)
 from app.repo import (AgentRepo, CallRepo, ConfigRepo, EventRepo, FeedbackRepo, LearningRepo,
@@ -14,7 +14,17 @@ from app.repo import (AgentRepo, CallRepo, ConfigRepo, EventRepo, FeedbackRepo, 
                       load_snapshot)
 
 NOW = datetime.now(timezone.utc)
-EMB = build_embedder("none", False)
+LOCAL = LocalEmbedder()
+
+
+async def E(text: str):
+    """`text` embedded for storing, with word hashes."""
+    return await LOCAL.document(text)
+
+
+async def Q(text: str):
+    """`text` embedded for searching, with word hashes."""
+    return await LOCAL.query(text)
 
 
 @pytest.fixture
@@ -119,7 +129,7 @@ async def test_agent_repo(pool, swarm, team, agent):
 
 async def test_task_repo(pool, swarm, team):
     repo = TaskRepo(pool)
-    emb = EMB.embed("hello")
+    emb = await E("hello")
     t1 = await repo.create(swarm.id, tcreate(team, "T1", artifact="a.md"), embedding=emb)
     t2 = await repo.create(swarm.id, tcreate(team, "T2", depends_on=[t1.id]), created_by="agent-1")
     assert t1.status == "Pending" and t1.created_by == "user" and t2.created_by == "agent-1"
@@ -219,9 +229,9 @@ async def test_call_repo(pool, swarm, team, agent):
 async def test_learning_repo(pool, swarm, team):
     repo = LearningRepo(pool)
     mine = await repo.add("local lesson", "pattern", swarm_id=swarm.id, team_id=team.id,
-                          embedding=EMB.embed("compost heap"))
+                          embedding=await E("compost heap"))
     glob = await repo.add("global lesson", "routing", swarm_id=None,
-                          embedding=EMB.embed("gateway models"))
+                          embedding=await E("gateway models"))
     await repo.add("no embedding", "automation", swarm_id=swarm.id)
     assert mine.swarm_id == swarm.id and glob.swarm_id is None
     both = await repo.list(swarm.id)
@@ -229,10 +239,10 @@ async def test_learning_repo(pool, swarm, team):
     assert {x.content for x in await repo.list(swarm.id, include_global=False)} == {
         "local lesson", "no embedding"}
     assert len(await repo.list(swarm.id, limit=1)) == 1
-    hits = await repo.search(EMB.embed("compost heap"), swarm.id, k=1)
+    hits = await repo.search(await Q("compost heap"), swarm.id, k=1)
     assert hits[0].content == "local lesson"
     assert len(await repo.search(None, swarm.id, k=2)) == 2           # recency fallback
-    assert {x.content for x in await repo.search(EMB.embed("x"), swarm.id,
+    assert {x.content for x in await repo.search(await Q("x"), swarm.id,
                                                  include_global=False, k=8)} == {
         "local lesson", "no embedding"}
 
@@ -241,14 +251,14 @@ async def test_memory_repo(pool, swarm, team, agent):
     repo = MemoryRepo(pool)
     other = await AgentRepo(pool).create(swarm.id, team.id, "mission_delivery", "Delivery-2", "fast")
     await repo.add(agent.id, swarm.id, "remember compost", team_id=team.id,
-                   embedding=EMB.embed("remember compost"))
-    await repo.add(agent.id, swarm.id, "other note", embedding=EMB.embed("other note"))
+                   embedding=await E("remember compost"))
+    await repo.add(agent.id, swarm.id, "other note", embedding=await E("other note"))
     await repo.add(agent.id, swarm.id, "plain")
     await repo.add(other.id, swarm.id, "not mine")
     assert {m.content for m in await repo.list(agent.id)} == {"remember compost", "other note",
                                                               "plain"}
     assert len(await repo.list(agent.id, limit=2)) == 2
-    assert (await repo.search(agent.id, EMB.embed("remember compost"), k=1))[0].content == \
+    assert (await repo.search(agent.id, await Q("remember compost"), k=1))[0].content == \
         "remember compost"
     assert len(await repo.search(agent.id, None, k=8)) == 3
     assert (await repo.list(other.id))[0].content == "not mine"

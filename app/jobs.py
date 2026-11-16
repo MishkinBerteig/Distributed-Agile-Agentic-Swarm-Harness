@@ -24,6 +24,7 @@ from app import agent_tools, models, policy, prompts, remote, services
 from app.bus import DecisionBus
 from app.checks import COMMAND_TIMEOUT_SECONDS, is_deterministic, run_check
 from app.config import Settings
+from app.embeddings import Embedding, task_text
 from app.llm import LLMError, Usage
 from app.connected_work import ConnectedWork
 from app.models import (Action, ActionKind, Agent, AgentRole, AgentState, CheckKind,
@@ -397,13 +398,11 @@ class Jobs(ConnectedWork):
         except Exception as exc:  # noqa: BLE001
             log.debug("bus signal %s dropped: %r", kind, exc)
 
-    def _embed(self, text: str) -> Optional[list[float]]:
+    async def _embed(self, text: str) -> Embedding:
+        """`text` embedded for storing (never raises; no vector when the embedder is away)."""
         if self.embedder is None or not text:
-            return None
-        try:
-            return self.embedder.embed(text)
-        except Exception:  # noqa: BLE001
-            return None
+            return Embedding(text or "")
+        return await self.embedder.document(text)
 
     def workspace(self, swarm: Swarm) -> Path:
         return services.ensure_workspace(self.settings, swarm.id)
@@ -594,7 +593,7 @@ class Jobs(ConnectedWork):
             f"Team '{team.name}' exhausted {limit} tasks without accomplishing its mission "
             f"({team.mission_statement}). Plan fewer, more decisive tasks.",
             "pattern", swarm_id=swarm.id, team_id=team.id,
-            embedding=self._embed(team.mission_statement))
+            embedding=await self._embed(team.mission_statement))
         await self.signal("team.failed", team_id=team.id)
 
     async def materialize_team(self, swarm: Swarm, action: Action, escalation: int = 0) -> None:
@@ -736,7 +735,7 @@ class Jobs(ConnectedWork):
             allowed=("LEARNING",))
         for kind, content in learned:
             await self.learnings.add(content, kind, swarm_id=None, created_by=coord.id,
-                                     embedding=self._embed(content))
+                                     embedding=await self._embed(content))
         await self.swarms.update(swarm.id, retrospective_done=True)
         await self.events.add(
             swarm.id, "swarm", actor=coord.id,
@@ -808,7 +807,7 @@ class Jobs(ConnectedWork):
                               required_capabilities=pt.needs)
             created.append(await self.tasks.create(
                 swarm.id, data, created_by=agent.id,
-                embedding=self._embed(f"{pt.name}. {pt.description}")))
+                embedding=await self._embed(task_text(pt.name, pt.description))))
         names = ", ".join(f"'{t.name}'" for t in created)
         await self.events.add(
             swarm.id, "created", team_id=team.id, actor=agent.id,
@@ -1418,7 +1417,7 @@ class Jobs(ConnectedWork):
                     f"Task '{task.name}' needed {attempt} attempts. Earlier judge feedback to "
                     f"avoid repeating: {_clip(task.feedback, 500)}", "pattern",
                     swarm_id=swarm.id, team_id=team.id, task_id=task.id,
-                    embedding=self._embed(task.name))
+                    embedding=await self._embed(task.name))
             await self.signal("task.done", team.id, task.id)
             return
 
@@ -1474,7 +1473,7 @@ class Jobs(ConnectedWork):
         await self.learnings.add(
             f"Task '{task.name}' failed. Judge feedback: {_clip(feedback, 500)}", "pattern",
             swarm_id=swarm.id, team_id=team.id, task_id=task.id,
-            embedding=self._embed(task.name))
+            embedding=await self._embed(task.name))
 
     # -- assessment -------------------------------------------------------------
 
@@ -1522,7 +1521,7 @@ class Jobs(ConnectedWork):
                 f"Team '{team.name}' restarted its approach. Why: {_clip(res.reasoning, 400)} "
                 f"Next focus: {_clip(res.next_focus, 200)}", "pattern",
                 swarm_id=swarm.id, team_id=team.id, created_by=mj.id,
-                embedding=self._embed(team.mission_statement))
+                embedding=await self._embed(team.mission_statement))
             await self.events.add(
                 swarm.id, "assessment", team_id=team.id, actor=mj.id,
                 detail=f"{mj.name} restarted team '{team.name}' (generation "

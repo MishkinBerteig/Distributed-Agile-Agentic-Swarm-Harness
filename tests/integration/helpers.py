@@ -17,7 +17,7 @@ import httpx
 
 from app import api_helpers as H
 from app import policy, services
-from app.embeddings import build_embedder
+from app.embeddings import LocalEmbedder
 from app.engine import Cooldowns, Deferrals, Engine
 from app.jobs import Jobs
 from app.llm import LLMClient
@@ -87,7 +87,7 @@ class Harness:
         self.agents, self.tasks = AgentRepo(pool), TaskRepo(pool)
         self.events, self.proposals = EventRepo(pool), ProposalRepo(pool)
         self.verdicts, self.calls = VerdictRepo(pool), CallRepo(pool)
-        self.embedder = build_embedder("none", False)
+        self.embedder = LocalEmbedder()
         self.llm = make_llm(fake, settings.LLM_ENDPOINT)
         self.engine = self.new_engine()
         self.history: list[list[str]] = []   # action kinds per step

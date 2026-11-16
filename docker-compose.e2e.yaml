@@ -3,6 +3,7 @@
 #   - NO published ports, and an internal network (no egress);
 #   - the real coordinator and engine containers, a real PostgreSQL and Redis;
 #   - `fake-llm` (the scripted fake gateway, test image) instead of the real LLM;
+#   - the real `embedder` with its built-in model, offline (0.4.1: docs/DESIGN-0.4.1.md);
 #   - `e2e` (test image) drives the coordinator over HTTP and restarts the engine container
 #     through the Docker Engine API (/var/run/docker.sock mounted; no docker CLI needed).
 x-daash-env: &daash-env
@@ -13,6 +14,8 @@ x-daash-env: &daash-env
   DAASH_LLM_ENDPOINT: http://fake-llm:9100
   DAASH_LLM_API_KEY: ""
   DAASH_WORKSPACE_ROOT: /workspaces
+  # 0.4.1: real embeddings from the embedder container (built-in gte-base-en-v1.5, no network)
+  DAASH_EMBEDDER_URL: http://embedder:8002
   # 0.3: a fixed test token for the bootstrap runner "local-runner" (e2e only, not a secret) and a
   # short lease so a killed runner's job is re-queued within seconds (heartbeats follow: lease/3).
   DAASH_RUNNER_BOOTSTRAP_TOKEN: daash_rt_e2e-fixed-test-token
@@ -84,6 +87,28 @@ services:
       retries: 30
     networks: [e2e]
 
+  # The real embedder image with its built-in model. The e2e network has no egress, and
+  # HF_HUB_OFFLINE makes sure nothing even tries: the built-in model must load with no network.
+  embedder:
+    build:
+      context: .
+      target: embedder
+    environment:
+      DAASH_DATABASE_URL: postgresql://daash:daash@db:5432/daash
+      DAASH_DATABASE_HOST: db
+      DAASH_EMBEDDER_POLL_SECONDS: "0.5"
+      HF_HUB_OFFLINE: "1"
+    depends_on:
+      coordinator:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/health', timeout=3)"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+      start_period: 5s
+    networks: [e2e]
+
   coordinator:
     build:
       context: .
@@ -151,6 +176,7 @@ services:
       E2E_RUNNER_TOKEN: daash_rt_e2e-fixed-test-token
       E2E_COMPOSE_PROJECT: ${DAASH_E2E_PROJECT:-daash-e2e}
       E2E_FAKE_A2A_URL: http://fake-a2a:18789
+      E2E_EMBEDDER_URL: http://embedder:8002
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
@@ -163,6 +189,8 @@ services:
       runner:
         condition: service_started
       fake-a2a:
+        condition: service_healthy
+      embedder:
         condition: service_healthy
     networks: [e2e]
 

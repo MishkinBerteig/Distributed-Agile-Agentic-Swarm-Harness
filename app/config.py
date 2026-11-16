@@ -19,10 +19,19 @@ class Settings(BaseSettings):
     BUS_TTL_SECONDS: int = 3600
     BUS_SIGNALS_MAX: int = 200
 
+    # Embeddings for search (docs/DESIGN-0.4.1.md). EMBEDDER_URL is the embedder service (compose
+    # sets http://embedder:8002); empty = word hashes in-process (the unit and integration tests).
+    # The model is chosen in DAASHboard Settings (global_config "embedding"). EMBEDDING_MODEL is
+    # the model built into the embedder image, and the choice until the user makes one.
+    EMBEDDER_URL: str = ""
     EMBEDDING_MODEL: str = "Alibaba-NLP/gte-base-en-v1.5"
-    # When false (or when sentence-transformers/model is unavailable), a
-    # deterministic hash-based embedder is used instead of downloading the model.
-    EMBEDDING_USE_MODEL: bool = False
+    # The embedder service only: where the built-in model is (in the image), where other models
+    # are downloaded to (the daash-models volume), the longest text it reads (tokens; longer
+    # texts are cut), and how often it checks the setting and the rows still to index.
+    EMBEDDING_BAKED_DIR: str = "/opt/daash/embedding-models"
+    EMBEDDING_CACHE_DIR: str = "/var/lib/daash/models"
+    EMBEDDING_MAX_SEQ_LENGTH: int = 512
+    EMBEDDER_POLL_SECONDS: float = 2.0
 
     # LLM gateway: any OpenAI-compatible endpoint. The default is the m3u512gb
     # private gateway (aliases instant/fast/great/amazing). Its Tailscale name is

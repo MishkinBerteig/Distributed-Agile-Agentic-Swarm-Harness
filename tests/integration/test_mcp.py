@@ -15,6 +15,7 @@ from app import agent_api, mcp_server, runner_api
 from app.models import HarnessSpec
 from app.remote import hash_token
 from app.repo import ConnectedAgentRepo, MemoryRepo, MessageRepo, RemoteJobRepo, RunnerRepo
+from app.embeddings import LocalEmbedder
 from tests.integration.helpers import swarm_config
 from tests.integration.runner_helpers import FakeRunner, make_remote_job, new_runner
 
@@ -371,7 +372,7 @@ async def agent_client(pool, bus, settings, monkeypatch):
     monkeypatch.setattr(agent_api, "pool", pool)
     monkeypatch.setattr(agent_api, "bus", bus)
     monkeypatch.setattr(agent_api, "settings", settings)
-    monkeypatch.setattr(agent_api, "embedder", agent_api.build_embedder("none", False))
+    monkeypatch.setattr(agent_api, "embedder", LocalEmbedder())
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=agent_api.app),
                                  base_url="http://agents") as client:
         yield client

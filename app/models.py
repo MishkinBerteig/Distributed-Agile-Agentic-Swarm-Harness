@@ -9,7 +9,9 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from app.embeddings import DEFAULT_MODEL, MAX_MODEL_NAME, valid_model_name
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +288,24 @@ class GlobalConfig(BaseModel):
     """Global (cross-swarm) settings: README 'Values and Principles'."""
     values_principles: str = ""
     default_swarm_config: SwarmConfig = Field(default_factory=SwarmConfig)
+
+
+
+class EmbeddingSetting(BaseModel):
+    """The embedding model chosen in DAASHboard Settings (docs/DESIGN-0.4.1.md); global_config
+    key "embedding". `trust_remote_code` lets a model that is not in DAASH's catalog run its own
+    code from Hugging Face (the catalog decides for its own models)."""
+    model: str = DEFAULT_MODEL
+    trust_remote_code: bool = False
+
+    @field_validator("model")
+    @classmethod
+    def _model_name(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not valid_model_name(v):
+            raise ValueError(f"a Hugging Face model id like 'BAAI/bge-small-en-v1.5' (letters, digits, "
+                             f"'.', '_', '-', one '/'; at most {MAX_MODEL_NAME} characters)")
+        return v
 
 
 # ---------------------------------------------------------------------------

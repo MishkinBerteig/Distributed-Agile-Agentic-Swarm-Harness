@@ -135,8 +135,7 @@ def alembic_downgrade(db_url: str, target: str) -> None:
 async def test_0_4_schema_is_two_migrations_and_reversible(scratch_db):
     """0.4's schema (docs/DESIGN-0.4.md) is f0a3c0d0e005 (MCP, messages, connected agents) plus
     f0a3c0d0e006 (discovery, approval state, agent hosts), on top of the 0.3 head."""
-    assert script_head() == "f0a3c0d0e006"
-    run_alembic(scratch_db)
+    run_alembic(scratch_db, "f0a3c0d0e006")
     assert {"agent_messages", "connected_agents", "agent_discoveries",
             "runner_enrollments"} <= await tables(scratch_db)
     assert "mcp_token_hash" in await columns(scratch_db, "remote_jobs")
@@ -151,4 +150,67 @@ async def test_0_4_schema_is_two_migrations_and_reversible(scratch_db):
     assert not {"agent_messages", "connected_agents"} & await tables(scratch_db)
     assert "mcp_token_hash" not in await columns(scratch_db, "remote_jobs")
     run_alembic(scratch_db)
-    assert await version(scratch_db) == "f0a3c0d0e006"
+    assert await version(scratch_db) == script_head()
+
+
+async def column_type(url: str, table: str, column: str) -> str:
+    conn = await asyncpg.connect(url)
+    try:
+        return await conn.fetchval(
+            "SELECT format_type(atttypid, atttypmod) FROM pg_attribute "
+            "WHERE attrelid = $1::regclass AND attname = $2", table, column)
+    finally:
+        await conn.close()
+
+
+async def test_0_4_1_embeddings_schema_is_one_reversible_migration(scratch_db):
+    """0.4.1 (docs/DESIGN-0.4.1.md section 4): untyped vectors with the model and the text, the old
+    word-hash vectors cleared with their text kept, and embedding_status."""
+    assert script_head() == "f0a3c0d0e007"
+    run_alembic(scratch_db, "f0a3c0d0e006")
+    old_vec = "[" + ",".join(["0.1"] * 768) + "]"
+    conn = await asyncpg.connect(scratch_db)
+    try:
+        await conn.execute("INSERT INTO swarms (id, name, vision_statement) VALUES ('s', 'S', 'v')")
+        await conn.execute("INSERT INTO teams (id, swarm_id, name) VALUES ('t', 's', 'T')")
+        await conn.execute("INSERT INTO agents (id, swarm_id, team_id, role, name, model) "
+                           "VALUES ('a', 's', 't', 'mission_delivery', 'D', 'fast')")
+        await conn.execute("INSERT INTO tasks (id, swarm_id, team_id, name, description, embedding) "
+                           "VALUES ('k', 's', 't', 'Write README', 'One example each', $1::vector)",
+                           old_vec)
+        await conn.execute("INSERT INTO tasks (id, swarm_id, team_id, name) VALUES ('k2', 's', 't', 'Bare')")
+        await conn.execute("INSERT INTO learnings (id, swarm_id, kind, content, embedding) "
+                           "VALUES ('l', 's', 'pattern', 'Plan fewer tasks', $1::vector)", old_vec)
+        await conn.execute("INSERT INTO memories (id, agent_id, swarm_id, content, embedding) "
+                           "VALUES ('m', 'a', 's', 'Bob likes pizza', $1::vector)", old_vec)
+    finally:
+        await conn.close()
+    assert await column_type(scratch_db, "memories", "embedding") == "vector(768)"
+
+    run_alembic(scratch_db)
+    for table in ("tasks", "learnings", "memories"):
+        assert {"embedding", "embedding_model", "embedding_text"} <= await columns(scratch_db, table)
+        assert await column_type(scratch_db, table, "embedding") == "vector"
+    conn = await asyncpg.connect(scratch_db)
+    try:
+        rows = {r["id"]: r for r in await conn.fetch(
+            "SELECT id, embedding, embedding_model, embedding_text FROM tasks "
+            "UNION ALL SELECT id, embedding, embedding_model, embedding_text FROM learnings "
+            "UNION ALL SELECT id, embedding, embedding_model, embedding_text FROM memories")}
+        assert {k: r["embedding_text"] for k, r in rows.items()} == {
+            "k": "Write README\nOne example each", "k2": "Bare", "l": "Plan fewer tasks",
+            "m": "Bob likes pizza"}
+        assert all(r["embedding"] is None and r["embedding_model"] is None for r in rows.values())
+        status = await conn.fetchrow("SELECT * FROM embedding_status")
+        assert status["id"] == 1 and status["state"] == "starting"
+        # any model's vectors fit now
+        await conn.execute("UPDATE memories SET embedding = '[1,2,3]', embedding_model = 'x/y'")
+    finally:
+        await conn.close()
+
+    alembic_downgrade(scratch_db, "f0a3c0d0e006")
+    assert "embedding_status" not in await tables(scratch_db)
+    assert await column_type(scratch_db, "memories", "embedding") == "vector(768)"
+    assert "embedding_model" not in await columns(scratch_db, "memories")
+    run_alembic(scratch_db)
+    assert await version(scratch_db) == "f0a3c0d0e007"

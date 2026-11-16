@@ -291,7 +291,7 @@ class Engine:
             raise RuntimeError("could not connect to the database")
         self.bus = DecisionBus(s.REDIS_URL, s.BUS_TTL_SECONDS, s.BUS_SIGNALS_MAX)
         llm = services.build_llm(s)
-        embedder = build_embedder(s.EMBEDDING_MODEL, s.EMBEDDING_USE_MODEL)
+        embedder = build_embedder(s)
         self.jobs = Jobs(self.pool, llm, self.bus, embedder, s)
         reset = await AgentRepo(self.pool).reset_busy()
         log.info("engine started (tick %.1fs, llm %s, %d busy agents reset)",

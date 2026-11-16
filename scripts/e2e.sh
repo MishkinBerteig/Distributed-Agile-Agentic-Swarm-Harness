@@ -25,7 +25,7 @@ cleanup() {
 trap 'cleanup; exit 130' INT TERM
 
 status=0
-"${COMPOSE[@]}" up -d --build --wait db redis fake-llm fake-a2a coordinator engine runner || status=$?
+"${COMPOSE[@]}" up -d --build --wait db redis fake-llm fake-a2a coordinator embedder engine runner || status=$?
 if [ "$status" -eq 0 ]; then
   # runner-hang exists but stays stopped until the runner-death scenario starts it.
   "${COMPOSE[@]}" create --build runner-hang || status=$?
@@ -37,7 +37,7 @@ fi
 
 if [ "$status" -ne 0 ]; then
   echo "--- e2e failed (exit $status); last service log lines ---" >&2
-  "${COMPOSE[@]}" logs --tail=40 engine coordinator fake-llm fake-a2a runner runner-hang 2>&1 >&2 || true
+  "${COMPOSE[@]}" logs --tail=40 engine coordinator embedder fake-llm fake-a2a runner runner-hang 2>&1 >&2 || true
 fi
 "${COMPOSE[@]}" down -v --remove-orphans
 exit "$status"

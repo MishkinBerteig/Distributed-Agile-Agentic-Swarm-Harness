@@ -39,7 +39,7 @@ async def lifespan(app: FastAPI):
     pool = await create_pool(settings.DATABASE_URL)
     bus = DecisionBus(settings.REDIS_URL, ttl_seconds=settings.BUS_TTL_SECONDS,
                       signals_max=settings.BUS_SIGNALS_MAX)
-    embedder = build_embedder(settings.EMBEDDING_MODEL, settings.EMBEDDING_USE_MODEL)
+    embedder = build_embedder(settings)
     log.info("Agent API ready (MCP at %s, runner protocol at /runner/*).", mcp_server.MCP_PATH)
     try:
         yield

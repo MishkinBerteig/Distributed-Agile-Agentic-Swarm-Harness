@@ -3,7 +3,9 @@
 Every repository takes an asyncpg pool created by ``app.db.create_pool`` (jsonb
 codecs registered) and returns ``app.models`` types. SQL is parameterised; the
 only interpolated SQL fragments are column names drawn from fixed whitelists.
-The ``embedding`` columns are never selected into models.
+The ``embedding`` columns are never selected into models. Each embedded row also keeps the model
+that made its vector and the text it is found by (docs/DESIGN-0.4.1.md); search compares a query
+only with rows of the query's model.
 """
 from __future__ import annotations
 
@@ -12,10 +14,12 @@ from datetime import datetime
 from typing import Any, Iterable, Mapping, Optional
 
 import asyncpg
+from pydantic import ValidationError
 
+from app.embeddings import EMBEDDED_TABLES, Embedding, index_name, sql_literal, task_text
 from app.models import (
     CONNECTED_HARNESS, Agent, AgentCall, AgentMessage, AcceptanceCriterion, ConnectedAgent,
-    Feedback, GlobalConfig, Learning, Memory, RemoteJob, Runner, Swarm, SwarmConfig,
+    EmbeddingSetting, Feedback, GlobalConfig, Learning, Memory, RemoteJob, Runner, Swarm, SwarmConfig,
     SwarmSnapshot, Task, TaskCreate, TaskEvent, Team, TeamProposal, Verdict, harness_capabilities,
     normalize_capabilities, required_capabilities, with_command_capability,
 )
@@ -35,6 +39,48 @@ def _vec_literal(vec: list[float]) -> str:
 
 def _vec_or_none(vec: Optional[list[float]]) -> Optional[str]:
     return _vec_literal(vec) if vec is not None else None
+
+
+def _emb_params(emb: Optional[Embedding], text: str) -> tuple[Optional[str], Optional[str], str]:
+    """(vector literal, model, text) for an embedded row. With no vector, the row keeps only its
+    text and the embedder's indexer embeds it later."""
+    if emb is not None and emb.ok:
+        return _vec_literal(emb.vector), emb.model, emb.text or text
+    return None, None, (emb.text if emb is not None and emb.text else text)
+
+
+#: pgvector builds HNSW indexes for at most this many dimensions; larger vectors are searched exactly.
+HNSW_MAX_DIM = 2000
+
+
+async def _nearest(pool: asyncpg.Pool, table: str, cols: str, scope: str, params: list,
+                   query: Optional[Embedding], k: int) -> list:
+    """Rows of `table` within `scope` (SQL over $1..$n = params), nearest to `query` first.
+
+    Only rows embedded by the query's model are compared (rows of other models have other
+    dimensions and meanings). If fewer than `k` such rows exist (the indexer has not reached the
+    rest yet), the newest other rows follow. With no query vector: newest first.
+    The model name is a SQL literal so the planner can use that model's partial HNSW index;
+    iterative scans keep a filtered HNSW scan exact and complete (pgvector 0.8)."""
+    n = len(params)
+    if query is None or not query.ok:
+        return list(await pool.fetch(
+            f"SELECT {cols} FROM {table} WHERE {scope} ORDER BY created_at DESC, id LIMIT ${n + 1}",
+            *params, int(k)))
+    model, dim = sql_literal(query.model), query.dim
+    async with pool.acquire() as conn, conn.transaction():
+        await conn.execute("SET LOCAL hnsw.iterative_scan = strict_order")
+        rows = list(await conn.fetch(
+            f"SELECT {cols} FROM {table} WHERE {scope} AND embedding_model = {model} "
+            f"AND embedding IS NOT NULL "
+            f"ORDER BY embedding::vector({dim}) <=> ${n + 1}::vector({dim}), created_at DESC "
+            f"LIMIT ${n + 2}", *params, _vec_literal(query.vector), int(k)))
+    if len(rows) < k:
+        rows += await pool.fetch(
+            f"SELECT {cols} FROM {table} WHERE {scope} AND (embedding_model IS DISTINCT FROM {model} "
+            f"OR embedding IS NULL) ORDER BY created_at DESC, id LIMIT ${n + 1}",
+            *params, int(k) - len(rows))
+    return rows
 
 
 def build_update(allowed: Iterable[str], fields: Mapping[str, Any], first_param: int = 2
@@ -270,17 +316,19 @@ class TaskRepo(_Repo):
         return [_to(Task, r, criteria=by_task.get(r["id"], [])) for r in rows]
 
     async def create(self, swarm_id: str, data: TaskCreate, created_by: str = "user",
-                     embedding: Optional[list[float]] = None) -> Task:
+                     embedding: Optional[Embedding] = None) -> Task:
         task_id = _uid()
+        vec, model, text = _emb_params(embedding, task_text(data.name, data.description))
         async with self._pool.acquire() as conn, conn.transaction():
             await conn.execute(
                 "INSERT INTO tasks (id, swarm_id, team_id, parent_id, name, description, artifact, "
-                "depends_on, required_capabilities, created_by, embedding) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::vector)",
+                "depends_on, required_capabilities, created_by, embedding, embedding_model, "
+                "embedding_text) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::vector, $12, $13)",
                 task_id, swarm_id, data.team_id, data.parent_id, data.name, data.description,
                 data.artifact, list(data.depends_on),
                 with_command_capability(data.required_capabilities, data.acceptance_criteria),
-                created_by, _vec_or_none(embedding))
+                created_by, vec, model, text)
             for i, c in enumerate(data.acceptance_criteria, start=1):
                 await conn.execute(
                     "INSERT INTO acceptance_criteria (id, task_id, ordinal, text, check_kind, "
@@ -317,6 +365,12 @@ class TaskRepo(_Repo):
             task_id, *params)
         if row is None:
             return None
+        if "name" in fields or "description" in fields:
+            # what the task is found by changed: the embedder's indexer embeds the new text
+            text = task_text(row["name"], row["description"])
+            await self._pool.execute(
+                "UPDATE tasks SET embedding_text = $2, embedding = NULL, embedding_model = NULL "
+                "WHERE id = $1 AND embedding_text IS DISTINCT FROM $2", task_id, text)
         return (await self._attach_criteria([row]))[0]
 
     async def update_criterion(self, criterion_id: str, status: str, score: Optional[float],
@@ -438,12 +492,15 @@ class LearningRepo(_Repo):
     async def add(self, content: str, kind: str, swarm_id: Optional[str] = None,
                   team_id: Optional[str] = None, task_id: Optional[str] = None,
                   created_by: str = "engine",
-                  embedding: Optional[list[float]] = None) -> Learning:
+                  embedding: Optional[Embedding] = None) -> Learning:
+        """`embedding`: of the learning's subject (the mission, the task name...); without one the
+        learning is found by its own content."""
+        vec, model, text = _emb_params(embedding, content)
         row = await self._pool.fetchrow(
             f"INSERT INTO learnings (id, swarm_id, team_id, task_id, kind, content, created_by, "
-            f"embedding) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::vector) RETURNING {LEARNING_COLS}",
-            _uid(), swarm_id, team_id, task_id, _val(kind), content, created_by,
-            _vec_or_none(embedding))
+            f"embedding, embedding_model, embedding_text) "
+            f"VALUES ($1,$2,$3,$4,$5,$6,$7,$8::vector,$9,$10) RETURNING {LEARNING_COLS}",
+            _uid(), swarm_id, team_id, task_id, _val(kind), content, created_by, vec, model, text)
         return _to(Learning, row)
 
     @staticmethod
@@ -457,26 +514,24 @@ class LearningRepo(_Repo):
             f"ORDER BY created_at DESC, id LIMIT $2", swarm_id, int(limit))
         return [_to(Learning, r) for r in rows]
 
-    async def search(self, embedding: Optional[list[float]], swarm_id: str, k: int = 8,
+    async def search(self, query: Optional[Embedding], swarm_id: str, k: int = 8,
                      include_global: bool = True) -> list[Learning]:
-        """Nearest by cosine distance; recency when ``embedding`` is None."""
-        if embedding is None:
-            return await self.list(swarm_id, include_global, k)
-        rows = await self._pool.fetch(
-            f"SELECT {LEARNING_COLS} FROM learnings WHERE {self._scope(include_global)} "
-            f"ORDER BY embedding <=> $2::vector NULLS LAST, created_at DESC LIMIT $3",
-            swarm_id, _vec_literal(embedding), int(k))
+        """Nearest to `query` by cosine distance (see _nearest); recency without a query vector."""
+        rows = await _nearest(self._pool, "learnings", LEARNING_COLS, self._scope(include_global),
+                              [swarm_id], query, k)
         return [_to(Learning, r) for r in rows]
 
 
 class MemoryRepo(_Repo):
     async def add(self, agent_id: str, swarm_id: str, content: str, team_id: Optional[str] = None,
                   task_id: Optional[str] = None,
-                  embedding: Optional[list[float]] = None) -> Memory:
+                  embedding: Optional[Embedding] = None) -> Memory:
+        vec, model, text = _emb_params(embedding, content)
         row = await self._pool.fetchrow(
-            f"INSERT INTO memories (id, agent_id, swarm_id, team_id, task_id, content, embedding) "
-            f"VALUES ($1,$2,$3,$4,$5,$6,$7::vector) RETURNING {MEMORY_COLS}",
-            _uid(), agent_id, swarm_id, team_id, task_id, content, _vec_or_none(embedding))
+            f"INSERT INTO memories (id, agent_id, swarm_id, team_id, task_id, content, embedding, "
+            f"embedding_model, embedding_text) "
+            f"VALUES ($1,$2,$3,$4,$5,$6,$7::vector,$8,$9) RETURNING {MEMORY_COLS}",
+            _uid(), agent_id, swarm_id, team_id, task_id, content, vec, model, text)
         return _to(Memory, row)
 
     async def list(self, agent_id: str, limit: int = 50) -> list[Memory]:
@@ -486,14 +541,116 @@ class MemoryRepo(_Repo):
             f"ORDER BY created_at DESC, id LIMIT $2", agent_id, int(limit))
         return [_to(Memory, r) for r in rows]
 
-    async def search(self, agent_id: str, embedding: Optional[list[float]], k: int = 8) -> list[Memory]:
-        if embedding is None:
-            return await self.list(agent_id, k)
-        rows = await self._pool.fetch(
-            f"SELECT {MEMORY_COLS} FROM memories WHERE agent_id = $1 "
-            f"ORDER BY embedding <=> $2::vector NULLS LAST, created_at DESC LIMIT $3",
-            agent_id, _vec_literal(embedding), int(k))
+    async def search(self, agent_id: str, query: Optional[Embedding], k: int = 8) -> list[Memory]:
+        """Nearest to `query` by cosine distance (see _nearest); recency without a query vector."""
+        rows = await _nearest(self._pool, "memories", MEMORY_COLS, "agent_id = $1", [agent_id],
+                              query, k)
         return [_to(Memory, r) for r in rows]
+
+
+
+EMBEDDING_STATUS_COLS = ("chosen_model, active_model, dim, state, indexed, total, error, updated_at")
+EMBEDDING_STATUS_UPDATABLE = ("chosen_model", "active_model", "dim", "state", "indexed", "total",
+                              "error")
+
+
+class EmbeddingRepo(_Repo):
+    """The chosen embedding model, the embedder's status, and the rows its indexer embeds
+    (docs/DESIGN-0.4.1.md). Table names come from EMBEDDED_TABLES only."""
+
+    @staticmethod
+    def _table(table: str) -> str:
+        if table not in EMBEDDED_TABLES:
+            raise ValueError(f"not an embedded table: {table!r}")
+        return table
+
+    async def get_setting(self, default_model: str) -> EmbeddingSetting:
+        """The user's choice (DAASHboard Settings), else `default_model`."""
+        value = await self._pool.fetchval("SELECT value FROM global_config WHERE key = 'embedding'")
+        if isinstance(value, dict):
+            try:
+                return EmbeddingSetting(**value)
+            except ValidationError:
+                pass
+        return EmbeddingSetting(model=default_model)
+
+    async def put_setting(self, setting: EmbeddingSetting) -> None:
+        await self._pool.execute(
+            "INSERT INTO global_config (key, value) VALUES ('embedding', $1) "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", setting.model_dump(mode="json"))
+
+    async def status(self) -> dict[str, Any]:
+        row = await self._pool.fetchrow(
+            f"SELECT {EMBEDDING_STATUS_COLS} FROM embedding_status WHERE id = 1")
+        return dict(row) if row else {"state": "starting"}
+
+    async def set_status(self, **fields: Any) -> None:
+        sets, params = build_update(EMBEDDING_STATUS_UPDATABLE, fields)
+        await self._pool.execute(
+            "INSERT INTO embedding_status (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
+        await self._pool.execute(
+            f"UPDATE embedding_status SET {sets}, updated_at = now() WHERE id = $1", 1, *params)
+
+    async def counts(self, model: Optional[str]) -> dict[str, dict[str, int]]:
+        """Per table: rows with text to embed (`total`) and those embedded by `model` (`indexed`)."""
+        out: dict[str, dict[str, int]] = {}
+        for table in EMBEDDED_TABLES:
+            row = await self._pool.fetchrow(
+                f"SELECT count(*) FILTER (WHERE coalesce(embedding_text, '') <> '') AS total, "
+                f"count(*) FILTER (WHERE coalesce(embedding_text, '') <> '' AND embedding IS NOT NULL "
+                f"AND embedding_model = $1) AS indexed FROM {table}", model)
+            out[table] = {"total": int(row["total"]), "indexed": int(row["indexed"])}
+        return out
+
+    async def pending(self, table: str, model: str, limit: int) -> list[tuple[str, str]]:
+        """(id, text) of rows not embedded by `model` yet."""
+        rows = await self._pool.fetch(
+            f"SELECT id, embedding_text FROM {self._table(table)} "
+            f"WHERE coalesce(embedding_text, '') <> '' "
+            f"AND (embedding IS NULL OR embedding_model IS DISTINCT FROM $1) "
+            f"ORDER BY created_at DESC, id LIMIT $2", model, int(limit))
+        return [(r["id"], r["embedding_text"]) for r in rows]
+
+    async def store(self, table: str, model: str, items: list[tuple[str, str, list[float]]]) -> int:
+        """Write (id, text, vector) rows embedded by `model`. A row whose text changed meanwhile is
+        left for the next pass. Returns how many were written."""
+        n = 0
+        async with self._pool.acquire() as conn, conn.transaction():
+            for row_id, text, vec in items:
+                status = await conn.execute(
+                    f"UPDATE {self._table(table)} SET embedding = $2::vector, embedding_model = $3 "
+                    f"WHERE id = $1 AND embedding_text = $4", row_id, _vec_literal(vec), model, text)
+                n += int(status.split()[-1])
+        return n
+
+    async def vector_indexes(self) -> dict[str, list[str]]:
+        """Per table: the names of DAASH's HNSW embedding indexes."""
+        out: dict[str, list[str]] = {}
+        for table in EMBEDDED_TABLES:
+            rows = await self._pool.fetch(
+                "SELECT indexname FROM pg_indexes WHERE schemaname = current_schema() "
+                "AND tablename = $1 AND indexname LIKE $2 ORDER BY indexname",
+                table, table + "\\_emb\\_%")
+            out[table] = [r["indexname"] for r in rows]
+        return out
+
+    async def ensure_indexes(self, model: str, dim: int) -> dict[str, Optional[str]]:
+        """Keep exactly one HNSW index per table: the one for `model`'s vectors (none above
+        HNSW_MAX_DIM dimensions). Returns per table the index kept (or None)."""
+        wanted: dict[str, Optional[str]] = {}
+        existing = await self.vector_indexes()
+        for table in EMBEDDED_TABLES:
+            name = index_name(table, model, dim) if 0 < dim <= HNSW_MAX_DIM else None
+            if name and name not in existing[table]:
+                await self._pool.execute(
+                    f"CREATE INDEX IF NOT EXISTS {name} ON {table} USING hnsw "
+                    f"((embedding::vector({int(dim)})) vector_cosine_ops) "
+                    f"WHERE embedding_model = {sql_literal(model)}")
+            for old in existing[table]:
+                if old != name:
+                    await self._pool.execute(f"DROP INDEX IF EXISTS {old}")
+            wanted[table] = name
+        return wanted
 
 
 class ProposalRepo(_Repo):

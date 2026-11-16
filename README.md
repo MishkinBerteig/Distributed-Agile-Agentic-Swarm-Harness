@@ -105,10 +105,10 @@ swarm to achieve the vision. The configuration also includes resource limits
 optionally stated in wall-clock time, token budgets, maximum simultaneous
 agents, budget and core "Values and Principles" set at a global level.
 
-## Status: 0.4
+## Status: 0.4.1
 
-DAASH 0.4 (tag `v0.4`) runs a swarm as described above, from the vision to
-verified artifacts. [PLAN.md](PLAN.md) has the plan, the history of each
+DAASH 0.4.1 (tag `v0.4.1`) runs a swarm as described above, from the vision
+to verified artifacts. [PLAN.md](PLAN.md) has the plan, the history of each
 milestone and what comes next. Releases are on
 [GitHub](https://github.com/MishkinBerteig/Distributed-Agile-Agentic-Swarm-Harness/releases).
 
@@ -134,7 +134,8 @@ What is built, section by section:
   activity feed, and the metrics: p90 cycle time, errors per interval and
   team failure rates.
 - **Learning:** (1) learnings and each agent's own memories go into its
-  prompts; (2) automation scripts are recorded, not yet run; (3) a classifier
+  prompts, chosen by meaning (see Search below); (2) automation scripts are
+  recorded, not yet run; (3) a classifier
   rates each task's complexity to pick its starting model, and routing moves
   up a model ladder (`instant → fast → great → amazing` by default) on
   failures and on learned success rates.
@@ -154,6 +155,15 @@ What is built, section by section:
   gives every agent, built in or external, the same tools: memory (`remember`,
   `recall`), subtasks, team proposals and votes, the team roster, team
   messages, and its current task.
+- **Search:** an embedding model turns every task, learning and memory into a
+  vector. PostgreSQL (pgvector) stores each vector with the name of its model
+  and indexes the model's vectors (HNSW). Each job's prompt gets the learnings
+  and the agent's memories nearest in meaning to the job's subject, and the
+  `recall` tool searches an agent's memories the same way. The model runs in
+  the `embedder` service. The built-in model, `gte-base-en-v1.5`, is in its
+  image and needs no network. DAASHboard Settings › Search embeddings chooses
+  another model, and the embedder then downloads it and embeds everything
+  again.
 
 The swarm lifecycle is in `Swarm State Diagram.mermaid` and is drawn live in
 DAASHboard. One swarm is live at a time.
@@ -164,8 +174,11 @@ Everything runs in Docker.
 
 ```bash
 cp .env.example .env            # set DAASH_LLM_API_KEY, and DAASH_LLM_ENDPOINT for your gateway
-docker compose up --build -d    # db, redis, coordinator :8000, agent-api :8001, engine, dashboard :7173
+docker compose up --build -d    # db, redis, coordinator :8000, agent-api :8001, engine, embedder, dashboard :7173
 ```
+
+The first build takes a few minutes: the embedder image (about 3 GB) holds
+PyTorch and the built-in embedding model.
 
 - DAASHboard: http://127.0.0.1:7173. Its menu has Swarm, Past swarms, Agents &
   models, Settings and Help.
@@ -188,6 +201,9 @@ docker compose --profile runner up --build -d runner
   (see `.env.example`).
 - Admin auth is off unless `DAASH_API_TOKEN` is set. The coordinator is
   published on 127.0.0.1 only by default.
+- Embedding models other than the built-in one are downloaded from Hugging
+  Face into the `daash-models` volume. A gated model also needs `HF_TOKEN` in
+  `.env`.
 
 ## Tests
 
@@ -200,26 +216,31 @@ docker compose --profile integration run --rm --build integration  # real Postgr
 scripts/e2e.sh                                                     # real containers, a few minutes
 ```
 
+The unit and integration tiers embed with word hashes, in-process. The e2e
+tier uses the real embedder with its built-in model, on a network with no way
+out.
+
 ## Documentation
 
 - [PLAN.md](PLAN.md): the plan, current status and what comes next.
 - [docs/DESIGN-0.1.md](docs/DESIGN-0.1.md) to
-  [docs/DESIGN-0.4.md](docs/DESIGN-0.4.md): the design of each milestone.
+  [docs/DESIGN-0.4.md](docs/DESIGN-0.4.md): the design of each milestone, and
+  [docs/DESIGN-0.4.1.md](docs/DESIGN-0.4.1.md): real embeddings for search.
 - [docs/RUNNER.md](docs/RUNNER.md): runners for agent CLIs.
 - [docs/AGENT-HOSTS.md](docs/AGENT-HOSTS.md): agent hosts.
 - DAASHboard Help: the prompts guide (rendered live from the code) and
   connecting agents.
 
-## Known limitations (0.4)
+## Known limitations (0.4.1)
 
 - The built-in harness only edits files. Running code comes from the runner
   harnesses and command checks. Automation scripts are recorded, not run.
 - Judges are LLMs: their verdicts are good, not infallible. Only a command
   check proves that tests pass.
-- Learnings and memories are matched by word hashes.
-  `DAASH_EMBEDDING_USE_MODEL=true` selects `gte-base-en-v1.5`, but the Docker
-  image does not include `sentence-transformers` yet, so DAASH falls back to
-  word hashes.
+- Tasks are embedded and indexed, but nothing searches them yet: search
+  covers learnings and memories.
+- Right after the embedding model changes, items the embedder has not
+  re-embedded yet are found by recency, not meaning, until it has.
 - Connected agents use their own tools. An agent on an agent host is told to
   stay in its job folder but is not confined to it, and command checks for its
   jobs run on that machine as its owner.

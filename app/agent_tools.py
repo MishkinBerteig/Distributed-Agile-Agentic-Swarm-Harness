@@ -17,6 +17,7 @@ from typing import Any, Awaitable, Callable, Iterable, Optional
 
 from app import models, policy
 from app.checks import validate_check_spec
+from app.embeddings import Embedding, task_text
 from app.models import (Agent, AgentRole, CheckKind, CriterionCreate, Swarm, Task, TaskCreate,
                         Team)
 from app.tools import Tool, ToolError, ToolRegistry, safe_path, workspace_tools
@@ -110,13 +111,17 @@ class AgentContext:
     #: agent id -> who that row really is, for team_roster (e.g. "Jane, connected over A2A")
     agent_labels: dict[str, str] = field(default_factory=dict)
 
-    def embed(self, text: str) -> Optional[list[float]]:
+    async def embed(self, text: str) -> Embedding:
+        """`text` embedded for storing (never raises; no vector when the embedder is away)."""
+        if self.embedder is None or not text:
+            return Embedding(text or "")
+        return await self.embedder.document(text)
+
+    async def embed_query(self, text: str) -> Optional[Embedding]:
+        """`text` embedded for searching; None without a text (search then goes by recency)."""
         if self.embedder is None or not text:
             return None
-        try:
-            return self.embedder.embed(text)
-        except Exception:  # noqa: BLE001 - embedding is an optimisation
-            return None
+        return await self.embedder.query(text)
 
 
 # ---------------------------------------------------------------------------
@@ -341,7 +346,8 @@ def build_agent_tools(ctx: Optional[AgentContext], *, workspace: bool) -> list[T
                                    required_capabilities=models.required_capabilities(
                                        args.get("required_capabilities")),
                                    acceptance_criteria=crits),
-            created_by=x.agent.id, embedding=x.embed(name))
+            created_by=x.agent.id,
+            embedding=await x.embed(task_text(name, sarg(args, "description", required=False))))
         await x.repos.events.add(
             x.swarm.id, "created", team_id=x.team.id, task_id=sub.id, actor=x.agent.id,
             detail=f"{x.agent.name} created subtask '{name}' under '{x.task.name}'.")
@@ -351,13 +357,13 @@ def build_agent_tools(ctx: Optional[AgentContext], *, workspace: bool) -> list[T
         x = c()
         content = sarg(args, "content")
         await x.repos.memories.add(x.agent.id, x.swarm.id, content, team_id=x.team.id,
-                                   task_id=x.task.id, embedding=x.embed(content))
+                                   task_id=x.task.id, embedding=await x.embed(content))
         return "remembered"
 
     async def recall(args: dict) -> str:
         x = c()
         query = sarg(args, "query", required=False)
-        mems = await x.repos.memories.search(x.agent.id, x.embed(query), k=5)
+        mems = await x.repos.memories.search(x.agent.id, await x.embed_query(query), k=5)
         return "\n".join(f"- {m.content}" for m in mems) or "(no memories yet)"
 
     async def delivery_agents(x: AgentContext) -> list[Agent]:

@@ -169,9 +169,9 @@ async def agent_system_prompt(pool: asyncpg.Pool, swarm: Swarm, agent: Agent,
     """The deterministic Vision → Values → Mission → DoD/DoR → Role → context prompt."""
     global_cfg = await ConfigRepo(pool).get_global()
     feedback = [f.text for f in await FeedbackRepo(pool).list(swarm.id)]
-    emb = embedder.embed(query) if (embedder is not None and query) else None
-    learnings = [l.content for l in await LearningRepo(pool).search(emb, swarm.id, k=8)]
-    memories = [m.content for m in await MemoryRepo(pool).search(agent.id, emb, k=8)]
+    q = await embedder.query(query) if (embedder is not None and query) else None
+    learnings = [l.content for l in await LearningRepo(pool).search(q, swarm.id, k=8)]
+    memories = [m.content for m in await MemoryRepo(pool).search(agent.id, q, k=8)]
     return compose_system_prompt(
         vision=swarm.vision_statement, role=agent.role,
         values_principles=global_cfg.values_principles,

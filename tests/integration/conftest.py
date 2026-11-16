@@ -21,6 +21,7 @@ import redis.asyncio as aioredis
 from app.bus import DecisionBus
 from app.config import Settings
 from app.db import create_pool
+from app.embeddings import LocalEmbedder
 from tests.fakes.fake_llm import FakeLLM
 from tests.integration.helpers import FakeClock, Harness, make_llm
 
@@ -111,7 +112,7 @@ def fake() -> FakeLLM:
 @pytest.fixture
 def settings(tmp_path) -> Settings:
     return Settings(DATABASE_URL=TEST_DB_URL, REDIS_URL=TEST_REDIS_URL,
-                    WORKSPACE_ROOT=str(tmp_path / "workspaces"), EMBEDDING_USE_MODEL=False,
+                    WORKSPACE_ROOT=str(tmp_path / "workspaces"), EMBEDDER_URL="",
                     LLM_ENDPOINT="http://fake-llm:9100", ENGINE_TICK_SECONDS=0.01)
 
 
@@ -138,7 +139,7 @@ async def api(pool, bus, fake, settings, monkeypatch):
     monkeypatch.setattr(main, "bus", bus)
     monkeypatch.setattr(main, "settings", settings)
     monkeypatch.setattr(main, "llm", make_llm(fake, settings.LLM_ENDPOINT))
-    monkeypatch.setattr(main, "embedder", main.build_embedder("none", False))
+    monkeypatch.setattr(main, "embedder", LocalEmbedder())
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app),
                                  base_url="http://test") as client:
         yield client

@@ -14,6 +14,7 @@ import pytest_asyncio
 from app import agent_api, agent_hosts, mcp_server, runner_api
 from app.remote import hash_token
 from app.repo import MemoryRepo, RemoteJobRepo
+from app.embeddings import LocalEmbedder
 from daash_runner import pyz
 from tests.integration.runner_helpers import BODY, b64, make_remote_job, new_runner
 
@@ -34,7 +35,7 @@ async def agent_client(pool, bus, settings, monkeypatch):
     monkeypatch.setattr(agent_api, "pool", pool)
     monkeypatch.setattr(agent_api, "bus", bus)
     monkeypatch.setattr(agent_api, "settings", settings)
-    monkeypatch.setattr(agent_api, "embedder", agent_api.build_embedder("none", False))
+    monkeypatch.setattr(agent_api, "embedder", LocalEmbedder())
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=agent_api.app),
                                  base_url="http://agents") as client:
         yield client
